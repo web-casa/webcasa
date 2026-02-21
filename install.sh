@@ -21,7 +21,7 @@
 set -euo pipefail
 
 # ==================== Configuration ====================
-CADDYPANEL_VERSION="0.1.0"
+CADDYPANEL_VERSION="0.2.0"
 GITHUB_REPO="caddypanel/caddypanel"
 INSTALL_DIR="/usr/local/bin"
 DATA_DIR="/var/lib/caddypanel"
