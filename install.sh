@@ -363,7 +363,7 @@ build_caddypanel() {
     # Build frontend
     info "Building frontend (npm install + build)..."
     cd "$SRC_DIR/web"
-    npm ci --loglevel=warn 2>&1 | tail -3
+    npm install --loglevel=warn 2>&1 | tail -3
     npm run build 2>&1 | tail -5
     success "Frontend built"
 
