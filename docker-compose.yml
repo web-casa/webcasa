@@ -5,7 +5,7 @@ services:
     build: .
     container_name: caddypanel
     ports:
-      - "8080:8080" # Panel UI
+      - "39921:39921" # Panel UI
       - "80:80" # HTTP
       - "443:443" # HTTPS
     volumes:
@@ -13,7 +13,7 @@ services:
       - caddy-config:/root/.local/share/caddy # Caddy TLS certificates
       - caddy-data:/root/.config/caddy # Caddy runtime data
     environment:
-      - CADDYPANEL_PORT=8080
+      - CADDYPANEL_PORT=39921
       - CADDYPANEL_JWT_SECRET=change-me-in-production
     restart: unless-stopped
 

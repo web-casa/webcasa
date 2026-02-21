@@ -1,0 +1,228 @@
+name: CI — Build & Integration Test
+
+on:
+  push:
+    branches: [main, develop]
+  pull_request:
+    branches: [main]
+
+env:
+  PANEL_PORT: 39921
+
+jobs:
+  # ============================================================
+  # Job 1: Lint & Unit Test (fast feedback)
+  # ============================================================
+  lint-and-test:
+    name: Lint & Unit Test
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.26'
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          cache: 'npm'
+          cache-dependency-path: web/package-lock.json
+
+      - name: Go — Vet
+        run: go vet ./...
+
+      - name: Go — Unit tests
+        run: go test ./... -v -count=1
+
+      - name: Frontend — Install & Build
+        working-directory: web
+        run: |
+          npm ci
+          npm run build
+
+  # ============================================================
+  # Job 2: Full Install Script Integration Test
+  # Uses install.sh to install everything (just like a real user)
+  # ============================================================
+  integration:
+    name: Integration Test (install.sh)
+    runs-on: ubuntu-latest
+    needs: lint-and-test
+
+    steps:
+      - uses: actions/checkout@v4
+
+      # --- Run the actual install script ---
+      - name: Run install.sh
+        run: |
+          sudo bash install.sh --port $PANEL_PORT --yes
+          echo "✅ install.sh completed"
+
+      # --- Verify services are running ---
+      - name: Verify CaddyPanel is running
+        run: |
+          systemctl is-active caddypanel
+          echo "✅ CaddyPanel systemd service is active"
+
+      - name: Verify Caddy is installed
+        run: |
+          caddy version
+          echo "✅ Caddy binary is available"
+
+      - name: Wait for panel startup
+        run: sleep 3
+
+      # --- API: Initial Setup ---
+      - name: 'Test: Create admin account'
+        run: |
+          RESPONSE=$(curl -sf -X POST http://localhost:$PANEL_PORT/api/auth/setup \
+            -H 'Content-Type: application/json' \
+            -d '{"username":"admin","password":"testpassword123"}')
+          echo "$RESPONSE" | jq .
+          echo "$RESPONSE" | jq -e '.token' > /dev/null
+          echo "✅ Admin setup succeeded"
+
+      # --- API: Login ---
+      - name: 'Test: Login'
+        run: |
+          RESPONSE=$(curl -sf -X POST http://localhost:$PANEL_PORT/api/auth/login \
+            -H 'Content-Type: application/json' \
+            -d '{"username":"admin","password":"testpassword123"}')
+          TOKEN=$(echo "$RESPONSE" | jq -r '.token')
+          echo "TOKEN=$TOKEN" >> $GITHUB_ENV
+          echo "✅ Login succeeded"
+
+      # --- API: Create Host ---
+      - name: 'Test: Create proxy host'
+        run: |
+          RESPONSE=$(curl -sf -X POST http://localhost:$PANEL_PORT/api/hosts \
+            -H "Authorization: Bearer $TOKEN" \
+            -H 'Content-Type: application/json' \
+            -d '{
+              "domain": "test.example.com",
+              "tls_enabled": false,
+              "http_redirect": false,
+              "websocket": false,
+              "upstreams": [{"address": "localhost:9999"}]
+            }')
+          echo "$RESPONSE" | jq .
+          HOST_ID=$(echo "$RESPONSE" | jq -r '.id')
+          echo "HOST_ID=$HOST_ID" >> $GITHUB_ENV
+          echo "✅ Host created (ID: $HOST_ID)"
+
+      # --- API: List Hosts ---
+      - name: 'Test: List hosts'
+        run: |
+          RESPONSE=$(curl -sf http://localhost:$PANEL_PORT/api/hosts \
+            -H "Authorization: Bearer $TOKEN")
+          COUNT=$(echo "$RESPONSE" | jq '.total')
+          [ "$COUNT" -ge 1 ] || exit 1
+          echo "✅ Host list OK (total: $COUNT)"
+
+      # --- Verify Caddyfile ---
+      - name: 'Test: Caddyfile generated correctly'
+        run: |
+          CONTENT=$(curl -sf http://localhost:$PANEL_PORT/api/caddy/caddyfile \
+            -H "Authorization: Bearer $TOKEN" | jq -r '.content')
+          echo "$CONTENT"
+          echo "$CONTENT" | grep -q "test.example.com" || exit 1
+          echo "$CONTENT" | grep -q "reverse_proxy" || exit 1
+          echo "✅ Caddyfile contains host config"
+
+      # --- Caddy: Validate Caddyfile ---
+      - name: 'Test: Caddy validates generated Caddyfile'
+        run: |
+          caddy validate --config /var/lib/caddypanel/Caddyfile
+          echo "✅ caddy validate passed"
+
+      # --- Caddy: Start via Panel API ---
+      - name: 'Test: Start Caddy via API'
+        run: |
+          curl -sf -X POST http://localhost:$PANEL_PORT/api/caddy/start \
+            -H "Authorization: Bearer $TOKEN" | jq .
+          sleep 2
+          echo "✅ Caddy start command sent"
+
+      # --- Caddy: Check running ---
+      - name: 'Test: Caddy is running'
+        run: |
+          RESPONSE=$(curl -sf http://localhost:$PANEL_PORT/api/caddy/status \
+            -H "Authorization: Bearer $TOKEN")
+          echo "$RESPONSE" | jq .
+          echo "$RESPONSE" | jq -e '.running == true' > /dev/null
+          echo "✅ Caddy is running"
+
+      # --- Caddy: Reload ---
+      - name: 'Test: Reload Caddy via API'
+        run: |
+          curl -sf -X POST http://localhost:$PANEL_PORT/api/caddy/reload \
+            -H "Authorization: Bearer $TOKEN" | jq .
+          echo "✅ Caddy reloaded"
+
+      # --- Toggle host ---
+      - name: 'Test: Toggle host off → Caddyfile updated'
+        run: |
+          # Disable
+          curl -sf -X PATCH "http://localhost:$PANEL_PORT/api/hosts/$HOST_ID/toggle" \
+            -H "Authorization: Bearer $TOKEN" | jq .
+
+          # Verify removed from Caddyfile
+          CONTENT=$(curl -sf http://localhost:$PANEL_PORT/api/caddy/caddyfile \
+            -H "Authorization: Bearer $TOKEN" | jq -r '.content')
+          if echo "$CONTENT" | grep -q "test.example.com"; then
+            echo "❌ Disabled host should not be in Caddyfile"
+            exit 1
+          fi
+          echo "✅ Host disabled — removed from Caddyfile"
+
+          # Re-enable
+          curl -sf -X PATCH "http://localhost:$PANEL_PORT/api/hosts/$HOST_ID/toggle" \
+            -H "Authorization: Bearer $TOKEN" | jq .
+          echo "✅ Host re-enabled"
+
+      # --- Export config ---
+      - name: 'Test: Export configuration'
+        run: |
+          curl -sf http://localhost:$PANEL_PORT/api/config/export \
+            -H "Authorization: Bearer $TOKEN" | jq . > /tmp/export.json
+          jq '.hosts | length' /tmp/export.json
+          echo "✅ Config export OK"
+
+      # --- Delete host ---
+      - name: 'Test: Delete host'
+        run: |
+          curl -sf -X DELETE "http://localhost:$PANEL_PORT/api/hosts/$HOST_ID" \
+            -H "Authorization: Bearer $TOKEN" | jq .
+
+          COUNT=$(curl -sf http://localhost:$PANEL_PORT/api/hosts \
+            -H "Authorization: Bearer $TOKEN" | jq '.total')
+          [ "$COUNT" -eq 0 ] || exit 1
+          echo "✅ Host deleted, list empty"
+
+      # --- Stop Caddy ---
+      - name: 'Test: Stop Caddy via API'
+        run: |
+          curl -sf -X POST http://localhost:$PANEL_PORT/api/caddy/stop \
+            -H "Authorization: Bearer $TOKEN" | jq .
+          sleep 1
+          STATUS=$(curl -sf http://localhost:$PANEL_PORT/api/caddy/status \
+            -H "Authorization: Bearer $TOKEN" | jq -r '.running')
+          [ "$STATUS" = "false" ] || exit 1
+          echo "✅ Caddy stopped"
+
+      # --- Check systemd logs on failure ---
+      - name: Show logs on failure
+        if: failure()
+        run: |
+          echo "=== CaddyPanel logs ==="
+          journalctl -u caddypanel -n 100 --no-pager || true
+          echo ""
+          echo "=== Caddyfile content ==="
+          cat /var/lib/caddypanel/Caddyfile 2>/dev/null || echo "Not found"
+          echo ""
+          echo "=== Install env ==="
+          cat /etc/caddypanel/caddypanel.env 2>/dev/null || echo "Not found"

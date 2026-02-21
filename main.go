@@ -30,6 +30,15 @@ func main() {
 	// Initialize services
 	hostSvc := service.NewHostService(db, caddyMgr, cfg)
 
+	// Ensure a valid Caddyfile exists on startup
+	// This generates it from the database (even if empty → minimal global options)
+	if err := caddyMgr.EnsureCaddyfile(); err != nil {
+		log.Printf("⚠️  Failed to ensure Caddyfile: %v", err)
+	}
+	if err := hostSvc.ApplyConfig(); err != nil {
+		log.Printf("⚠️  Failed to apply initial config: %v", err)
+	}
+
 	// Setup Gin
 	r := gin.Default()
 

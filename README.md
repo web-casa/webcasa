@@ -46,7 +46,7 @@ curl -fsSL https://raw.githubusercontent.com/caddypanel/caddypanel/main/install.
 
 > 脚本会自动安装 Caddy Server、Go、Node.js 等所有依赖，编译面板，配置 systemd 服务并启动。无需手动安装任何组件。
 
-安装完成后访问 `http://YOUR_IP:8080`，首次访问会引导创建管理员账户。
+安装完成后访问 `http://YOUR_IP:39921`，首次访问会引导创建管理员账户。
 
 **自定义选项：**
 
@@ -72,7 +72,7 @@ cd caddypanel
 docker compose up -d
 ```
 
-面板地址：`http://localhost:8080`
+面板地址：`http://localhost:39921`
 
 ### 手动编译
 
@@ -94,7 +94,7 @@ make build
 ```bash
 # 后端（终端 1）
 go run .
-# → http://localhost:8080
+# → http://localhost:39921
 
 # 前端（终端 2）
 cd web && npm install && npm run dev
@@ -107,17 +107,17 @@ cd web && npm install && npm run dev
 
 ```bash
 # 创建管理员（首次）
-curl -X POST http://localhost:8080/api/auth/setup \
+curl -X POST http://localhost:39921/api/auth/setup \
   -H 'Content-Type: application/json' \
   -d '{"username":"admin","password":"yourpassword"}'
 
 # 登录
-curl -X POST http://localhost:8080/api/auth/login \
+curl -X POST http://localhost:39921/api/auth/login \
   -H 'Content-Type: application/json' \
   -d '{"username":"admin","password":"yourpassword"}'
 
 # 创建反向代理 Host
-curl -X POST http://localhost:8080/api/hosts \
+curl -X POST http://localhost:39921/api/hosts \
   -H "Authorization: Bearer YOUR_TOKEN" \
   -H 'Content-Type: application/json' \
   -d '{
@@ -155,7 +155,7 @@ caddypanel/
 
 | 环境变量 | 默认值 | 说明 |
 |----------|--------|------|
-| `CADDYPANEL_PORT` | `8080` | 面板端口 |
+| `CADDYPANEL_PORT` | `39921` | 面板端口 |
 | `CADDYPANEL_DATA_DIR` | `./data` | 数据目录 |
 | `CADDYPANEL_DB_PATH` | `data/caddypanel.db` | 数据库路径 |
 | `CADDYPANEL_JWT_SECRET` | — | JWT 签名密钥（必须修改） |

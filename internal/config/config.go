@@ -22,7 +22,7 @@ func Load() *Config {
 	dataDir := envOrDefault("CADDYPANEL_DATA_DIR", "./data")
 
 	cfg := &Config{
-		Port:          envOrDefault("CADDYPANEL_PORT", "8080"),
+		Port:          envOrDefault("CADDYPANEL_PORT", "39921"),
 		DBPath:        envOrDefault("CADDYPANEL_DB_PATH", filepath.Join(dataDir, "caddypanel.db")),
 		JWTSecret:     envOrDefault("CADDYPANEL_JWT_SECRET", "caddypanel-change-me-in-production"),
 		CaddyBin:      envOrDefault("CADDYPANEL_CADDY_BIN", "caddy"),

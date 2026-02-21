@@ -87,7 +87,7 @@ All child tables cascade on delete with the parent host.
 ## Environment Variables
 
 All prefixed with `CADDYPANEL_`:
-- `PORT` (default: 8080)
+- `PORT` (default: 39921)
 - `DATA_DIR` (default: ./data)
 - `DB_PATH` (default: data/caddypanel.db)
 - `JWT_SECRET` (default: insecure dev value — MUST change in production)
@@ -127,7 +127,7 @@ go test ./... -v
 cd web && npm run build
 
 # Manual API test
-curl -X POST http://localhost:8080/api/auth/setup \
+curl -X POST http://localhost:39921/api/auth/setup \
   -H 'Content-Type: application/json' \
   -d '{"username":"admin","password":"admin123"}'
 ```
@@ -137,5 +137,5 @@ curl -X POST http://localhost:8080/api/auth/setup \
 - **SQLite CGO**: `CGO_ENABLED=1` is required for the SQLite driver (mattn/go-sqlite3)
 - **Caddy not found**: The panel gracefully handles missing Caddy binary — it skips validation but still writes the Caddyfile
 - **CORS**: Uses `AllowAllOrigins: true` because the Go server serves both API and frontend
-- **Frontend embed**: In production, `web/dist/` is served by the Go binary. In dev, Vite runs on :5173 and proxies `/api` to :8080
+- **Frontend embed**: In production, `web/dist/` is served by the Go binary. In dev, Vite runs on :5173 and proxies `/api` to :39921
 - **Host domain uniqueness**: Domain field has a unique index; duplicates are rejected at service layer
