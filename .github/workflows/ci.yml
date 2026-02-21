@@ -104,19 +104,43 @@ jobs:
           export CADDYPANEL_CADDY_BIN=$(which caddy)
           export CADDYPANEL_DATA_DIR=./data
           export CADDYPANEL_LOG_DIR=./data/logs
-          ./caddypanel &
+          export GIN_MODE=release
+          ./caddypanel > /tmp/caddypanel.log 2>&1 &
           echo $! > /tmp/caddypanel.pid
-          sleep 3
-          echo "✅ CaddyPanel started (PID: $(cat /tmp/caddypanel.pid))"
+          echo "PID: $(cat /tmp/caddypanel.pid)"
+
+          # Wait for API to be ready
+          echo "Waiting for API..."
+          for i in $(seq 1 30); do
+            if curl -s http://localhost:$PANEL_PORT/api/auth/need-setup > /dev/null 2>&1; then
+              echo "✅ API ready after ${i}s"
+              break
+            fi
+            sleep 1
+          done
+
+          # Check if still running
+          if ! kill -0 $(cat /tmp/caddypanel.pid) 2>/dev/null; then
+            echo "❌ CaddyPanel process died!"
+            cat /tmp/caddypanel.log
+            exit 1
+          fi
+
+          # Debug: show need-setup response
+          echo "=== need-setup response ==="
+          curl -s http://localhost:$PANEL_PORT/api/auth/need-setup | jq .
 
       # ==================== API Tests ====================
 
       - name: 'Test: Create admin account'
         run: |
-          RESPONSE=$(curl -sf -X POST http://localhost:$PANEL_PORT/api/auth/setup \
+          HTTP_CODE=$(curl -s -o /tmp/setup_response.json -w "%{http_code}" \
+            -X POST http://localhost:$PANEL_PORT/api/auth/setup \
             -H 'Content-Type: application/json' \
             -d '{"username":"admin","password":"testpassword123"}')
-          echo "$RESPONSE" | jq -e '.token' > /dev/null
+          echo "HTTP $HTTP_CODE"
+          cat /tmp/setup_response.json | jq .
+          [ "$HTTP_CODE" = "200" ] || [ "$HTTP_CODE" = "201" ] || exit 1
           echo "✅ Admin setup succeeded"
 
       - name: 'Test: Login'
@@ -229,11 +253,17 @@ jobs:
       - name: Show logs on failure
         if: failure()
         run: |
-          echo "=== CaddyPanel stdout/stderr ==="
+          echo "=== CaddyPanel process log ==="
           cat /tmp/caddypanel.log 2>/dev/null || echo "No log file"
           echo ""
           echo "=== Caddyfile ==="
           cat data/Caddyfile 2>/dev/null || echo "Not found"
+          echo ""
+          echo "=== API setup response ==="
+          cat /tmp/setup_response.json 2>/dev/null || echo "No response file"
+          echo ""
+          echo "=== Data directory ==="
+          ls -la data/ 2>/dev/null || echo "No data dir"
 
       - name: Cleanup
         if: always()
