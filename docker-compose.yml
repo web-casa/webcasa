@@ -1,0 +1,23 @@
+version: "3.8"
+
+services:
+  caddypanel:
+    build: .
+    container_name: caddypanel
+    ports:
+      - "8080:8080" # Panel UI
+      - "80:80" # HTTP
+      - "443:443" # HTTPS
+    volumes:
+      - caddypanel-data:/app/data
+      - caddy-config:/root/.local/share/caddy # Caddy TLS certificates
+      - caddy-data:/root/.config/caddy # Caddy runtime data
+    environment:
+      - CADDYPANEL_PORT=8080
+      - CADDYPANEL_JWT_SECRET=change-me-in-production
+    restart: unless-stopped
+
+volumes:
+  caddypanel-data:
+  caddy-config:
+  caddy-data:
