@@ -31,6 +31,7 @@ func Init(dbPath string) *gorm.DB {
 		&model.Route{},
 		&model.CustomHeader{},
 		&model.AccessRule{},
+		&model.BasicAuth{},
 	)
 	if err != nil {
 		log.Fatalf("Failed to migrate database: %v", err)

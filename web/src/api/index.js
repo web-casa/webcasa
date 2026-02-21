@@ -43,6 +43,10 @@ export const hostAPI = {
     update: (id, data) => api.put(`/hosts/${id}`, data),
     delete: (id) => api.delete(`/hosts/${id}`),
     toggle: (id) => api.patch(`/hosts/${id}/toggle`),
+    uploadCert: (id, formData) => api.post(`/hosts/${id}/cert`, formData, {
+        headers: { 'Content-Type': 'multipart/form-data' },
+    }),
+    deleteCert: (id) => api.delete(`/hosts/${id}/cert`),
 }
 
 // ============ Caddy ============

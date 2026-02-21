@@ -2,25 +2,33 @@ import { useState, useEffect, useCallback } from 'react'
 import {
     Box, Flex, Heading, Text, Button, Badge, Switch, Table, Dialog,
     TextField, Callout, IconButton, Card, Tooltip, Spinner, AlertDialog,
+    Select, Tabs,
 } from '@radix-ui/themes'
 import {
-    Plus, Pencil, Trash2, Power, Globe, AlertCircle, X, ChevronRight,
+    Plus, Pencil, Trash2, Globe, AlertCircle, X, ChevronRight,
+    ArrowRightLeft, Shield, Lock,
 } from 'lucide-react'
 import { hostAPI } from '../api/index.js'
+
+const DEFAULT_FORM = {
+    domain: '',
+    host_type: 'proxy',
+    tls_enabled: true,
+    http_redirect: true,
+    websocket: false,
+    enabled: true,
+    upstreams: [{ address: '' }],
+    redirect_url: '',
+    redirect_code: 301,
+    custom_headers: [],
+    access_rules: [],
+    basic_auths: [],
+}
 
 // ============ Host Form Dialog ============
 function HostFormDialog({ open, onClose, host, onSaved }) {
     const isEdit = !!host
-    const [form, setForm] = useState({
-        domain: '',
-        tls_enabled: true,
-        http_redirect: true,
-        websocket: false,
-        enabled: true,
-        upstreams: [{ address: '' }],
-        custom_headers: [],
-        access_rules: [],
-    })
+    const [form, setForm] = useState({ ...DEFAULT_FORM })
     const [error, setError] = useState('')
     const [saving, setSaving] = useState(false)
 
@@ -28,6 +36,7 @@ function HostFormDialog({ open, onClose, host, onSaved }) {
         if (host) {
             setForm({
                 domain: host.domain,
+                host_type: host.host_type || 'proxy',
                 tls_enabled: host.tls_enabled,
                 http_redirect: host.http_redirect,
                 websocket: host.websocket,
@@ -35,20 +44,14 @@ function HostFormDialog({ open, onClose, host, onSaved }) {
                 upstreams: host.upstreams?.length
                     ? host.upstreams.map((u) => ({ address: u.address }))
                     : [{ address: '' }],
+                redirect_url: host.redirect_url || '',
+                redirect_code: host.redirect_code || 301,
                 custom_headers: host.custom_headers || [],
                 access_rules: host.access_rules || [],
+                basic_auths: [], // never pre-fill passwords
             })
         } else {
-            setForm({
-                domain: '',
-                tls_enabled: true,
-                http_redirect: true,
-                websocket: false,
-                enabled: true,
-                upstreams: [{ address: '' }],
-                custom_headers: [],
-                access_rules: [],
-            })
+            setForm({ ...DEFAULT_FORM })
         }
         setError('')
     }, [host, open])
@@ -59,7 +62,10 @@ function HostFormDialog({ open, onClose, host, onSaved }) {
         try {
             const payload = {
                 ...form,
-                upstreams: form.upstreams.filter((u) => u.address.trim()),
+                upstreams: form.host_type === 'proxy'
+                    ? form.upstreams.filter((u) => u.address.trim())
+                    : [],
+                basic_auths: form.basic_auths.filter((a) => a.username && a.password),
             }
             if (isEdit) {
                 await hostAPI.update(host.id, payload)
@@ -90,12 +96,24 @@ function HostFormDialog({ open, onClose, host, onSaved }) {
         setForm({ ...form, upstreams })
     }
 
+    const addBasicAuth = () => {
+        setForm({ ...form, basic_auths: [...form.basic_auths, { username: '', password: '' }] })
+    }
+
+    const removeBasicAuth = (idx) => {
+        setForm({ ...form, basic_auths: form.basic_auths.filter((_, i) => i !== idx) })
+    }
+
+    const isProxy = form.host_type === 'proxy'
+
     return (
         <Dialog.Root open={open} onOpenChange={(o) => !o && onClose()}>
-            <Dialog.Content maxWidth="520px" style={{ background: '#111113' }}>
-                <Dialog.Title>{isEdit ? 'Edit Proxy Host' : 'New Proxy Host'}</Dialog.Title>
+            <Dialog.Content maxWidth="560px" style={{ background: '#111113' }}>
+                <Dialog.Title>
+                    {isEdit ? 'Edit Host' : 'New Host'}
+                </Dialog.Title>
                 <Dialog.Description size="2" color="gray" mb="4">
-                    {isEdit ? 'Modify reverse proxy settings' : 'Add a new reverse proxy host'}
+                    {isProxy ? 'Configure a reverse proxy host' : 'Configure a redirect host'}
                 </Dialog.Description>
 
                 <Flex direction="column" gap="4">
@@ -106,92 +124,230 @@ function HostFormDialog({ open, onClose, host, onSaved }) {
                         </Callout.Root>
                     )}
 
-                    {/* Domain */}
-                    <Flex direction="column" gap="1">
-                        <Text size="2" weight="medium">Domain</Text>
-                        <TextField.Root
-                            placeholder="example.com"
-                            value={form.domain}
-                            onChange={(e) => setForm({ ...form, domain: e.target.value })}
-                            size="2"
-                        />
+                    {/* Host Type + Domain */}
+                    <Flex gap="3" align="end">
+                        <Flex direction="column" gap="1" style={{ width: 140 }}>
+                            <Text size="2" weight="medium">Type</Text>
+                            <Select.Root
+                                value={form.host_type}
+                                onValueChange={(v) => setForm({ ...form, host_type: v })}
+                                size="2"
+                            >
+                                <Select.Trigger />
+                                <Select.Content>
+                                    <Select.Item value="proxy">Proxy</Select.Item>
+                                    <Select.Item value="redirect">Redirect</Select.Item>
+                                </Select.Content>
+                            </Select.Root>
+                        </Flex>
+                        <Flex direction="column" gap="1" style={{ flex: 1 }}>
+                            <Text size="2" weight="medium">Domain</Text>
+                            <TextField.Root
+                                placeholder="example.com"
+                                value={form.domain}
+                                onChange={(e) => setForm({ ...form, domain: e.target.value })}
+                                size="2"
+                            />
+                        </Flex>
                     </Flex>
 
-                    {/* Upstreams */}
-                    <Flex direction="column" gap="2">
-                        <Flex justify="between" align="center">
-                            <Text size="2" weight="medium">Upstream Servers</Text>
-                            <Button variant="ghost" size="1" onClick={addUpstream}>
-                                <Plus size={14} /> Add
-                            </Button>
-                        </Flex>
-                        {form.upstreams.map((u, i) => (
-                            <Flex key={i} gap="2" align="center">
-                                <TextField.Root
-                                    style={{ flex: 1 }}
-                                    placeholder="localhost:3000"
-                                    value={u.address}
-                                    onChange={(e) => updateUpstream(i, e.target.value)}
-                                    size="2"
-                                />
-                                {form.upstreams.length > 1 && (
-                                    <IconButton
-                                        variant="ghost"
-                                        color="red"
-                                        size="1"
-                                        onClick={() => removeUpstream(i)}
-                                    >
-                                        <X size={14} />
-                                    </IconButton>
+                    <Tabs.Root defaultValue="main">
+                        <Tabs.List>
+                            <Tabs.Trigger value="main">
+                                {isProxy ? 'Upstream' : 'Redirect'}
+                            </Tabs.Trigger>
+                            <Tabs.Trigger value="options">Options</Tabs.Trigger>
+                            <Tabs.Trigger value="auth">
+                                <Lock size={12} style={{ marginRight: 4 }} />
+                                Auth
+                            </Tabs.Trigger>
+                        </Tabs.List>
+
+                        {/* Tab 1: Main config */}
+                        <Tabs.Content value="main">
+                            <Box pt="3">
+                                {isProxy ? (
+                                    /* Proxy: Upstreams */
+                                    <Flex direction="column" gap="2">
+                                        <Flex justify="between" align="center">
+                                            <Text size="2" weight="medium">Upstream Servers</Text>
+                                            <Button variant="ghost" size="1" onClick={addUpstream}>
+                                                <Plus size={14} /> Add
+                                            </Button>
+                                        </Flex>
+                                        {form.upstreams.map((u, i) => (
+                                            <Flex key={i} gap="2" align="center">
+                                                <TextField.Root
+                                                    style={{ flex: 1 }}
+                                                    placeholder="localhost:3000 or https://example.com"
+                                                    value={u.address}
+                                                    onChange={(e) => updateUpstream(i, e.target.value)}
+                                                    size="2"
+                                                />
+                                                {form.upstreams.length > 1 && (
+                                                    <IconButton
+                                                        variant="ghost"
+                                                        color="red"
+                                                        size="1"
+                                                        onClick={() => removeUpstream(i)}
+                                                    >
+                                                        <X size={14} />
+                                                    </IconButton>
+                                                )}
+                                            </Flex>
+                                        ))}
+                                    </Flex>
+                                ) : (
+                                    /* Redirect: Target URL + Code */
+                                    <Flex direction="column" gap="3">
+                                        <Flex direction="column" gap="1">
+                                            <Text size="2" weight="medium">Redirect Target</Text>
+                                            <TextField.Root
+                                                placeholder="https://new-site.com"
+                                                value={form.redirect_url}
+                                                onChange={(e) => setForm({ ...form, redirect_url: e.target.value })}
+                                                size="2"
+                                            />
+                                            <Text size="1" color="gray">
+                                                The original URI path will be appended automatically
+                                            </Text>
+                                        </Flex>
+                                        <Flex direction="column" gap="1" style={{ width: 200 }}>
+                                            <Text size="2" weight="medium">Redirect Code</Text>
+                                            <Select.Root
+                                                value={String(form.redirect_code)}
+                                                onValueChange={(v) => setForm({ ...form, redirect_code: Number(v) })}
+                                                size="2"
+                                            >
+                                                <Select.Trigger />
+                                                <Select.Content>
+                                                    <Select.Item value="301">301 — Permanent</Select.Item>
+                                                    <Select.Item value="302">302 — Temporary</Select.Item>
+                                                </Select.Content>
+                                            </Select.Root>
+                                        </Flex>
+                                    </Flex>
                                 )}
-                            </Flex>
-                        ))}
-                    </Flex>
+                            </Box>
+                        </Tabs.Content>
 
-                    {/* Toggles */}
-                    <Card style={{ background: '#18181b', border: '1px solid #27272a' }}>
-                        <Flex direction="column" gap="3" p="1">
-                            <Flex justify="between" align="center">
-                                <Flex direction="column">
-                                    <Text size="2" weight="medium">HTTPS (TLS)</Text>
-                                    <Text size="1" color="gray">Auto-obtain Let's Encrypt certificate</Text>
-                                </Flex>
-                                <Switch
-                                    checked={form.tls_enabled}
-                                    onCheckedChange={(v) => setForm({ ...form, tls_enabled: v })}
-                                />
-                            </Flex>
+                        {/* Tab 2: Options */}
+                        <Tabs.Content value="options">
+                            <Card mt="3" style={{ background: '#18181b', border: '1px solid #27272a' }}>
+                                <Flex direction="column" gap="3" p="1">
+                                    <Flex justify="between" align="center">
+                                        <Flex direction="column">
+                                            <Text size="2" weight="medium">HTTPS (TLS)</Text>
+                                            <Text size="1" color="gray">Auto-obtain Let's Encrypt certificate</Text>
+                                        </Flex>
+                                        <Switch
+                                            checked={form.tls_enabled}
+                                            onCheckedChange={(v) => setForm({ ...form, tls_enabled: v })}
+                                        />
+                                    </Flex>
 
-                            <Flex justify="between" align="center">
-                                <Flex direction="column">
-                                    <Text size="2" weight="medium">HTTP → HTTPS Redirect</Text>
-                                    <Text size="1" color="gray">Force redirect HTTP to HTTPS</Text>
-                                </Flex>
-                                <Switch
-                                    checked={form.http_redirect}
-                                    onCheckedChange={(v) => setForm({ ...form, http_redirect: v })}
-                                />
-                            </Flex>
+                                    <Flex justify="between" align="center">
+                                        <Flex direction="column">
+                                            <Text size="2" weight="medium">HTTP → HTTPS Redirect</Text>
+                                            <Text size="1" color="gray">Force redirect HTTP to HTTPS</Text>
+                                        </Flex>
+                                        <Switch
+                                            checked={form.http_redirect}
+                                            onCheckedChange={(v) => setForm({ ...form, http_redirect: v })}
+                                        />
+                                    </Flex>
 
-                            <Flex justify="between" align="center">
-                                <Flex direction="column">
-                                    <Text size="2" weight="medium">WebSocket Support</Text>
-                                    <Text size="1" color="gray">Enable WebSocket proxy</Text>
+                                    {isProxy && (
+                                        <Flex justify="between" align="center">
+                                            <Flex direction="column">
+                                                <Text size="2" weight="medium">WebSocket Support</Text>
+                                                <Text size="1" color="gray">Enable WebSocket proxy</Text>
+                                            </Flex>
+                                            <Switch
+                                                checked={form.websocket}
+                                                onCheckedChange={(v) => setForm({ ...form, websocket: v })}
+                                            />
+                                        </Flex>
+                                    )}
                                 </Flex>
-                                <Switch
-                                    checked={form.websocket}
-                                    onCheckedChange={(v) => setForm({ ...form, websocket: v })}
-                                />
-                            </Flex>
-                        </Flex>
-                    </Card>
+                            </Card>
+                        </Tabs.Content>
+
+                        {/* Tab 3: Basic Auth */}
+                        <Tabs.Content value="auth">
+                            <Box pt="3">
+                                <Flex direction="column" gap="2">
+                                    <Flex justify="between" align="center">
+                                        <Flex direction="column">
+                                            <Text size="2" weight="medium">HTTP Basic Auth</Text>
+                                            <Text size="1" color="gray">Protect this host with username/password</Text>
+                                        </Flex>
+                                        <Button variant="ghost" size="1" onClick={addBasicAuth}>
+                                            <Plus size={14} /> Add User
+                                        </Button>
+                                    </Flex>
+                                    {form.basic_auths.length === 0 && (
+                                        <Text size="2" color="gray" style={{ fontStyle: 'italic' }}>
+                                            No credentials set — host is publicly accessible
+                                        </Text>
+                                    )}
+                                    {form.basic_auths.map((auth, i) => (
+                                        <Flex key={i} gap="2" align="center">
+                                            <TextField.Root
+                                                style={{ flex: 1 }}
+                                                placeholder="Username"
+                                                value={auth.username}
+                                                onChange={(e) => {
+                                                    const auths = [...form.basic_auths]
+                                                    auths[i] = { ...auths[i], username: e.target.value }
+                                                    setForm({ ...form, basic_auths: auths })
+                                                }}
+                                                size="2"
+                                            />
+                                            <TextField.Root
+                                                style={{ flex: 1 }}
+                                                placeholder="Password"
+                                                type="password"
+                                                value={auth.password}
+                                                onChange={(e) => {
+                                                    const auths = [...form.basic_auths]
+                                                    auths[i] = { ...auths[i], password: e.target.value }
+                                                    setForm({ ...form, basic_auths: auths })
+                                                }}
+                                                size="2"
+                                            />
+                                            <IconButton
+                                                variant="ghost"
+                                                color="red"
+                                                size="1"
+                                                onClick={() => removeBasicAuth(i)}
+                                            >
+                                                <X size={14} />
+                                            </IconButton>
+                                        </Flex>
+                                    ))}
+                                    {isEdit && host?.basic_auths?.length > 0 && form.basic_auths.length === 0 && (
+                                        <Callout.Root size="1" color="blue">
+                                            <Callout.Icon><Shield size={14} /></Callout.Icon>
+                                            <Callout.Text>
+                                                {host.basic_auths.length} existing credential(s). Add new ones to replace, or leave empty to keep current.
+                                            </Callout.Text>
+                                        </Callout.Root>
+                                    )}
+                                </Flex>
+                            </Box>
+                        </Tabs.Content>
+                    </Tabs.Root>
                 </Flex>
 
                 <Flex gap="3" mt="5" justify="end">
                     <Dialog.Close>
                         <Button variant="soft" color="gray">Cancel</Button>
                     </Dialog.Close>
-                    <Button onClick={handleSave} disabled={saving || !form.domain}>
+                    <Button
+                        onClick={handleSave}
+                        disabled={saving || !form.domain || (isProxy && !form.upstreams.some(u => u.address)) || (!isProxy && !form.redirect_url)}
+                    >
                         {saving ? <Spinner size="1" /> : null}
                         {isEdit ? 'Save Changes' : 'Create Host'}
                     </Button>
@@ -289,13 +445,34 @@ export default function HostList() {
         setShowForm(true)
     }
 
+    const renderTargetCell = (host) => {
+        if (host.host_type === 'redirect') {
+            return (
+                <Flex align="center" gap="1">
+                    <ArrowRightLeft size={12} color="#f59e0b" />
+                    <Text size="2" color="gray">{host.redirect_url}</Text>
+                </Flex>
+            )
+        }
+        return (
+            <Flex direction="column" gap="1">
+                {(host.upstreams || []).map((u, i) => (
+                    <Flex key={i} align="center" gap="1">
+                        <ChevronRight size={12} color="#52525b" />
+                        <Text size="2" color="gray">{u.address}</Text>
+                    </Flex>
+                ))}
+            </Flex>
+        )
+    }
+
     return (
         <Box>
             <Flex justify="between" align="center" mb="5">
                 <Box>
                     <Heading size="6" style={{ color: '#fafafa' }}>Proxy Hosts</Heading>
                     <Text size="2" color="gray">
-                        Manage your reverse proxy configurations
+                        Manage your reverse proxy and redirect configurations
                     </Text>
                 </Box>
                 <Button size="2" onClick={openCreate}>
@@ -324,7 +501,7 @@ export default function HostList() {
                         <Table.Header>
                             <Table.Row>
                                 <Table.ColumnHeaderCell>Domain</Table.ColumnHeaderCell>
-                                <Table.ColumnHeaderCell>Upstream</Table.ColumnHeaderCell>
+                                <Table.ColumnHeaderCell>Target</Table.ColumnHeaderCell>
                                 <Table.ColumnHeaderCell>TLS</Table.ColumnHeaderCell>
                                 <Table.ColumnHeaderCell>Status</Table.ColumnHeaderCell>
                                 <Table.ColumnHeaderCell style={{ width: 120 }}>Actions</Table.ColumnHeaderCell>
@@ -338,19 +515,21 @@ export default function HostList() {
                                 >
                                     <Table.Cell>
                                         <Flex align="center" gap="2">
-                                            <Globe size={14} color="#10b981" />
+                                            {host.host_type === 'redirect' ? (
+                                                <ArrowRightLeft size={14} color="#f59e0b" />
+                                            ) : (
+                                                <Globe size={14} color="#10b981" />
+                                            )}
                                             <Text weight="medium">{host.domain}</Text>
+                                            {host.basic_auths?.length > 0 && (
+                                                <Tooltip content="Protected by Basic Auth">
+                                                    <Lock size={12} color="#8b5cf6" />
+                                                </Tooltip>
+                                            )}
                                         </Flex>
                                     </Table.Cell>
                                     <Table.Cell>
-                                        <Flex direction="column" gap="1">
-                                            {(host.upstreams || []).map((u, i) => (
-                                                <Flex key={i} align="center" gap="1">
-                                                    <ChevronRight size={12} color="#52525b" />
-                                                    <Text size="2" color="gray">{u.address}</Text>
-                                                </Flex>
-                                            ))}
-                                        </Flex>
+                                        {renderTargetCell(host)}
                                     </Table.Cell>
                                     <Table.Cell>
                                         <Badge
@@ -360,6 +539,11 @@ export default function HostList() {
                                         >
                                             {host.tls_enabled ? 'HTTPS' : 'HTTP'}
                                         </Badge>
+                                        {host.custom_cert_path && (
+                                            <Badge color="blue" variant="soft" size="1" ml="1">
+                                                Custom
+                                            </Badge>
+                                        )}
                                     </Table.Cell>
                                     <Table.Cell>
                                         <Tooltip content={host.enabled ? 'Click to disable' : 'Click to enable'}>

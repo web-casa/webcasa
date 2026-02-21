@@ -29,7 +29,7 @@ func RenderCaddyfile(hosts []model.Host, cfg *config.Config) string {
 
 	// Host blocks — only enabled hosts
 	for _, host := range hosts {
-		if !host.Enabled {
+		if host.Enabled != nil && !*host.Enabled {
 			continue
 		}
 		renderHostBlock(&b, host, cfg)
@@ -41,17 +41,50 @@ func RenderCaddyfile(hosts []model.Host, cfg *config.Config) string {
 func renderHostBlock(b *strings.Builder, host model.Host, cfg *config.Config) {
 	// Domain line
 	domain := host.Domain
-	if !host.TLSEnabled {
+	if host.TLSEnabled != nil && !*host.TLSEnabled {
 		domain = "http://" + domain
 	}
 
 	b.WriteString(fmt.Sprintf("%s {\n", domain))
+
+	// TLS — custom certificate
+	if host.CustomCertPath != "" && host.CustomKeyPath != "" {
+		b.WriteString(fmt.Sprintf("\ttls %s %s\n", host.CustomCertPath, host.CustomKeyPath))
+	}
 
 	// Access rules (IP allow/deny) — must come before handlers
 	if len(host.AccessRules) > 0 {
 		renderAccessRules(b, host.AccessRules)
 	}
 
+	// Basic Auth — must come before handlers
+	if len(host.BasicAuths) > 0 {
+		renderBasicAuth(b, host.BasicAuths)
+	}
+
+	// Render based on host type
+	switch host.HostType {
+	case "redirect":
+		renderRedirect(b, host)
+	default: // "proxy" or empty (backward compatible)
+		renderProxyHost(b, host)
+	}
+
+	// Per-host access log
+	b.WriteString(fmt.Sprintf("\tlog {\n\t\toutput file %s/access-%s.log {\n\t\t\troll_size 50MiB\n\t\t\troll_keep 3\n\t\t}\n\t}\n", cfg.LogDir, host.Domain))
+
+	b.WriteString("}\n\n")
+}
+
+func renderRedirect(b *strings.Builder, host model.Host) {
+	scheme := "permanent" // 301
+	if host.RedirectCode == 302 {
+		scheme = "temporary" // 302
+	}
+	b.WriteString(fmt.Sprintf("\tredir %s%s %s\n", host.RedirectURL, "{uri}", scheme))
+}
+
+func renderProxyHost(b *strings.Builder, host model.Host) {
 	// Sort upstreams by sort_order
 	upstreams := make([]model.Upstream, len(host.Upstreams))
 	copy(upstreams, host.Upstreams)
@@ -64,22 +97,29 @@ func renderHostBlock(b *strings.Builder, host model.Host, cfg *config.Config) {
 		renderRoutes(b, host)
 	} else if len(upstreams) > 0 {
 		// Simple reverse proxy (no path routing)
-		renderReverseProxy(b, upstreams, host.WebSocket)
+		renderReverseProxy(b, upstreams, host.WebSocket != nil && *host.WebSocket)
 	}
 
 	// Custom response headers
 	renderResponseHeaders(b, host.CustomHeaders)
+}
 
-	// Per-host access log
-	b.WriteString(fmt.Sprintf("\tlog {\n\t\toutput file %s/access-%s.log {\n\t\t\troll_size 50MiB\n\t\t\troll_keep 3\n\t\t}\n\t}\n", cfg.LogDir, host.Domain))
-
-	b.WriteString("}\n\n")
+func renderBasicAuth(b *strings.Builder, auths []model.BasicAuth) {
+	b.WriteString("\tbasicauth {\n")
+	for _, auth := range auths {
+		b.WriteString(fmt.Sprintf("\t\t%s %s\n", auth.Username, auth.PasswordHash))
+	}
+	b.WriteString("\t}\n")
 }
 
 func renderReverseProxy(b *strings.Builder, upstreams []model.Upstream, websocket bool) {
 	addrs := make([]string, len(upstreams))
+	isPublicURL := false
 	for i, u := range upstreams {
 		addrs[i] = u.Address
+		if strings.HasPrefix(u.Address, "http://") || strings.HasPrefix(u.Address, "https://") {
+			isPublicURL = true
+		}
 	}
 
 	b.WriteString(fmt.Sprintf("\treverse_proxy %s {\n", strings.Join(addrs, " ")))
@@ -88,10 +128,15 @@ func renderReverseProxy(b *strings.Builder, upstreams []model.Upstream, websocke
 		b.WriteString("\t\tlb_policy round_robin\n")
 	}
 
-	// Standard proxy headers
+	// For public URL upstreams (e.g. https://eol.wiki),
+	// set Host header to the upstream's hostname so the target site
+	// receives the correct Host header instead of the proxy's domain
+	if isPublicURL {
+		b.WriteString("\t\theader_up Host {upstream_hostport}\n")
+	}
+
+	// X-Real-IP is not set by Caddy by default, so we keep it
 	b.WriteString("\t\theader_up X-Real-IP {remote_host}\n")
-	b.WriteString("\t\theader_up X-Forwarded-For {remote_host}\n")
-	b.WriteString("\t\theader_up X-Forwarded-Proto {scheme}\n")
 
 	b.WriteString("\t}\n")
 }
@@ -114,57 +159,53 @@ func renderRoutes(b *strings.Builder, host model.Host) {
 		b.WriteString(fmt.Sprintf("\t@%s path %s\n", matcherName, route.Path))
 
 		if route.UpstreamID != nil {
-			if u, ok := upstreamMap[*route.UpstreamID]; ok {
-				b.WriteString(fmt.Sprintf("\treverse_proxy @%s %s\n", matcherName, u.Address))
+			if upstream, ok := upstreamMap[*route.UpstreamID]; ok {
+				b.WriteString(fmt.Sprintf("\treverse_proxy @%s %s\n", matcherName, upstream.Address))
 			}
-		}
-	}
-}
-
-func renderResponseHeaders(b *strings.Builder, headers []model.CustomHeader) {
-	for _, h := range headers {
-		switch h.Direction {
-		case "response":
-			switch h.Operation {
-			case "set":
-				b.WriteString(fmt.Sprintf("\theader %s \"%s\"\n", h.Name, h.Value))
-			case "delete":
-				b.WriteString(fmt.Sprintf("\theader -%s\n", h.Name))
-			case "add":
-				b.WriteString(fmt.Sprintf("\theader +%s \"%s\"\n", h.Name, h.Value))
-			}
-		case "request":
-			// Request headers are set inside reverse_proxy block — handled in renderReverseProxy
-			// But as a fallback, add header_up directives
 		}
 	}
 }
 
 func renderAccessRules(b *strings.Builder, rules []model.AccessRule) {
-	sortedRules := make([]model.AccessRule, len(rules))
-	copy(sortedRules, rules)
-	sort.Slice(sortedRules, func(i, j int) bool {
-		return sortedRules[i].SortOrder < sortedRules[j].SortOrder
+	sorted := make([]model.AccessRule, len(rules))
+	copy(sorted, rules)
+	sort.Slice(sorted, func(i, j int) bool {
+		return sorted[i].SortOrder < sorted[j].SortOrder
 	})
 
-	// Use remote_ip matcher
-	var allowIPs, denyIPs []string
-	for _, r := range sortedRules {
-		switch r.RuleType {
+	for _, rule := range sorted {
+		switch rule.RuleType {
 		case "allow":
-			allowIPs = append(allowIPs, r.IPRange)
+			b.WriteString(fmt.Sprintf("\t@blocked not remote_ip %s\n", rule.IPRange))
+			b.WriteString("\tabort @blocked\n")
 		case "deny":
-			denyIPs = append(denyIPs, r.IPRange)
+			b.WriteString(fmt.Sprintf("\t@denied remote_ip %s\n", rule.IPRange))
+			b.WriteString("\tabort @denied\n")
 		}
 	}
+}
 
-	if len(denyIPs) > 0 {
-		b.WriteString(fmt.Sprintf("\t@blocked remote_ip %s\n", strings.Join(denyIPs, " ")))
-		b.WriteString("\trespond @blocked 403\n")
+func renderResponseHeaders(b *strings.Builder, headers []model.CustomHeader) {
+	if len(headers) == 0 {
+		return
 	}
 
-	if len(allowIPs) > 0 {
-		b.WriteString(fmt.Sprintf("\t@allowed not remote_ip %s\n", strings.Join(allowIPs, " ")))
-		b.WriteString("\trespond @allowed 403\n")
+	sorted := make([]model.CustomHeader, len(headers))
+	copy(sorted, headers)
+	sort.Slice(sorted, func(i, j int) bool {
+		return sorted[i].SortOrder < sorted[j].SortOrder
+	})
+
+	b.WriteString("\theader {\n")
+	for _, h := range sorted {
+		switch h.Operation {
+		case "set":
+			b.WriteString(fmt.Sprintf("\t\t%s \"%s\"\n", h.Name, h.Value))
+		case "add":
+			b.WriteString(fmt.Sprintf("\t\t+%s \"%s\"\n", h.Name, h.Value))
+		case "delete":
+			b.WriteString(fmt.Sprintf("\t\t-%s\n", h.Name))
+		}
 	}
+	b.WriteString("\t}\n")
 }

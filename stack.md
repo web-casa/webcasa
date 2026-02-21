@@ -123,13 +123,23 @@ main.go                        入口：初始化组件、注册路由、启动�
     log { output file ... }
 }
 
+# Proxy host
 example.com {
+    tls /path/to/cert.pem /path/to/key.pem  # 自定义证书（可选）
+    basicauth {                              # Basic Auth（可选）
+        admin $2a$14$...
+    }
     reverse_proxy localhost:3000 localhost:3001 {
         lb_policy round_robin
         header_up X-Real-IP {remote_host}
-        ...
     }
     log { output file .../access-example.com.log }
+}
+
+# Redirect host
+old.example.com {
+    redir https://new.example.com{uri} permanent
+    log { output file .../access-old.example.com.log }
 }
 ```
 
@@ -152,8 +162,11 @@ rename 是文件系统原子操作，中途崩溃不会出现半写状态
 users           用户表（管理员）
   └─ id, username, password(bcrypt), timestamps
 
-hosts           反向代理主表
-  ├─ id, domain, enabled, tls_enabled, http_redirect, websocket
+hosts           反向代理/跳转主表
+  ├─ id, domain, host_type(proxy/redirect), enabled, tls_enabled
+  ├─ http_redirect, websocket
+  ├─ redirect_url, redirect_code        # redirect 类型
+  ├─ custom_cert_path, custom_key_path  # 自定义证书
   ├─ timestamps
   ├── upstreams[]       上游服务器（一对多）
   │     └─ address, weight, sort_order
@@ -161,8 +174,10 @@ hosts           反向代理主表
   │     └─ path, upstream_id, sort_order
   ├── custom_headers[]  自定义 Header（一对多）
   │     └─ direction, operation, name, value
-  └── access_rules[]    IP 访问控制（一对多）
-        └─ rule_type(allow/deny), ip_range(CIDR)
+  ├── access_rules[]    IP 访问控制（一对多）
+  │     └─ rule_type(allow/deny), ip_range(CIDR)
+  └── basic_auths[]     HTTP Basic Auth（一对多）
+        └─ username, password_hash(bcrypt)
 ```
 
 ## API 端点
@@ -179,6 +194,8 @@ hosts           反向代理主表
 | PUT | `/api/hosts/:id` | ✓ | 更新 Host |
 | DELETE | `/api/hosts/:id` | ✓ | 删除 Host |
 | PATCH | `/api/hosts/:id/toggle` | ✓ | 启用/禁用 |
+| POST | `/api/hosts/:id/cert` | ✓ | 上传自定义 SSL 证书 |
+| DELETE | `/api/hosts/:id/cert` | ✓ | 删除自定义证书 |
 | GET | `/api/caddy/status` | ✓ | Caddy 状态 |
 | POST | `/api/caddy/start` | ✓ | 启动 Caddy |
 | POST | `/api/caddy/stop` | ✓ | 停止 Caddy |

@@ -39,6 +39,16 @@ func main() {
 		log.Printf("⚠️  Failed to apply initial config: %v", err)
 	}
 
+	// Auto-start Caddy if not already running
+	if !caddyMgr.IsRunning() {
+		if err := caddyMgr.Start(); err != nil {
+			log.Printf("⚠️  Failed to auto-start Caddy: %v", err)
+			log.Println("   You can start it manually via the panel.")
+		} else {
+			log.Println("✅ Caddy started automatically")
+		}
+	}
+
 	// Setup Gin
 	r := gin.Default()
 
@@ -75,6 +85,11 @@ func main() {
 	protected.PUT("/hosts/:id", hostH.Update)
 	protected.DELETE("/hosts/:id", hostH.Delete)
 	protected.PATCH("/hosts/:id/toggle", hostH.Toggle)
+
+	// SSL Certificate management
+	certH := handler.NewCertHandler(hostSvc, cfg)
+	protected.POST("/hosts/:id/cert", certH.Upload)
+	protected.DELETE("/hosts/:id/cert", certH.Delete)
 
 	// Caddy process control
 	caddyH := handler.NewCaddyHandler(caddyMgr)

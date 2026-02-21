@@ -35,6 +35,7 @@ internal/handler/auth.go         → /api/auth/* endpoints
 internal/handler/host.go         → /api/hosts/* CRUD endpoints
 internal/handler/caddy.go        → /api/caddy/* process control
 internal/handler/log.go          → /api/logs log viewing + download
+internal/handler/cert.go        → /api/hosts/:id/cert SSL cert upload/delete
 internal/handler/export.go       → /api/config/export|import
 web/src/main.jsx                 → React entry, Radix Theme wrapper
 web/src/App.jsx                  → React Router setup, auth guard
@@ -69,11 +70,12 @@ POST /api/hosts → handler.Create → service.Create
 ## Database Schema (SQLite, GORM auto-migrated)
 
 - `users` — id, username, password (bcrypt), timestamps
-- `hosts` — id, domain (unique), enabled, tls_enabled, http_redirect, websocket, timestamps
+- `hosts` — id, domain (unique), host_type (proxy/redirect), enabled, tls_enabled, http_redirect, websocket, redirect_url, redirect_code, custom_cert_path, custom_key_path, timestamps
 - `upstreams` — id, host_id (FK CASCADE), address, weight, sort_order
 - `routes` — id, host_id (FK CASCADE), path, upstream_id, sort_order
 - `custom_headers` — id, host_id (FK CASCADE), direction, operation, name, value, sort_order
 - `access_rules` — id, host_id (FK CASCADE), rule_type (allow/deny), ip_range (CIDR), sort_order
+- `basic_auths` — id, host_id (FK CASCADE), username, password_hash (bcrypt)
 
 All child tables cascade on delete with the parent host.
 
@@ -112,6 +114,14 @@ All prefixed with `CADDYPANEL_`:
 5. Update `HostCreateRequest` DTO
 6. Update frontend form in `HostList.jsx`
 
+### Host Types
+- `proxy` (default) — reverse proxy to upstream servers
+- `redirect` — 301/302 redirect to a target URL
+
+The renderer dispatches to `renderProxyHost()` or `renderRedirect()` based on `host.HostType`.
+
+The `HostCreateRequest.Upstreams` is required for proxy type, `RedirectURL` is required for redirect type.
+
 ### Adding a new page
 1. Create `web/src/pages/NewPage.jsx`
 2. Add route in `web/src/App.jsx`
@@ -139,3 +149,6 @@ curl -X POST http://localhost:39921/api/auth/setup \
 - **CORS**: Uses `AllowAllOrigins: true` because the Go server serves both API and frontend
 - **Frontend embed**: In production, `web/dist/` is served by the Go binary. In dev, Vite runs on :5173 and proxies `/api` to :39921
 - **Host domain uniqueness**: Domain field has a unique index; duplicates are rejected at service layer
+- **Bool pointer fields**: `Enabled`, `TLSEnabled`, etc. are `*bool` to distinguish nil (use GORM default) from explicit false
+- **BasicAuth passwords**: Stored as bcrypt hashes; never pre-filled in edit forms, only replaced when new values are submitted
+- **Custom certs**: Stored in `DATA_DIR/certs/<domain>/cert.pem|key.pem`, key file permissions set to 0600

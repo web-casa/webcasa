@@ -13,27 +13,33 @@ type User struct {
 	UpdatedAt time.Time `json:"updated_at"`
 }
 
-// Host represents a reverse proxy host configuration
+// Host represents a reverse proxy or redirect host configuration
 type Host struct {
-	ID            uint           `gorm:"primaryKey" json:"id"`
-	Domain        string         `gorm:"not null;uniqueIndex;size:255" json:"domain"`
-	Enabled       bool           `gorm:"default:true" json:"enabled"`
-	TLSEnabled    bool           `gorm:"default:true" json:"tls_enabled"`
-	HTTPRedirect  bool           `gorm:"default:true" json:"http_redirect"`
-	WebSocket     bool           `gorm:"default:false" json:"websocket"`
-	Upstreams     []Upstream     `gorm:"foreignKey:HostID;constraint:OnDelete:CASCADE" json:"upstreams"`
-	CustomHeaders []CustomHeader `gorm:"foreignKey:HostID;constraint:OnDelete:CASCADE" json:"custom_headers"`
-	AccessRules   []AccessRule   `gorm:"foreignKey:HostID;constraint:OnDelete:CASCADE" json:"access_rules"`
-	Routes        []Route        `gorm:"foreignKey:HostID;constraint:OnDelete:CASCADE" json:"routes"`
-	CreatedAt     time.Time      `json:"created_at"`
-	UpdatedAt     time.Time      `json:"updated_at"`
+	ID             uint           `gorm:"primaryKey" json:"id"`
+	Domain         string         `gorm:"not null;uniqueIndex;size:255" json:"domain"`
+	HostType       string         `gorm:"not null;size:16;default:proxy" json:"host_type"` // "proxy" or "redirect"
+	Enabled        *bool          `gorm:"default:true" json:"enabled"`
+	TLSEnabled     *bool          `gorm:"default:true" json:"tls_enabled"`
+	HTTPRedirect   *bool          `gorm:"default:true" json:"http_redirect"`
+	WebSocket      *bool          `gorm:"default:false" json:"websocket"`
+	RedirectURL    string         `gorm:"size:1024" json:"redirect_url"`    // target URL for redirect hosts
+	RedirectCode   int            `gorm:"default:301" json:"redirect_code"` // 301 (permanent) or 302 (temporary)
+	CustomCertPath string         `gorm:"size:512" json:"custom_cert_path"` // path to custom TLS cert
+	CustomKeyPath  string         `gorm:"size:512" json:"custom_key_path"`  // path to custom TLS key
+	Upstreams      []Upstream     `gorm:"foreignKey:HostID;constraint:OnDelete:CASCADE" json:"upstreams"`
+	CustomHeaders  []CustomHeader `gorm:"foreignKey:HostID;constraint:OnDelete:CASCADE" json:"custom_headers"`
+	AccessRules    []AccessRule   `gorm:"foreignKey:HostID;constraint:OnDelete:CASCADE" json:"access_rules"`
+	Routes         []Route        `gorm:"foreignKey:HostID;constraint:OnDelete:CASCADE" json:"routes"`
+	BasicAuths     []BasicAuth    `gorm:"foreignKey:HostID;constraint:OnDelete:CASCADE" json:"basic_auths"`
+	CreatedAt      time.Time      `json:"created_at"`
+	UpdatedAt      time.Time      `json:"updated_at"`
 }
 
 // Upstream represents a backend server for reverse proxying
 type Upstream struct {
 	ID        uint   `gorm:"primaryKey" json:"id"`
 	HostID    uint   `gorm:"index;not null" json:"host_id"`
-	Address   string `gorm:"not null;size:255" json:"address"` // e.g. "localhost:3000" or "192.168.1.10:8080"
+	Address   string `gorm:"not null;size:255" json:"address"` // e.g. "localhost:3000" or "https://eol.wiki"
 	Weight    int    `gorm:"default:1" json:"weight"`
 	SortOrder int    `gorm:"default:0" json:"sort_order"`
 }
@@ -67,16 +73,28 @@ type AccessRule struct {
 	SortOrder int    `gorm:"default:0" json:"sort_order"`
 }
 
+// BasicAuth represents a username/password for HTTP basic authentication
+type BasicAuth struct {
+	ID           uint   `gorm:"primaryKey" json:"id"`
+	HostID       uint   `gorm:"index;not null" json:"host_id"`
+	Username     string `gorm:"not null;size:64" json:"username"`
+	PasswordHash string `gorm:"not null;size:255" json:"-"` // bcrypt hash, never exposed
+}
+
 // HostCreateRequest is the request body for creating/updating a host
 type HostCreateRequest struct {
 	Domain        string           `json:"domain" binding:"required"`
+	HostType      string           `json:"host_type"`      // "proxy" (default) or "redirect"
 	Enabled       *bool            `json:"enabled"`
 	TLSEnabled    *bool            `json:"tls_enabled"`
 	HTTPRedirect  *bool            `json:"http_redirect"`
 	WebSocket     *bool            `json:"websocket"`
-	Upstreams     []UpstreamInput  `json:"upstreams" binding:"required,min=1"`
+	RedirectURL   string           `json:"redirect_url"`   // required for redirect type
+	RedirectCode  int              `json:"redirect_code"`  // 301 or 302
+	Upstreams     []UpstreamInput  `json:"upstreams"`      // required for proxy type
 	CustomHeaders []HeaderInput    `json:"custom_headers"`
 	AccessRules   []AccessInput    `json:"access_rules"`
+	BasicAuths    []BasicAuthInput `json:"basic_auths"`
 }
 
 // UpstreamInput is input for creating an upstream
@@ -99,9 +117,15 @@ type AccessInput struct {
 	IPRange  string `json:"ip_range" binding:"required"`
 }
 
+// BasicAuthInput is input for creating a basic auth credential
+type BasicAuthInput struct {
+	Username string `json:"username" binding:"required"`
+	Password string `json:"password" binding:"required"` // plain text, will be hashed
+}
+
 // ExportData represents the full export of all hosts
 type ExportData struct {
-	Version   string `json:"version"`
+	Version    string `json:"version"`
 	ExportedAt string `json:"exported_at"`
-	Hosts     []Host `json:"hosts"`
+	Hosts      []Host `json:"hosts"`
 }
