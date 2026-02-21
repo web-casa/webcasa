@@ -9,8 +9,8 @@ CaddyPanel is a web-based management panel for the Caddy reverse proxy server, s
 ## Architecture
 
 - **Pattern**: Caddyfile generation + `caddy reload` (not Admin API)
-- **Backend**: Go + Gin + GORM + SQLite
-- **Frontend**: React 19 + Vite 6 + Radix UI Themes + Tailwind CSS v4 + Zustand
+- **Backend**: Go 1.26 + Gin + GORM + SQLite
+- **Frontend**: React 19 + Vite 7 + Radix UI Themes + Tailwind CSS v4 + Zustand
 - **Distribution**: Single binary (frontend embedded at build time) or Docker
 
 ## Key Design Decisions

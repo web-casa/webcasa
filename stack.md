@@ -36,7 +36,7 @@ CaddyPanel 采用经典的前后端分离 + 单二进制分发架构：
 
 | 组件 | 技术 | 版本 | 用途 |
 |------|------|------|------|
-| 语言 | Go | 1.22+ | 后端主语言 |
+| 语言 | Go | 1.26+ | 后端主语言 |
 | Web 框架 | Gin | 1.10 | HTTP 路由、中间件 |
 | ORM | GORM | 1.25 | 数据库操作、Auto Migrate |
 | 数据库 | SQLite | 3.x | 嵌入式持久化（WAL 模式） |
@@ -49,12 +49,12 @@ CaddyPanel 采用经典的前后端分离 + 单二进制分发架构：
 | 组件 | 技术 | 版本 | 用途 |
 |------|------|------|------|
 | 框架 | React | 19 | UI 框架 |
-| 构建 | Vite | 6 | 开发服务器 + 构建 |
+| 构建 | Vite | 7 | 开发服务器 + 构建 |
 | 组件库 | Radix UI Themes | 3.x | 企业级 UI 组件 |
 | CSS | Tailwind CSS | v4 | 工具类 CSS |
 | 状态管理 | Zustand | 5 | 轻量状态管理 |
 | 路由 | React Router | 7 | SPA 路由 |
-| HTTP | Axios | 1.7 | API 请求客户端 |
+| HTTP | Axios | 1.13 | API 请求客户端 |
 | 图标 | Lucide React | — | SVG 图标库 |
 
 ### 部署

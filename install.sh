@@ -20,8 +20,8 @@ set -euo pipefail
 
 # ==================== Configuration ====================
 CADDYPANEL_VERSION="0.1.0"
-GO_VERSION="1.22.10"
-NODE_VERSION="20"
+GO_VERSION="1.26.4"
+NODE_VERSION="24"
 INSTALL_DIR="/usr/local/bin"
 DATA_DIR="/var/lib/caddypanel"
 LOG_DIR="/var/log/caddypanel"

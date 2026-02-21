@@ -6,7 +6,7 @@
 
 类似 Nginx Proxy Manager，但使用 [Caddy](https://caddyserver.com) 作为反代内核。
 
-[![Go](https://img.shields.io/badge/Go-1.22+-00ADD8?logo=go&logoColor=white)](https://go.dev)
+[![Go](https://img.shields.io/badge/Go-1.26+-00ADD8?logo=go&logoColor=white)](https://go.dev)
 [![React](https://img.shields.io/badge/React-19-61DAFB?logo=react&logoColor=white)](https://react.dev)
 [![Caddy](https://img.shields.io/badge/Caddy-2.x-22B638?logo=caddy&logoColor=white)](https://caddyserver.com)
 [![License](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
@@ -40,9 +40,11 @@
 支持 Ubuntu 20+、Debian 11+、CentOS Stream 8+、AlmaLinux、Rocky Linux、Fedora、openAnolis、Alibaba Cloud Linux、openEuler、openCloudOS、银河麒麟 等主流 Linux 发行版。
 
 ```bash
-# 下载并运行安装脚本
+# 下载并运行安装脚本（自动安装 Caddy + CaddyPanel）
 curl -fsSL https://raw.githubusercontent.com/caddypanel/caddypanel/main/install.sh | sudo bash
 ```
+
+> 脚本会自动安装 Caddy Server、Go、Node.js 等所有依赖，编译面板，配置 systemd 服务并启动。无需手动安装任何组件。
 
 安装完成后访问 `http://YOUR_IP:8080`，首次访问会引导创建管理员账户。
 
@@ -74,7 +76,7 @@ docker compose up -d
 
 ### 手动编译
 
-**前置要求：** Go 1.22+、Node.js 20+、GCC
+**前置要求：** Go 1.26+、Node.js 24+、GCC
 
 ```bash
 git clone https://github.com/caddypanel/caddypanel.git
