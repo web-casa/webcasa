@@ -9,7 +9,7 @@ import (
 	"github.com/gin-gonic/gin"
 )
 
-const panelVersion = "0.2.1"
+const panelVersion = "0.3.0"
 
 // DashboardHandler handles dashboard statistics
 type DashboardHandler struct {
