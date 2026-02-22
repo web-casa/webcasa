@@ -16,6 +16,8 @@ export default function Settings() {
     const [message, setMessage] = useState(null)
     const fileInputRef = useRef(null)
     const [autoReload, setAutoReload] = useState(true)
+    const [serverIpv4, setServerIpv4] = useState('')
+    const [serverIpv6, setServerIpv6] = useState('')
 
     const fetchStatus = async () => {
         try {
@@ -40,6 +42,8 @@ export default function Settings() {
             const res = await settingAPI.getAll()
             const settings = res.data.settings || {}
             setAutoReload(settings.auto_reload !== 'false')
+            setServerIpv4(settings.server_ipv4 || '')
+            setServerIpv6(settings.server_ipv6 || '')
         } catch { /* ignore */ }
     }
 
@@ -86,6 +90,18 @@ export default function Settings() {
         } catch {
             setAutoReload(!value) // revert on error
             showMessage('error', '保存设置失败')
+        }
+    }
+
+    const handleSaveIPs = async () => {
+        try {
+            await Promise.all([
+                settingAPI.update('server_ipv4', serverIpv4),
+                settingAPI.update('server_ipv6', serverIpv6),
+            ])
+            showMessage('success', 'IP 已保存')
+        } catch {
+            showMessage('error', '保存 IP 失败')
         }
     }
 
@@ -236,6 +252,39 @@ export default function Settings() {
                                 面板启动时会自动启动 Caddy Server。开启自动重载后，如果 Caddy 未运行也会自动启动。
                             </Callout.Text>
                         </Callout.Root>
+                    </Card>
+
+                    <Card mt="4" style={{ background: '#111113', border: '1px solid #1e1e22' }}>
+                        <Heading size="3" mb="3">服务器 IP</Heading>
+                        <Text size="1" color="gray" mb="3" as="p">
+                            安装时自动检测。添加站点时会提示用户将域名解析到此 IP。
+                        </Text>
+
+                        <Flex direction="column" gap="2">
+                            <Flex align="center" gap="2">
+                                <Text size="2" style={{ width: 50 }}>IPv4</Text>
+                                <TextField.Root
+                                    placeholder="未检测到"
+                                    value={serverIpv4}
+                                    onChange={(e) => setServerIpv4(e.target.value)}
+                                    size="2"
+                                    style={{ flex: 1 }}
+                                />
+                            </Flex>
+                            <Flex align="center" gap="2">
+                                <Text size="2" style={{ width: 50 }}>IPv6</Text>
+                                <TextField.Root
+                                    placeholder="未检测到"
+                                    value={serverIpv6}
+                                    onChange={(e) => setServerIpv6(e.target.value)}
+                                    size="2"
+                                    style={{ flex: 1 }}
+                                />
+                            </Flex>
+                            <Flex justify="end">
+                                <Button size="1" variant="soft" onClick={handleSaveIPs}>保存 IP</Button>
+                            </Flex>
+                        </Flex>
                     </Card>
                 </Tabs.Content>
 

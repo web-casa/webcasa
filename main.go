@@ -142,6 +142,12 @@ func main() {
 	protected.GET("/settings/all", settingH.GetAll)
 	protected.PUT("/settings", settingH.Update)
 
+	// Certificates
+	certMgrH := handler.NewCertificateHandler(db, cfg)
+	protected.GET("/certificates", certMgrH.List)
+	protected.POST("/certificates", certMgrH.Upload)
+	protected.DELETE("/certificates/:id", certMgrH.Delete)
+
 	// ============ Frontend Static Files ============
 	setupFrontend(r)
 

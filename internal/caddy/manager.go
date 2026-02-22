@@ -221,7 +221,11 @@ func (m *Manager) Status() map[string]interface{} {
 		cmd := exec.Command(m.cfg.CaddyBin, "version")
 		output, err := cmd.Output()
 		if err == nil {
-			status["version"] = strings.TrimSpace(string(output))
+			ver := strings.TrimSpace(string(output))
+			if idx := strings.IndexByte(ver, ' '); idx > 0 {
+				ver = ver[:idx]
+			}
+			status["version"] = ver
 		}
 	}
 

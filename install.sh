@@ -615,7 +615,6 @@ prompt_port() {
         info "Using default port: $PANEL_PORT"
     fi
 }
-
 # ==================== Start Service ====================
 start_service() {
     step "Starting CaddyPanel"
@@ -632,17 +631,66 @@ start_service() {
     fi
 }
 
+# ==================== Detect Public IP ====================
+detect_public_ip() {
+    step "Detecting public IP addresses"
+
+    PUBLIC_IPV4=""
+    PUBLIC_IPV6=""
+
+    # Detect IPv4
+    for svc in "https://4.ip.sb" "https://ipv4.icanhazip.com" "https://ifconfig.me"; do
+        PUBLIC_IPV4=$(curl -4 -fsSL --connect-timeout 5 "$svc" 2>/dev/null | tr -d '[:space:]')
+        if [[ -n "$PUBLIC_IPV4" ]]; then break; fi
+    done
+
+    # Detect IPv6
+    for svc in "https://6.ip.sb" "https://ipv6.icanhazip.com"; do
+        PUBLIC_IPV6=$(curl -6 -fsSL --connect-timeout 5 "$svc" 2>/dev/null | tr -d '[:space:]')
+        if [[ -n "$PUBLIC_IPV6" ]]; then break; fi
+    done
+
+    # Write to SQLite settings table
+    local DB_PATH="${DATA_DIR}/caddypanel.db"
+    if command -v sqlite3 &>/dev/null && [[ -f "$DB_PATH" ]]; then
+        if [[ -n "$PUBLIC_IPV4" ]]; then
+            sqlite3 "$DB_PATH" "INSERT OR REPLACE INTO settings (key, value) VALUES ('server_ipv4', '$PUBLIC_IPV4');" 2>/dev/null || true
+        fi
+        if [[ -n "$PUBLIC_IPV6" ]]; then
+            sqlite3 "$DB_PATH" "INSERT OR REPLACE INTO settings (key, value) VALUES ('server_ipv6', '$PUBLIC_IPV6');" 2>/dev/null || true
+        fi
+    fi
+
+    if [[ -n "$PUBLIC_IPV4" ]]; then
+        success "IPv4: $PUBLIC_IPV4"
+    else
+        warn "IPv4 not detected"
+    fi
+    if [[ -n "$PUBLIC_IPV6" ]]; then
+        success "IPv6: $PUBLIC_IPV6"
+    else
+        info "IPv6 not available"
+    fi
+}
+
 # ==================== Print Summary ====================
 print_summary() {
-    LOCAL_IP=$(hostname -I 2>/dev/null | awk '{print $1}' || echo "YOUR_SERVER_IP")
+    # Use detected public IP, fallback to LAN IP
+    local DISPLAY_IP="${PUBLIC_IPV4:-$(hostname -I 2>/dev/null | awk '{print $1}' || echo "YOUR_SERVER_IP")}"
 
     echo ""
     echo -e "${GREEN}${BOLD}╔══════════════════════════════════════════════════════════════╗${NC}"
     echo -e "${GREEN}${BOLD}║           CaddyPanel Installation Complete! 🎉              ║${NC}"
     echo -e "${GREEN}${BOLD}╚══════════════════════════════════════════════════════════════╝${NC}"
     echo ""
-    echo -e "  ${BOLD}Panel URL:${NC}      http://${LOCAL_IP}:${PANEL_PORT}"
+    echo -e "  ${BOLD}Panel URL:${NC}      http://${DISPLAY_IP}:${PANEL_PORT}"
     echo -e "  ${BOLD}Local URL:${NC}      http://localhost:${PANEL_PORT}"
+    if [[ -n "$PUBLIC_IPV4" ]]; then
+        echo -e "  ${BOLD}IPv4:${NC}           ${PUBLIC_IPV4}"
+    fi
+    if [[ -n "$PUBLIC_IPV6" ]]; then
+        echo -e "  ${BOLD}IPv6:${NC}           ${PUBLIC_IPV6}"
+    fi
     echo ""
     echo -e "  ${BOLD}Config:${NC}         ${CONFIG_DIR}/caddypanel.env"
     echo -e "  ${BOLD}Data:${NC}           ${DATA_DIR}/"
@@ -704,6 +752,7 @@ main() {
     setup_caddy_permissions
     setup_firewall
     start_service
+    detect_public_ip
     print_summary
 }
 

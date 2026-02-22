@@ -31,6 +31,18 @@ type Setting struct {
 	Value string `gorm:"type:text" json:"value"`
 }
 
+// Certificate represents a managed SSL certificate
+type Certificate struct {
+	ID        uint      `gorm:"primaryKey" json:"id"`
+	Name      string    `gorm:"not null;size:128" json:"name"`    // display name (e.g. "example.com wildcard")
+	Domains   string    `gorm:"type:text" json:"domains"`         // comma-separated domains from cert
+	CertPath  string    `gorm:"type:text" json:"cert_path"`       // path to cert.pem
+	KeyPath   string    `gorm:"type:text" json:"key_path"`        // path to key.pem
+	ExpiresAt *time.Time `json:"expires_at"`                      // cert expiry (parsed from PEM)
+	CreatedAt time.Time  `json:"created_at"`
+	UpdatedAt time.Time  `json:"updated_at"`
+}
+
 // Host represents a reverse proxy or redirect host configuration
 type Host struct {
 	ID             uint           `gorm:"primaryKey" json:"id"`
@@ -47,6 +59,7 @@ type Host struct {
 	// Phase 4 batch 1: TLS mode and DNS provider
 	TLSMode        string `gorm:"size:16;default:auto" json:"tls_mode"` // auto, dns, wildcard, custom, off
 	DnsProviderID  *uint  `json:"dns_provider_id"`                      // FK to DnsProvider
+	CertificateID  *uint  `json:"certificate_id"`                       // FK to Certificate
 	// Phase 4 batch 2: per-host options
 	Compression     *bool  `gorm:"default:false" json:"compression"`       // encode gzip zstd
 	CacheEnabled    *bool  `gorm:"default:false" json:"cache_enabled"`     // response cache

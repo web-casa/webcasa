@@ -41,7 +41,7 @@ func (h *SettingHandler) Update(c *gin.Context) {
 	}
 
 	// Only allow known settings
-	allowed := map[string]bool{"auto_reload": true}
+	allowed := map[string]bool{"auto_reload": true, "server_ipv4": true, "server_ipv6": true}
 	if !allowed[req.Key] {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "unknown setting: " + req.Key})
 		return

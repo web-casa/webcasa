@@ -35,6 +35,7 @@ func Init(dbPath string) *gorm.DB {
 		&model.AuditLog{},
 		&model.DnsProvider{},
 		&model.Setting{},
+		&model.Certificate{},
 	)
 	if err != nil {
 		log.Fatalf("Failed to migrate database: %v", err)
@@ -42,6 +43,8 @@ func Init(dbPath string) *gorm.DB {
 
 	// Seed default settings
 	db.Where("key = ?", "auto_reload").FirstOrCreate(&model.Setting{Key: "auto_reload", Value: "true"})
+	db.Where("key = ?", "server_ipv4").FirstOrCreate(&model.Setting{Key: "server_ipv4", Value: ""})
+	db.Where("key = ?", "server_ipv6").FirstOrCreate(&model.Setting{Key: "server_ipv6", Value: ""})
 
 	log.Println("Database initialized successfully")
 	return db

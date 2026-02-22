@@ -338,6 +338,22 @@ func (s *HostService) ApplyConfig() error {
 		dnsMap[p.ID] = p
 	}
 
+	// Resolve CertificateID → CustomCertPath/CustomKeyPath
+	var certs []model.Certificate
+	s.db.Find(&certs)
+	certMap := make(map[uint]model.Certificate, len(certs))
+	for _, c := range certs {
+		certMap[c.ID] = c
+	}
+	for i := range hosts {
+		if hosts[i].CertificateID != nil && *hosts[i].CertificateID > 0 {
+			if cert, ok := certMap[*hosts[i].CertificateID]; ok {
+				hosts[i].CustomCertPath = cert.CertPath
+				hosts[i].CustomKeyPath = cert.KeyPath
+			}
+		}
+	}
+
 	content := caddy.RenderCaddyfile(hosts, s.cfg, dnsMap)
 
 	if err := s.caddyMgr.WriteCaddyfile(content); err != nil {

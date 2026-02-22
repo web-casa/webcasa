@@ -8,7 +8,8 @@ import {
     Plus, Pencil, Trash2, Globe, AlertCircle, X, ChevronRight,
     ArrowRightLeft, Shield, Lock,
 } from 'lucide-react'
-import { hostAPI, dnsProviderAPI } from '../api/index.js'
+import { hostAPI, dnsProviderAPI, settingAPI, certificateAPI } from '../api/index.js'
+import { useRef as useReactRef } from 'react'
 
 const DEFAULT_FORM = {
     domain: '',
@@ -43,10 +44,22 @@ function HostFormDialog({ open, onClose, onSaved, host }) {
     const [saving, setSaving] = useState(false)
     const [error, setError] = useState('')
     const [dnsProviders, setDnsProviders] = useState([])
+    const [serverIPs, setServerIPs] = useState({ ipv4: '', ipv6: '' })
+    const [certificates, setCertificates] = useState([])
+    const [certFile, setCertFile] = useState(null)
+    const [keyFile, setKeyFile] = useState(null)
+    const [uploadingCert, setUploadingCert] = useState(false)
+    const certFileRef = useReactRef(null)
+    const keyFileRef = useReactRef(null)
     const isEdit = !!host
 
     useEffect(() => {
         dnsProviderAPI.list().then(res => setDnsProviders(res.data.providers || [])).catch(() => { })
+        settingAPI.getAll().then(res => {
+            const s = res.data.settings || {}
+            setServerIPs({ ipv4: s.server_ipv4 || '', ipv6: s.server_ipv6 || '' })
+        }).catch(() => { })
+        certificateAPI.list().then(res => setCertificates(res.data.certificates || [])).catch(() => { })
     }, [])
 
     useEffect(() => {
@@ -84,6 +97,25 @@ function HostFormDialog({ open, onClose, onSaved, host }) {
         }
         setError('')
     }, [host, open])
+
+    const handleUploadCert = async () => {
+        setUploadingCert(true)
+        try {
+            const fd = new FormData()
+            fd.append('name', form.domain || 'cert-' + Date.now())
+            fd.append('cert', certFile)
+            fd.append('key', keyFile)
+            const res = await certificateAPI.upload(fd)
+            const newCert = res.data.certificate
+            setForm({ ...form, certificate_id: newCert.id })
+            setCertFile(null)
+            setKeyFile(null)
+            certificateAPI.list().then(r => setCertificates(r.data.certificates || []))
+        } catch (err) {
+            setError(err.response?.data?.error || '证书上传失败')
+        }
+        setUploadingCert(false)
+    }
 
     const handleSave = async () => {
         setError('')
@@ -343,6 +375,31 @@ function HostFormDialog({ open, onClose, onSaved, host }) {
                                         </Select.Root>
                                     </Flex>
 
+                                    {form.tls_mode === 'auto' && (serverIPs.ipv4 || serverIPs.ipv6) && form.domain && (
+                                        <Callout.Root color="blue" size="1">
+                                            <Callout.Icon><AlertCircle size={14} /></Callout.Icon>
+                                            <Callout.Text>
+                                                <Text size="1">请先添加 DNS 解析再保存：</Text>
+                                                {serverIPs.ipv4 && (
+                                                    <Flex align="center" gap="1" mt="1">
+                                                        <code style={{ fontSize: '0.75rem' }}>{form.domain} → {serverIPs.ipv4} (A)</code>
+                                                        <IconButton size="1" variant="ghost" onClick={() => navigator.clipboard.writeText(serverIPs.ipv4)}>
+                                                            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><rect x="9" y="9" width="13" height="13" rx="2" ry="2" /><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" /></svg>
+                                                        </IconButton>
+                                                    </Flex>
+                                                )}
+                                                {serverIPs.ipv6 && (
+                                                    <Flex align="center" gap="1" mt="1">
+                                                        <code style={{ fontSize: '0.75rem' }}>{form.domain} → {serverIPs.ipv6} (AAAA)</code>
+                                                        <IconButton size="1" variant="ghost" onClick={() => navigator.clipboard.writeText(serverIPs.ipv6)}>
+                                                            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><rect x="9" y="9" width="13" height="13" rx="2" ry="2" /><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" /></svg>
+                                                        </IconButton>
+                                                    </Flex>
+                                                )}
+                                            </Callout.Text>
+                                        </Callout.Root>
+                                    )}
+
                                     {(form.tls_mode === 'dns' || form.tls_mode === 'wildcard') && (
                                         <Flex direction="column" gap="1" pl="4" style={{ borderLeft: '2px solid #27272a' }}>
                                             <Text size="1" color="gray">DNS Provider</Text>
@@ -362,6 +419,60 @@ function HostFormDialog({ open, onClose, onSaved, host }) {
                                             </Select.Root>
                                             {dnsProviders.length === 0 && (
                                                 <Text size="1" color="red">请先在 DNS Providers 页面添加 Provider</Text>
+                                            )}
+                                        </Flex>
+                                    )}
+
+                                    {form.tls_mode === 'custom' && (
+                                        <Flex direction="column" gap="2" pl="4" style={{ borderLeft: '2px solid #27272a' }}>
+                                            <Text size="1" color="gray">选择证书</Text>
+                                            <Select.Root
+                                                value={form.certificate_id ? String(form.certificate_id) : ''}
+                                                onValueChange={(v) => setForm({ ...form, certificate_id: v ? Number(v) : null })}
+                                                size="2"
+                                            >
+                                                <Select.Trigger placeholder="从已上传的证书中选择" />
+                                                <Select.Content>
+                                                    {certificates.map(c => (
+                                                        <Select.Item key={c.id} value={String(c.id)}>
+                                                            {c.name} — {c.domains || '未知域名'}
+                                                        </Select.Item>
+                                                    ))}
+                                                </Select.Content>
+                                            </Select.Root>
+                                            {certificates.length === 0 && (
+                                                <Text size="1" color="orange">
+                                                    暂无证书，请先到 <strong>证书管理</strong> 页面上传
+                                                </Text>
+                                            )}
+
+                                            <Separator size="4" />
+
+                                            <Text size="1" color="gray">或直接上传证书</Text>
+                                            <Flex gap="2">
+                                                <Button
+                                                    variant="soft" color="gray" size="1"
+                                                    onClick={() => certFileRef.current?.click()}
+                                                >
+                                                    {certFile ? certFile.name : '选择 .pem/.crt'}
+                                                </Button>
+                                                <Button
+                                                    variant="soft" color="gray" size="1"
+                                                    onClick={() => keyFileRef.current?.click()}
+                                                >
+                                                    {keyFile ? keyFile.name : '选择 .key'}
+                                                </Button>
+                                                <input ref={certFileRef} type="file" accept=".pem,.crt,.cer" onChange={(e) => setCertFile(e.target.files?.[0])} style={{ display: 'none' }} />
+                                                <input ref={keyFileRef} type="file" accept=".pem,.key" onChange={(e) => setKeyFile(e.target.files?.[0])} style={{ display: 'none' }} />
+                                            </Flex>
+                                            {certFile && keyFile && (
+                                                <Button
+                                                    size="1" variant="soft"
+                                                    onClick={handleUploadCert}
+                                                    disabled={uploadingCert}
+                                                >
+                                                    {uploadingCert ? '上传中...' : '上传并关联'}
+                                                </Button>
                                             )}
                                         </Flex>
                                     )}

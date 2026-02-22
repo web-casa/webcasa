@@ -98,6 +98,15 @@ export const settingAPI = {
     update: (key, value) => api.put('/settings', { key, value }),
 }
 
+// ============ Certificates ============
+export const certificateAPI = {
+    list: () => api.get('/certificates'),
+    upload: (formData) => api.post('/certificates', formData, {
+        headers: { 'Content-Type': 'multipart/form-data' },
+    }),
+    delete: (id) => api.delete(`/certificates/${id}`),
+}
+
 // ============ DNS Providers ============
 export const dnsProviderAPI = {
     list: () => api.get('/dns-providers'),
