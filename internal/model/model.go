@@ -9,6 +9,7 @@ type User struct {
 	ID        uint      `gorm:"primaryKey" json:"id"`
 	Username  string    `gorm:"uniqueIndex;not null;size:64" json:"username"`
 	Password  string    `gorm:"not null" json:"-"` // bcrypt hash, never exposed in JSON
+	Role      string    `gorm:"not null;size:16;default:admin" json:"role"` // "admin" or "viewer"
 	CreatedAt time.Time `json:"created_at"`
 	UpdatedAt time.Time `json:"updated_at"`
 }
@@ -26,7 +27,8 @@ type Host struct {
 	RedirectCode   int            `gorm:"default:301" json:"redirect_code"` // 301 (permanent) or 302 (temporary)
 	CustomCertPath string         `gorm:"size:512" json:"custom_cert_path"` // path to custom TLS cert
 	CustomKeyPath  string         `gorm:"size:512" json:"custom_key_path"`  // path to custom TLS key
-	Upstreams      []Upstream     `gorm:"foreignKey:HostID;constraint:OnDelete:CASCADE" json:"upstreams"`
+	CustomDirectives string         `gorm:"type:text" json:"custom_directives"` // raw Caddy directives
+	Upstreams        []Upstream     `gorm:"foreignKey:HostID;constraint:OnDelete:CASCADE" json:"upstreams"`
 	CustomHeaders  []CustomHeader `gorm:"foreignKey:HostID;constraint:OnDelete:CASCADE" json:"custom_headers"`
 	AccessRules    []AccessRule   `gorm:"foreignKey:HostID;constraint:OnDelete:CASCADE" json:"access_rules"`
 	Routes         []Route        `gorm:"foreignKey:HostID;constraint:OnDelete:CASCADE" json:"routes"`
@@ -83,18 +85,19 @@ type BasicAuth struct {
 
 // HostCreateRequest is the request body for creating/updating a host
 type HostCreateRequest struct {
-	Domain        string           `json:"domain" binding:"required"`
-	HostType      string           `json:"host_type"`      // "proxy" (default) or "redirect"
-	Enabled       *bool            `json:"enabled"`
-	TLSEnabled    *bool            `json:"tls_enabled"`
-	HTTPRedirect  *bool            `json:"http_redirect"`
-	WebSocket     *bool            `json:"websocket"`
-	RedirectURL   string           `json:"redirect_url"`   // required for redirect type
-	RedirectCode  int              `json:"redirect_code"`  // 301 or 302
-	Upstreams     []UpstreamInput  `json:"upstreams"`      // required for proxy type
-	CustomHeaders []HeaderInput    `json:"custom_headers"`
-	AccessRules   []AccessInput    `json:"access_rules"`
-	BasicAuths    []BasicAuthInput `json:"basic_auths"`
+	Domain           string           `json:"domain" binding:"required"`
+	HostType         string           `json:"host_type"`      // "proxy" (default) or "redirect"
+	Enabled          *bool            `json:"enabled"`
+	TLSEnabled       *bool            `json:"tls_enabled"`
+	HTTPRedirect     *bool            `json:"http_redirect"`
+	WebSocket        *bool            `json:"websocket"`
+	RedirectURL      string           `json:"redirect_url"`   // required for redirect type
+	RedirectCode     int              `json:"redirect_code"`  // 301 or 302
+	CustomDirectives string           `json:"custom_directives"` // raw Caddy directives
+	Upstreams        []UpstreamInput  `json:"upstreams"`      // required for proxy type
+	CustomHeaders    []HeaderInput    `json:"custom_headers"`
+	AccessRules      []AccessInput    `json:"access_rules"`
+	BasicAuths       []BasicAuthInput `json:"basic_auths"`
 }
 
 // UpstreamInput is input for creating an upstream
@@ -128,4 +131,17 @@ type ExportData struct {
 	Version    string `json:"version"`
 	ExportedAt string `json:"exported_at"`
 	Hosts      []Host `json:"hosts"`
+}
+
+// AuditLog records admin actions for auditing
+type AuditLog struct {
+	ID        uint      `gorm:"primaryKey" json:"id"`
+	UserID    uint      `gorm:"index" json:"user_id"`
+	Username  string    `gorm:"not null;size:64" json:"username"`
+	Action    string    `gorm:"not null;size:16" json:"action"` // CREATE, UPDATE, DELETE, TOGGLE, START, STOP, etc.
+	Target    string    `gorm:"not null;size:64" json:"target"` // e.g. "host", "caddy", "user"
+	TargetID  string    `gorm:"size:32" json:"target_id"`       // ID of the affected resource
+	Detail    string    `gorm:"type:text" json:"detail"`        // human-readable description
+	IP        string    `gorm:"size:45" json:"ip"`
+	CreatedAt time.Time `json:"created_at"`
 }

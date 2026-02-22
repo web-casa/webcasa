@@ -70,6 +70,13 @@ func renderHostBlock(b *strings.Builder, host model.Host, cfg *config.Config) {
 		renderProxyHost(b, host)
 	}
 
+	// Custom directives (raw user-provided Caddy config)
+	if host.CustomDirectives != "" {
+		for _, line := range strings.Split(strings.TrimSpace(host.CustomDirectives), "\n") {
+			b.WriteString(fmt.Sprintf("\t%s\n", line))
+		}
+	}
+
 	// Per-host access log
 	b.WriteString(fmt.Sprintf("\tlog {\n\t\toutput file %s/access-%s.log {\n\t\t\troll_size 50MiB\n\t\t\troll_keep 3\n\t\t}\n\t}\n", cfg.LogDir, host.Domain))
 

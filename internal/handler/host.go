@@ -1,22 +1,32 @@
 package handler
 
 import (
+	"fmt"
 	"net/http"
 	"strconv"
 
 	"github.com/caddypanel/caddypanel/internal/model"
 	"github.com/caddypanel/caddypanel/internal/service"
 	"github.com/gin-gonic/gin"
+	"gorm.io/gorm"
 )
 
 // HostHandler manages proxy host CRUD endpoints
 type HostHandler struct {
 	svc *service.HostService
+	db  *gorm.DB
 }
 
 // NewHostHandler creates a new HostHandler
-func NewHostHandler(svc *service.HostService) *HostHandler {
-	return &HostHandler{svc: svc}
+func NewHostHandler(svc *service.HostService, db *gorm.DB) *HostHandler {
+	return &HostHandler{svc: svc, db: db}
+}
+
+func (h *HostHandler) audit(c *gin.Context, action, targetID, detail string) {
+	if uid, ok := c.Get("user_id"); ok {
+		uname, _ := c.Get("username")
+		WriteAuditLog(h.db, uid.(uint), fmt.Sprint(uname), action, "host", targetID, detail, c.ClientIP())
+	}
 }
 
 // List returns all proxy hosts
@@ -60,6 +70,7 @@ func (h *HostHandler) Create(c *gin.Context) {
 		return
 	}
 
+	h.audit(c, "CREATE", fmt.Sprint(host.ID), fmt.Sprintf("Created %s host '%s'", host.HostType, host.Domain))
 	c.JSON(http.StatusCreated, host)
 }
 
@@ -83,6 +94,7 @@ func (h *HostHandler) Update(c *gin.Context) {
 		return
 	}
 
+	h.audit(c, "UPDATE", fmt.Sprint(host.ID), fmt.Sprintf("Updated host '%s'", host.Domain))
 	c.JSON(http.StatusOK, host)
 }
 
@@ -99,6 +111,7 @@ func (h *HostHandler) Delete(c *gin.Context) {
 		return
 	}
 
+	h.audit(c, "DELETE", fmt.Sprint(id), "Deleted host")
 	c.JSON(http.StatusOK, gin.H{"message": "Host deleted successfully"})
 }
 
@@ -116,6 +129,12 @@ func (h *HostHandler) Toggle(c *gin.Context) {
 		return
 	}
 
+	enabled := host.Enabled == nil || *host.Enabled
+	action := "DISABLE"
+	if enabled {
+		action = "ENABLE"
+	}
+	h.audit(c, action, fmt.Sprint(host.ID), fmt.Sprintf("Toggled host '%s' → %s", host.Domain, action))
 	c.JSON(http.StatusOK, host)
 }
 

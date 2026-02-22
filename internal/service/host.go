@@ -68,14 +68,15 @@ func (s *HostService) Create(req *model.HostCreateRequest) (*model.Host, error) 
 	}
 
 	host := &model.Host{
-		Domain:       req.Domain,
-		HostType:     hostType,
-		Enabled:      boolPtr(boolOrDefault(req.Enabled, true)),
-		TLSEnabled:   boolPtr(boolOrDefault(req.TLSEnabled, true)),
-		HTTPRedirect: boolPtr(boolOrDefault(req.HTTPRedirect, true)),
-		WebSocket:    boolPtr(boolOrDefault(req.WebSocket, false)),
-		RedirectURL:  req.RedirectURL,
-		RedirectCode: intOrDefault(req.RedirectCode, 301),
+		Domain:           req.Domain,
+		HostType:         hostType,
+		Enabled:          boolPtr(boolOrDefault(req.Enabled, true)),
+		TLSEnabled:       boolPtr(boolOrDefault(req.TLSEnabled, true)),
+		HTTPRedirect:     boolPtr(boolOrDefault(req.HTTPRedirect, true)),
+		WebSocket:        boolPtr(boolOrDefault(req.WebSocket, false)),
+		RedirectURL:      req.RedirectURL,
+		RedirectCode:     intOrDefault(req.RedirectCode, 301),
+		CustomDirectives: req.CustomDirectives,
 	}
 
 	for i, u := range req.Upstreams {
@@ -161,6 +162,7 @@ func (s *HostService) Update(id uint, req *model.HostCreateRequest) (*model.Host
 	if req.RedirectCode > 0 {
 		host.RedirectCode = req.RedirectCode
 	}
+	host.CustomDirectives = req.CustomDirectives
 
 	// Replace associations
 	s.db.Where("host_id = ?", id).Delete(&model.Upstream{})

@@ -1,10 +1,13 @@
 import { useState, useEffect } from 'react'
-import { Box, Card, Flex, Grid, Heading, Text, Badge, Spinner } from '@radix-ui/themes'
-import { Globe, Activity, Shield, Server } from 'lucide-react'
-import { hostAPI, caddyAPI } from '../api/index.js'
+import { Box, Card, Flex, Grid, Heading, Text, Badge, Spinner, Separator, Tooltip } from '@radix-ui/themes'
+import {
+    Globe, Activity, Shield, Server, ArrowRightLeft, Lock,
+    ShieldCheck, ShieldOff, KeyRound, Monitor, Cpu,
+} from 'lucide-react'
+import { dashboardAPI } from '../api/index.js'
 
-function StatCard({ icon: Icon, label, value, color = 'green', loading }) {
-    return (
+function StatCard({ icon: Icon, label, value, color = 'green', loading, tooltip }) {
+    const card = (
         <Card
             style={{
                 background: '#111113',
@@ -20,6 +23,7 @@ function StatCard({ icon: Icon, label, value, color = 'green', loading }) {
                         height: 44,
                         borderRadius: 10,
                         background: `color-mix(in srgb, var(--${color}-9) 15%, transparent)`,
+                        flexShrink: 0,
                     }}
                 >
                     <Icon size={22} style={{ color: `var(--${color}-9)` }} />
@@ -39,29 +43,37 @@ function StatCard({ icon: Icon, label, value, color = 'green', loading }) {
             </Flex>
         </Card>
     )
+
+    if (tooltip) {
+        return <Tooltip content={tooltip}>{card}</Tooltip>
+    }
+    return card
+}
+
+function InfoRow({ label, value, color }) {
+    return (
+        <Flex justify="between" align="center" py="2" style={{ borderBottom: '1px solid #1e1e22' }}>
+            <Text size="2" color="gray">{label}</Text>
+            {color ? (
+                <Badge color={color} size="1">{value}</Badge>
+            ) : (
+                <Text size="2" style={{ color: '#e0e0e0' }}>{value}</Text>
+            )}
+        </Flex>
+    )
 }
 
 export default function Dashboard() {
-    const [stats, setStats] = useState({ total: 0, active: 0 })
-    const [caddyStatus, setCaddyStatus] = useState(null)
+    const [stats, setStats] = useState(null)
     const [loading, setLoading] = useState(true)
 
     useEffect(() => {
         async function fetchData() {
             try {
-                const [hostsRes, statusRes] = await Promise.all([
-                    hostAPI.list(),
-                    caddyAPI.status(),
-                ])
-
-                const hosts = hostsRes.data.hosts || []
-                setStats({
-                    total: hosts.length,
-                    active: hosts.filter((h) => h.enabled).length,
-                })
-                setCaddyStatus(statusRes.data)
+                const res = await dashboardAPI.stats()
+                setStats(res.data)
             } catch (err) {
-                console.error('Failed to fetch dashboard data:', err)
+                console.error('Failed to fetch dashboard stats:', err)
             } finally {
                 setLoading(false)
             }
@@ -69,47 +81,55 @@ export default function Dashboard() {
         fetchData()
     }, [])
 
+    const hosts = stats?.hosts || {}
+    const tls = stats?.tls || {}
+    const security = stats?.security || {}
+    const system = stats?.system || {}
+    const caddy = stats?.caddy || {}
+
     return (
         <Box>
             <Heading size="6" mb="1" style={{ color: '#fafafa' }}>
                 Dashboard
             </Heading>
             <Text size="2" color="gray" mb="5" as="p">
-                Overview of your CaddyPanel instance
+                CaddyPanel 实例概览
             </Text>
 
-            <Grid columns={{ initial: '1', sm: '2', md: '4' }} gap="4" mb="6">
+            {/* Primary Stats Row */}
+            <Grid columns={{ initial: '1', sm: '2', md: '4' }} gap="4" mb="5">
                 <StatCard
                     icon={Globe}
-                    label="Total Hosts"
-                    value={stats.total}
+                    label="站点总数"
+                    value={hosts.total ?? '-'}
                     color="green"
                     loading={loading}
+                    tooltip={`代理: ${hosts.proxy ?? 0} / 跳转: ${hosts.redirect ?? 0}`}
                 />
                 <StatCard
                     icon={Activity}
-                    label="Active Hosts"
-                    value={stats.active}
+                    label="已启用"
+                    value={hosts.active ?? '-'}
                     color="blue"
                     loading={loading}
+                    tooltip={`停用: ${hosts.disabled ?? 0}`}
                 />
                 <StatCard
                     icon={Shield}
-                    label="TLS Enabled"
-                    value={
-                        loading ? '-' : stats.active // simplified for MVP
-                    }
+                    label="HTTPS 保护"
+                    value={loading ? '-' : (tls.auto + tls.custom)}
                     color="violet"
                     loading={loading}
+                    tooltip={`Let's Encrypt: ${tls.auto ?? 0} / 自定义证书: ${tls.custom ?? 0} / 无 TLS: ${tls.none ?? 0}`}
                 />
                 <StatCard
                     icon={Server}
-                    label="Caddy Status"
+                    label="Caddy 状态"
                     value={
-                        caddyStatus?.running ? (
-                            <Badge color="green" size="2">Running</Badge>
+                        caddy?.running ? (
+                            <Badge color="green" size="2">运行中</Badge>
                         ) : (
-                            <Badge color="red" size="2">Stopped</Badge>
+                            <Badge color="red" size="2">已停止</Badge>
                         )
                     }
                     color="orange"
@@ -117,32 +137,68 @@ export default function Dashboard() {
                 />
             </Grid>
 
-            {/* Caddy Info */}
-            {caddyStatus && (
+            {/* Detail Cards */}
+            <Grid columns={{ initial: '1', md: '3' }} gap="4" mb="5">
+                {/* Host Breakdown */}
                 <Card style={{ background: '#111113', border: '1px solid #1e1e22' }}>
-                    <Heading size="3" mb="3">
-                        Server Info
-                    </Heading>
-                    <Grid columns="2" gap="3" style={{ maxWidth: 400 }}>
-                        <Text size="2" color="gray">Status</Text>
-                        <Badge color={caddyStatus.running ? 'green' : 'red'}>
-                            {caddyStatus.running ? 'Running' : 'Stopped'}
-                        </Badge>
-
-                        {caddyStatus.version && (
-                            <>
-                                <Text size="2" color="gray">Caddy Version</Text>
-                                <Text size="2">{caddyStatus.version}</Text>
-                            </>
-                        )}
-
-                        <Text size="2" color="gray">Config Path</Text>
-                        <Text size="2" style={{ wordBreak: 'break-all' }}>
-                            {caddyStatus.caddyfile_path}
-                        </Text>
-                    </Grid>
+                    <Flex align="center" gap="2" mb="3">
+                        <Globe size={16} style={{ color: 'var(--green-9)' }} />
+                        <Heading size="3">站点分布</Heading>
+                    </Flex>
+                    <InfoRow label="反向代理" value={hosts.proxy ?? 0} />
+                    <InfoRow label="域名跳转" value={hosts.redirect ?? 0} />
+                    <InfoRow label="已启用" value={hosts.active ?? 0} color="green" />
+                    <InfoRow label="已停用" value={hosts.disabled ?? 0} color="gray" />
                 </Card>
-            )}
+
+                {/* TLS Breakdown */}
+                <Card style={{ background: '#111113', border: '1px solid #1e1e22' }}>
+                    <Flex align="center" gap="2" mb="3">
+                        <ShieldCheck size={16} style={{ color: 'var(--violet-9)' }} />
+                        <Heading size="3">TLS 状态</Heading>
+                    </Flex>
+                    <InfoRow
+                        label="Let's Encrypt (自动)"
+                        value={tls.auto ?? 0}
+                        color="green"
+                    />
+                    <InfoRow
+                        label="自定义证书"
+                        value={tls.custom ?? 0}
+                        color="blue"
+                    />
+                    <InfoRow
+                        label="未启用 TLS"
+                        value={tls.none ?? 0}
+                        color={tls.none > 0 ? 'orange' : 'gray'}
+                    />
+                    <InfoRow
+                        label="Basic Auth 保护"
+                        value={security.with_auth ?? 0}
+                        color="violet"
+                    />
+                </Card>
+
+                {/* System Info */}
+                <Card style={{ background: '#111113', border: '1px solid #1e1e22' }}>
+                    <Flex align="center" gap="2" mb="3">
+                        <Monitor size={16} style={{ color: 'var(--orange-9)' }} />
+                        <Heading size="3">系统信息</Heading>
+                    </Flex>
+                    <InfoRow label="CaddyPanel" value={`v${system.panel_version || '-'}`} />
+                    <InfoRow
+                        label="Caddy"
+                        value={caddy?.version || '未知'}
+                    />
+                    <InfoRow
+                        label="Caddy 状态"
+                        value={caddy?.running ? '运行中' : '已停止'}
+                        color={caddy?.running ? 'green' : 'red'}
+                    />
+                    <InfoRow label="Go" value={system.go_version || '-'} />
+                    <InfoRow label="平台" value={`${system.go_os || '-'}/${system.go_arch || '-'}`} />
+                </Card>
+            </Grid>
         </Box>
     )
 }

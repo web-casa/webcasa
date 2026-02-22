@@ -23,6 +23,7 @@ const DEFAULT_FORM = {
     custom_headers: [],
     access_rules: [],
     basic_auths: [],
+    custom_directives: '',
 }
 
 // ============ Host Form Dialog ============
@@ -49,6 +50,7 @@ function HostFormDialog({ open, onClose, host, onSaved }) {
                 custom_headers: host.custom_headers || [],
                 access_rules: host.access_rules || [],
                 basic_auths: [], // never pre-fill passwords
+                custom_directives: host.custom_directives || '',
             })
         } else {
             setForm({ ...DEFAULT_FORM })
@@ -269,6 +271,31 @@ function HostFormDialog({ open, onClose, host, onSaved }) {
                                             />
                                         </Flex>
                                     )}
+
+                                    <Separator size="4" style={{ opacity: 0.15 }} />
+                                    <Box>
+                                        <Text size="2" weight="medium" mb="1">自定义 Caddy 指令</Text>
+                                        <Text size="1" color="gray" mb="2" as="p">
+                                            直接写入 Caddy 配置，如 rate_limit、encode 等
+                                        </Text>
+                                        <textarea
+                                            value={form.custom_directives}
+                                            onChange={(e) => setForm({ ...form, custom_directives: e.target.value })}
+                                            placeholder={'encode gzip zstd\nrate_limit {remote.ip} 10r/s'}
+                                            rows={4}
+                                            style={{
+                                                width: '100%',
+                                                background: '#09090b',
+                                                border: '1px solid #27272a',
+                                                borderRadius: 6,
+                                                padding: '8px 12px',
+                                                color: '#e4e4e7',
+                                                fontFamily: 'monospace',
+                                                fontSize: '0.8rem',
+                                                resize: 'vertical',
+                                            }}
+                                        />
+                                    </Box>
                                 </Flex>
                             </Card>
                         </Tabs.Content>

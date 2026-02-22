@@ -7,6 +7,8 @@ import Dashboard from './pages/Dashboard.jsx'
 import HostList from './pages/HostList.jsx'
 import Logs from './pages/Logs.jsx'
 import Settings from './pages/Settings.jsx'
+import Users from './pages/Users.jsx'
+import AuditLogs from './pages/AuditLogs.jsx'
 
 function ProtectedRoute({ children }) {
     const token = useAuthStore((s) => s.token)
@@ -37,6 +39,8 @@ export default function App() {
                     <Route index element={<Dashboard />} />
                     <Route path="hosts" element={<HostList />} />
                     <Route path="logs" element={<Logs />} />
+                    <Route path="users" element={<Users />} />
+                    <Route path="audit" element={<AuditLogs />} />
                     <Route path="settings" element={<Settings />} />
                 </Route>
                 <Route path="*" element={<Navigate to="/" replace />} />

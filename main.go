@@ -67,8 +67,12 @@ func main() {
 	// User info
 	protected.GET("/auth/me", authH.Me)
 
+	// Dashboard stats
+	dashH := handler.NewDashboardHandler(hostSvc, caddyMgr)
+	protected.GET("/dashboard/stats", dashH.Stats)
+
 	// Host CRUD
-	hostH := handler.NewHostHandler(hostSvc)
+	hostH := handler.NewHostHandler(hostSvc, db)
 	protected.GET("/hosts", hostH.List)
 	protected.POST("/hosts", hostH.Create)
 	protected.GET("/hosts/:id", hostH.Get)
@@ -82,7 +86,7 @@ func main() {
 	protected.DELETE("/hosts/:id/cert", certH.Delete)
 
 	// Caddy process control
-	caddyH := handler.NewCaddyHandler(caddyMgr)
+	caddyH := handler.NewCaddyHandler(caddyMgr, db)
 	protected.GET("/caddy/status", caddyH.Status)
 	protected.POST("/caddy/start", caddyH.Start)
 	protected.POST("/caddy/stop", caddyH.Stop)
@@ -99,6 +103,17 @@ func main() {
 	exportH := handler.NewExportHandler(hostSvc)
 	protected.GET("/config/export", exportH.Export)
 	protected.POST("/config/import", exportH.Import)
+
+	// User management
+	userH := handler.NewUserHandler(db)
+	protected.GET("/users", userH.List)
+	protected.POST("/users", userH.Create)
+	protected.PUT("/users/:id", userH.Update)
+	protected.DELETE("/users/:id", userH.Delete)
+
+	// Audit logs
+	auditH := handler.NewAuditHandler(db)
+	protected.GET("/audit/logs", auditH.List)
 
 	// ============ Frontend Static Files ============
 	setupFrontend(r)

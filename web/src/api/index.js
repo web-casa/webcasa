@@ -71,4 +71,22 @@ export const configAPI = {
     import: (data) => api.post('/config/import', data),
 }
 
+// ============ Dashboard ============
+export const dashboardAPI = {
+    stats: () => api.get('/dashboard/stats'),
+}
+
+// ============ Users ============
+export const userAPI = {
+    list: () => api.get('/users'),
+    create: (data) => api.post('/users', data),
+    update: (id, data) => api.put(`/users/${id}`, data),
+    delete: (id) => api.delete(`/users/${id}`),
+}
+
+// ============ Audit ============
+export const auditAPI = {
+    list: (params) => api.get('/audit/logs', { params }),
+}
+
 export default api

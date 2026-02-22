@@ -8,15 +8,19 @@ import {
     Settings,
     LogOut,
     User,
+    Users,
+    ClipboardList,
     ChevronDown,
 } from 'lucide-react'
 import { useAuthStore } from '../stores/auth.js'
 
 const navItems = [
     { to: '/', icon: LayoutDashboard, label: 'Dashboard', end: true },
-    { to: '/hosts', icon: Globe, label: 'Proxy Hosts' },
-    { to: '/logs', icon: FileText, label: 'Logs' },
-    { to: '/settings', icon: Settings, label: 'Settings' },
+    { to: '/hosts', icon: Globe, label: '站点管理' },
+    { to: '/logs', icon: FileText, label: '日志' },
+    { to: '/users', icon: Users, label: '用户管理' },
+    { to: '/audit', icon: ClipboardList, label: '审计日志' },
+    { to: '/settings', icon: Settings, label: '设置' },
 ]
 
 function SidebarLink({ to, icon: Icon, label, end }) {
