@@ -14,6 +14,7 @@ function SliderCaptcha({ onVerified, onReset }) {
     const [verified, setVerified] = useState(false)
     const [loading, setLoading] = useState(true)
     const trackRef = useRef(null)
+    const thumbWidth = 36
 
     const fetchChallenge = useCallback(async () => {
         setLoading(true)
@@ -32,13 +33,21 @@ function SliderCaptcha({ onVerified, onReset }) {
 
     useEffect(() => { fetchChallenge() }, [fetchChallenge])
 
+    // Convert clientX to 0-100 value based on track
     const getPosition = (clientX) => {
         if (!trackRef.current) return 0
         const rect = trackRef.current.getBoundingClientRect()
-        const thumbWidth = 36
-        const maxX = rect.width - thumbWidth
-        const x = Math.max(0, Math.min(clientX - rect.left - thumbWidth / 2, maxX))
-        return Math.round((x / maxX) * 100)
+        const maxTravel = rect.width - thumbWidth
+        const x = clientX - rect.left - thumbWidth / 2
+        const clamped = Math.max(0, Math.min(x, maxTravel))
+        return Math.round((clamped / maxTravel) * 100)
+    }
+
+    // Convert 0-100 value to pixel left offset for thumb and target
+    const toPixelLeft = (pct) => {
+        if (!trackRef.current) return 0
+        const maxTravel = trackRef.current.getBoundingClientRect().width - thumbWidth
+        return (pct / 100) * maxTravel
     }
 
     const handleStart = (clientX) => {
@@ -71,7 +80,7 @@ function SliderCaptcha({ onVerified, onReset }) {
             ref={trackRef}
             onMouseMove={(e) => handleMove(e.clientX)}
             onMouseUp={handleEnd}
-            onMouseLeave={() => { if (dragging) { setDragging(false); setValue(0); fetchChallenge() } }}
+            onMouseLeave={() => { if (dragging) { setDragging(false); setValue(0) } }}
             onTouchMove={(e) => handleMove(e.touches[0].clientX)}
             onTouchEnd={handleEnd}
         >
@@ -79,12 +88,12 @@ function SliderCaptcha({ onVerified, onReset }) {
                 {loading ? '加载中...' : verified ? '✓ 验证通过' : '拖动滑块到标记位置'}
             </div>
             {!loading && !verified && (
-                <div className="slider-captcha-target" style={{ left: `calc(${target}% - 2px)` }} />
+                <div className="slider-captcha-target" style={{ left: toPixelLeft(target) + thumbWidth / 2 - 2 }} />
             )}
-            <div className="slider-captcha-fill" style={{ width: `${value}%` }} />
+            <div className="slider-captcha-fill" style={{ width: toPixelLeft(value) + thumbWidth / 2 }} />
             <div
                 className="slider-captcha-thumb"
-                style={{ left: `calc(${value}% - 18px + ${value > 0 ? 18 : 2}px)` }}
+                style={{ left: toPixelLeft(value) }}
                 onMouseDown={(e) => { e.preventDefault(); handleStart(e.clientX) }}
                 onTouchStart={(e) => handleStart(e.touches[0].clientX)}
             >

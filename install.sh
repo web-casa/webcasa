@@ -26,9 +26,9 @@ SCRIPT_SELF="${BASH_SOURCE[0]:-}"
 if [[ -n "$SCRIPT_SELF" && -f "$(dirname "$SCRIPT_SELF")/VERSION" ]]; then
     CADDYPANEL_VERSION="$(cat "$(dirname "$SCRIPT_SELF")/VERSION" | tr -d '[:space:]')"
 elif command -v curl &>/dev/null; then
-    CADDYPANEL_VERSION="$(curl -fsSL https://api.github.com/repos/caddypanel/caddypanel/releases/latest 2>/dev/null | grep -oP '"tag_name":\s*"v?\K[^"]+' || echo "0.4.2")"
+    CADDYPANEL_VERSION="$(curl -fsSL https://api.github.com/repos/caddypanel/caddypanel/releases/latest 2>/dev/null | grep -oP '"tag_name":\s*"v?\K[^"]+' || echo "0.4.3")"
 else
-    CADDYPANEL_VERSION="0.4.2"
+    CADDYPANEL_VERSION="0.4.3"
 fi
 GITHUB_REPO="caddypanel/caddypanel"
 INSTALL_DIR="/usr/local/bin"
@@ -265,6 +265,19 @@ install_caddy() {
 # ==================== Install CaddyPanel (Download Pre-built) ====================
 install_prebuilt() {
     step "Installing CaddyPanel v${CADDYPANEL_VERSION}"
+
+    # Check GLIBC version (pre-built binary requires >= 2.32)
+    local GLIBC_VER
+    GLIBC_VER=$(ldd --version 2>&1 | head -1 | grep -oP '\d+\.\d+$' || echo "0.0")
+    local GLIBC_MAJOR="${GLIBC_VER%%.*}"
+    local GLIBC_MINOR="${GLIBC_VER##*.}"
+    if [[ "$GLIBC_MAJOR" -lt 2 ]] || { [[ "$GLIBC_MAJOR" -eq 2 ]] && [[ "$GLIBC_MINOR" -lt 32 ]]; }; then
+        error "系统 GLIBC 版本为 ${GLIBC_VER}，预编译二进制需要 GLIBC >= 2.32"
+        error "AlmaLinux/CentOS/RHEL 8 等旧发行版不支持预编译安装"
+        error "请升级到 RHEL 9 系列或 Ubuntu 22.04+，或使用源码编译："
+        error "  bash install.sh --from-source"
+        exit 1
+    fi
 
     # Determine download URL
     local TARBALL="caddypanel-${ARCH_SUFFIX}.tar.gz"
