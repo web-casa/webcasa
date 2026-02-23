@@ -1,6 +1,6 @@
 import React from 'react'
 import { createRoot } from 'react-dom/client'
-import { Theme, Tooltip } from '@radix-ui/themes'
+import { Theme } from '@radix-ui/themes'
 import App from './App.jsx'
 import './index.css'
 import { useThemeStore } from './stores/theme.js'
@@ -19,9 +19,7 @@ function Root() {
                 radius="medium"
                 scaling="100%"
             >
-                <Tooltip.Provider delayDuration={200}>
-                    <App />
-                </Tooltip.Provider>
+                <App />
             </Theme>
         </React.StrictMode>
     )

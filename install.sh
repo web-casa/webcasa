@@ -22,8 +22,9 @@ set -euo pipefail
 
 # ==================== Configuration ====================
 # Auto-detect version: local VERSION file → GitHub latest release → fallback
-if [[ -f "$(dirname "${BASH_SOURCE[0]}")/VERSION" ]]; then
-    CADDYPANEL_VERSION="$(cat "$(dirname "${BASH_SOURCE[0]}")/VERSION" | tr -d '[:space:]')"
+SCRIPT_SELF="${BASH_SOURCE[0]:-}"
+if [[ -n "$SCRIPT_SELF" && -f "$(dirname "$SCRIPT_SELF")/VERSION" ]]; then
+    CADDYPANEL_VERSION="$(cat "$(dirname "$SCRIPT_SELF")/VERSION" | tr -d '[:space:]')"
 elif command -v curl &>/dev/null; then
     CADDYPANEL_VERSION="$(curl -fsSL https://api.github.com/repos/caddypanel/caddypanel/releases/latest 2>/dev/null | grep -oP '"tag_name":\s*"v?\K[^"]+' || echo "0.4.0")"
 else
@@ -326,7 +327,7 @@ install_from_source() {
     esac
 
     # Determine source directory
-    SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+    SCRIPT_DIR="$(cd "$(dirname "${SCRIPT_SELF:-$0}")" && pwd)"
 
     if [[ -f "$SCRIPT_DIR/main.go" ]]; then
         SRC_DIR="$SCRIPT_DIR"
@@ -638,17 +639,24 @@ detect_public_ip() {
     PUBLIC_IPV4=""
     PUBLIC_IPV6=""
 
-    # Detect IPv4
-    for svc in "https://4.ip.sb" "https://ipv4.icanhazip.com" "https://ifconfig.me"; do
-        PUBLIC_IPV4=$(curl -4 -fsSL --connect-timeout 5 "$svc" 2>/dev/null | tr -d '[:space:]')
+    # Detect IPv4 (priority: icanhazip → api.ip.sb → ifconfig.me → Cloudflare trace)
+    for svc in "https://ipv4.icanhazip.com" "https://api.ip.sb/ip" "https://ifconfig.me/ip"; do
+        PUBLIC_IPV4=$(curl -4 -fsSL --connect-timeout 3 --max-time 5 "$svc" 2>/dev/null | tr -d '[:space:]')
         if [[ -n "$PUBLIC_IPV4" ]]; then break; fi
     done
+    # Fallback: Cloudflare trace (parse ip= field)
+    if [[ -z "$PUBLIC_IPV4" ]]; then
+        PUBLIC_IPV4=$(curl -4 -fsSL --connect-timeout 3 --max-time 5 "https://1.1.1.1/cdn-cgi/trace" 2>/dev/null | grep -oP '^ip=\K.*')
+    fi
 
-    # Detect IPv6
-    for svc in "https://6.ip.sb" "https://ipv6.icanhazip.com"; do
-        PUBLIC_IPV6=$(curl -6 -fsSL --connect-timeout 5 "$svc" 2>/dev/null | tr -d '[:space:]')
+    # Detect IPv6 (priority: icanhazip → api.ip.sb → Cloudflare trace)
+    for svc in "https://ipv6.icanhazip.com" "https://api.ip.sb/ip" "https://ifconfig.me/ip"; do
+        PUBLIC_IPV6=$(curl -6 -fsSL --connect-timeout 3 --max-time 5 "$svc" 2>/dev/null | tr -d '[:space:]')
         if [[ -n "$PUBLIC_IPV6" ]]; then break; fi
     done
+    if [[ -z "$PUBLIC_IPV6" ]]; then
+        PUBLIC_IPV6=$(curl -6 -fsSL --connect-timeout 3 --max-time 5 "https://[2606:4700:4700::1111]/cdn-cgi/trace" 2>/dev/null | grep -oP '^ip=\K.*')
+    fi
 
     # Write to SQLite settings table
     local DB_PATH="${DATA_DIR}/caddypanel.db"
