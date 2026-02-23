@@ -162,19 +162,94 @@ body {
   word-break: break-all;
 }
 
-/* ---- ALTCHA Widget Theme ---- */
-altcha-widget {
-  --altcha-max-width: 100%;
-  --altcha-color-base: var(--cp-text);
-  --altcha-color-text: var(--cp-text);
-  --altcha-color-border: var(--cp-border);
-  --altcha-color-border-focus: #10b981;
-  --altcha-color-footer-bg: transparent;
+/* ---- PoW Captcha ---- */
+.pow-captcha {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 12px 14px;
+  border-radius: 8px;
+  background: var(--cp-input-bg);
+  border: 1px solid var(--cp-border);
+  cursor: pointer;
+  transition: border-color 0.15s, background 0.15s;
+  user-select: none;
 }
 
-.dark-theme altcha-widget {
-  --altcha-color-base: var(--cp-text);
-  --altcha-color-text: var(--cp-text);
-  --altcha-color-border: var(--cp-border);
-  --altcha-color-border-focus: #10b981;
+.pow-captcha:hover {
+  border-color: #10b981;
+  background: var(--cp-card-hover);
+}
+
+.pow-captcha.verified {
+  border-color: #10b981;
+  cursor: default;
+}
+
+.pow-captcha.error {
+  border-color: #ef4444;
+}
+
+.pow-captcha-checkbox {
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  height: 22px;
+}
+
+.pow-captcha-box {
+  width: 18px;
+  height: 18px;
+  border-radius: 4px;
+  border: 2px solid var(--cp-text-muted);
+  transition: border-color 0.15s;
+}
+
+.pow-captcha:hover .pow-captcha-box {
+  border-color: #10b981;
+}
+
+.pow-captcha.verified .pow-captcha-checkbox {
+  color: #10b981;
+}
+
+.pow-captcha.error .pow-captcha-checkbox {
+  color: #ef4444;
+}
+
+.pow-captcha-label {
+  flex: 1;
+  font-size: 0.85rem;
+  color: var(--cp-text-secondary);
+}
+
+.pow-captcha.verified .pow-captcha-label {
+  color: #10b981;
+}
+
+.pow-captcha.error .pow-captcha-label {
+  color: #ef4444;
+}
+
+.pow-captcha-icon {
+  flex-shrink: 0;
+  color: var(--cp-text-muted);
+  opacity: 0.5;
+}
+
+@keyframes spin {
+  from {
+    transform: rotate(0deg);
+  }
+
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+.pow-captcha-spinner {
+  animation: spin 1s linear infinite;
+  color: #10b981;
 }

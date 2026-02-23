@@ -1,9 +1,105 @@
-import { useState, useEffect, useRef } from 'react'
+import { useState, useEffect, useCallback } from 'react'
 import { useNavigate } from 'react-router'
 import { Box, Card, Flex, Heading, Text, TextField, Button, Callout } from '@radix-ui/themes'
-import { Zap, AlertCircle } from 'lucide-react'
+import { Zap, AlertCircle, Check, ShieldCheck, Loader2 } from 'lucide-react'
 import { useAuthStore } from '../stores/auth.js'
-import 'altcha'
+import sha256 from '../utils/sha256.js'
+
+// ============ PoW Captcha Component ============
+// Pure JS implementation — works over HTTP (no Web Crypto needed)
+function PowCaptcha({ onVerified, onReset }) {
+    const [state, setState] = useState('idle') // idle | solving | verified | error
+    const [progress, setProgress] = useState(0)
+
+    const solve = useCallback(async () => {
+        if (state === 'solving' || state === 'verified') return
+        setState('solving')
+        setProgress(0)
+        onReset?.()
+
+        try {
+            // 1. Fetch challenge from server
+            const res = await fetch('/api/auth/altcha-challenge')
+            if (!res.ok) throw new Error('Failed to fetch challenge')
+            const challenge = await res.json()
+
+            const { salt, challenge: target, maxnumber, algorithm, signature } = challenge
+            const max = maxnumber || 50000
+
+            // 2. Solve PoW: find number n where SHA-256(salt + n) === target
+            let found = -1
+            const batchSize = 1000
+            for (let i = 0; i <= max; i++) {
+                const hash = sha256(salt + String(i))
+                if (hash === target) {
+                    found = i
+                    break
+                }
+                if (i % batchSize === 0) {
+                    setProgress(Math.min(95, Math.round((i / max) * 100)))
+                    // Yield to UI thread
+                    await new Promise(r => setTimeout(r, 0))
+                }
+            }
+
+            if (found < 0) {
+                setState('error')
+                return
+            }
+
+            // 3. Build payload (same format as Altcha library expects)
+            const payload = {
+                algorithm: algorithm || 'SHA-256',
+                challenge: target,
+                number: found,
+                salt: salt,
+                signature: signature,
+            }
+
+            const base64Payload = btoa(JSON.stringify(payload))
+            setState('verified')
+            setProgress(100)
+            onVerified?.(base64Payload)
+        } catch {
+            setState('error')
+        }
+    }, [state, onVerified, onReset])
+
+    const handleClick = () => {
+        if (state === 'error') {
+            setState('idle')
+        }
+        if (state === 'idle' || state === 'error') {
+            solve()
+        }
+    }
+
+    return (
+        <div
+            className={`pow-captcha ${state}`}
+            onClick={handleClick}
+            role="button"
+            tabIndex={0}
+            onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') handleClick() }}
+        >
+            <div className="pow-captcha-checkbox">
+                {state === 'idle' && <div className="pow-captcha-box" />}
+                {state === 'solving' && <Loader2 size={18} className="pow-captcha-spinner" />}
+                {state === 'verified' && <Check size={18} />}
+                {state === 'error' && <AlertCircle size={16} />}
+            </div>
+            <div className="pow-captcha-label">
+                {state === 'idle' && '点击进行安全验证'}
+                {state === 'solving' && `验证中... ${progress}%`}
+                {state === 'verified' && '验证通过'}
+                {state === 'error' && '验证失败，点击重试'}
+            </div>
+            <div className="pow-captcha-icon">
+                <ShieldCheck size={20} />
+            </div>
+        </div>
+    )
+}
 
 // ============ Login Page ============
 export default function Login() {
@@ -14,23 +110,15 @@ export default function Login() {
     const [error, setError] = useState('')
     const [submitting, setSubmitting] = useState(false)
     const [altchaPayload, setAltchaPayload] = useState('')
-    const altchaRef = useRef(null)
+    const [captchaKey, setCaptchaKey] = useState(0)
 
-    useEffect(() => {
-        const widget = altchaRef.current
-        if (!widget) return
+    const handleVerified = (payload) => {
+        setAltchaPayload(payload)
+    }
 
-        const handleStateChange = (e) => {
-            if (e.detail?.state === 'verified') {
-                setAltchaPayload(e.detail.payload || '')
-            } else {
-                setAltchaPayload('')
-            }
-        }
-
-        widget.addEventListener('statechange', handleStateChange)
-        return () => widget.removeEventListener('statechange', handleStateChange)
-    }, [needSetup, loading])
+    const handleCaptchaReset = () => {
+        setAltchaPayload('')
+    }
 
     const handleSubmit = async (e) => {
         e.preventDefault()
@@ -52,11 +140,9 @@ export default function Login() {
         } catch (err) {
             const msg = err.response?.data?.error || 'Connection failed'
             setError(msg)
-            // Reset altcha widget on error
+            // Reset captcha on error
             setAltchaPayload('')
-            if (altchaRef.current) {
-                altchaRef.current.reset?.()
-            }
+            setCaptchaKey(k => k + 1)
         } finally {
             setSubmitting(false)
         }
@@ -168,17 +254,13 @@ export default function Login() {
                                 />
                             </Flex>
 
-                            {/* ALTCHA PoW verification (not shown during initial setup) */}
+                            {/* PoW verification (not shown during initial setup) */}
                             {!needSetup && (
-                                <Flex direction="column" gap="1">
-                                    <Text size="1" color="gray">安全验证</Text>
-                                    <altcha-widget
-                                        ref={altchaRef}
-                                        challengeurl="/api/auth/altcha-challenge"
-                                        hidefooter
-                                        hidelogo
-                                    />
-                                </Flex>
+                                <PowCaptcha
+                                    key={captchaKey}
+                                    onVerified={handleVerified}
+                                    onReset={handleCaptchaReset}
+                                />
                             )}
 
                             <Button
