@@ -597,17 +597,7 @@ function HostFormDialog({ open, onClose, onSaved, host }) {
                                             onChange={(e) => setForm({ ...form, custom_directives: e.target.value })}
                                             placeholder={'encode gzip zstd\nrate_limit {remote.ip} 10r/s'}
                                             rows={4}
-                                            style={{
-                                                width: '100%',
-                                                background: '#09090b',
-                                                border: '1px solid var(--cp-border-subtle)',
-                                                borderRadius: 6,
-                                                padding: '8px 12px',
-                                                color: '#e4e4e7',
-                                                fontFamily: 'monospace',
-                                                fontSize: '0.8rem',
-                                                resize: 'vertical',
-                                            }}
+                                            className="custom-textarea"
                                         />
                                     </Box>
                                 </Flex>
@@ -813,7 +803,7 @@ export default function HostList() {
             <Flex direction="column" gap="1">
                 {(host.upstreams || []).map((u, i) => (
                     <Flex key={i} align="center" gap="1">
-                        <ChevronRight size={12} color="#52525b" />
+                        <ChevronRight size={12} style={{ color: 'var(--cp-text-muted)' }} />
                         <Text size="2" color="gray">{u.address}</Text>
                     </Flex>
                 ))}
@@ -843,7 +833,7 @@ export default function HostList() {
             ) : hosts.length === 0 ? (
                 <Card style={{ background: 'var(--cp-card)', border: '1px solid var(--cp-border)' }}>
                     <Flex direction="column" align="center" gap="3" p="6">
-                        <Globe size={48} strokeWidth={1} color="#3f3f46" />
+                        <Globe size={48} strokeWidth={1} style={{ color: 'var(--cp-text-muted)' }} />
                         <Text size="3" color="gray">No proxy hosts configured</Text>
                         <Button onClick={openCreate}>
                             <Plus size={16} /> Add Your First Host

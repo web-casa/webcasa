@@ -125,7 +125,7 @@ export default function Logs() {
                                     size="2"
                                 >
                                     <TextField.Slot>
-                                        <Search size={14} color="#71717a" />
+                                        <Search size={14} style={{ color: 'var(--cp-text-muted)' }} />
                                     </TextField.Slot>
                                 </TextField.Root>
                                 <Button type="submit" variant="soft" size="2">
@@ -150,10 +150,10 @@ export default function Logs() {
                     align="center"
                     px="4"
                     py="2"
-                    style={{ borderBottom: '1px solid #1e1e22' }}
+                    style={{ borderBottom: '1px solid var(--cp-border)' }}
                 >
                     <Flex align="center" gap="2">
-                        <FileText size={14} color="#71717a" />
+                        <FileText size={14} style={{ color: 'var(--cp-text-muted)' }} />
                         <Text size="1" color="gray">{logType}</Text>
                     </Flex>
                     <Badge variant="soft" size="1">

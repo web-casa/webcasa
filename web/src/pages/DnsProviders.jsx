@@ -151,7 +151,7 @@ export default function DnsProviders() {
             ) : providers.length === 0 ? (
                 <Card style={{ background: 'var(--cp-input-bg)', border: '1px solid var(--cp-border-subtle)' }}>
                     <Flex direction="column" align="center" gap="3" py="6">
-                        <Shield size={40} color="#52525b" />
+                        <Shield size={40} style={{ color: 'var(--cp-text-muted)' }} />
                         <Text color="gray">还没有配置 DNS Provider</Text>
                         <Button variant="soft" size="2" onClick={openCreate}>
                             <Plus size={14} /> 添加第一个

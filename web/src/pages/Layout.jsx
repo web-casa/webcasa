@@ -36,36 +36,7 @@ const navItems = [
 
 function SidebarLink({ to, icon: Icon, label, end }) {
     return (
-        <NavLink
-            to={to}
-            end={end}
-            style={({ isActive }) => ({
-                display: 'flex',
-                alignItems: 'center',
-                gap: 10,
-                padding: '10px 14px',
-                borderRadius: 8,
-                textDecoration: 'none',
-                fontSize: '0.875rem',
-                fontWeight: isActive ? 600 : 400,
-                color: isActive ? '#10b981' : 'var(--cp-text-secondary)',
-                background: isActive ? 'var(--cp-nav-active)' : 'transparent',
-                transition: 'all 0.15s ease',
-            })}
-            onMouseEnter={(e) => {
-                if (!e.currentTarget.classList.contains('active')) {
-                    e.currentTarget.style.background = 'var(--cp-nav-hover)'
-                    e.currentTarget.style.color = 'var(--cp-text)'
-                }
-            }}
-            onMouseLeave={(e) => {
-                const isActive = e.currentTarget.getAttribute('aria-current') === 'page'
-                if (!isActive) {
-                    e.currentTarget.style.background = 'transparent'
-                    e.currentTarget.style.color = 'var(--cp-text-secondary)'
-                }
-            }}
-        >
+        <NavLink to={to} end={end} className="sidebar-link">
             <Icon size={18} />
             <span>{label}</span>
         </NavLink>
@@ -138,23 +109,8 @@ export default function Layout() {
                     {/* Theme toggle */}
                     <button
                         onClick={toggleTheme}
-                        style={{
-                            width: '100%',
-                            display: 'flex',
-                            alignItems: 'center',
-                            gap: 8,
-                            padding: '8px 10px',
-                            marginBottom: 4,
-                            borderRadius: 6,
-                            border: 'none',
-                            background: 'transparent',
-                            color: 'var(--cp-text-secondary)',
-                            cursor: 'pointer',
-                            fontSize: 13,
-                            transition: 'background 0.15s',
-                        }}
-                        onMouseEnter={(e) => e.currentTarget.style.background = 'var(--cp-nav-hover)'}
-                        onMouseLeave={(e) => e.currentTarget.style.background = 'transparent'}
+                        className="sidebar-btn"
+                        style={{ marginBottom: 4 }}
                     >
                         {theme === 'dark' ? <Sun size={16} /> : <Moon size={16} />}
                         <span>{theme === 'dark' ? '浅色模式' : '深色模式'}</span>
@@ -162,22 +118,8 @@ export default function Layout() {
 
                     {/* User menu */}
                     <DropdownMenu.Root>
-                        <DropdownMenu.Trigger>
-                            <button
-                                style={{
-                                    width: '100%',
-                                    display: 'flex',
-                                    alignItems: 'center',
-                                    gap: 8,
-                                    padding: '8px 10px',
-                                    borderRadius: 6,
-                                    border: 'none',
-                                    background: 'transparent',
-                                    color: 'var(--cp-text-secondary)',
-                                    cursor: 'pointer',
-                                    fontSize: 13,
-                                }}
-                            >
+                        <DropdownMenu.Trigger asChild>
+                            <button className="sidebar-btn">
                                 <User size={16} />
                                 <span style={{ flex: 1, textAlign: 'left' }}>
                                     {user?.username || 'Admin'}

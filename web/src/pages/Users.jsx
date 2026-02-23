@@ -90,7 +90,6 @@ export default function Users() {
                 <Callout.Root
                     color={message.type === 'error' ? 'red' : 'green'}
                     mb="4"
-                    style={{ background: message.type === 'error' ? '#1a0505' : '#051a05' }}
                 >
                     <Callout.Icon>
                         {message.type === 'error' ? <AlertCircle size={16} /> : <CheckCircle2 size={16} />}

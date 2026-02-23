@@ -95,6 +95,70 @@ body {
   background: var(--cp-scrollbar-hover);
 }
 
+/* ---- Sidebar links & buttons ---- */
+.sidebar-link {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 14px;
+  border-radius: 8px;
+  text-decoration: none;
+  font-size: 0.875rem;
+  font-weight: 400;
+  color: var(--cp-text-secondary);
+  background: transparent;
+  transition: all 0.15s ease;
+}
+
+.sidebar-link:hover {
+  background: var(--cp-nav-hover);
+  color: var(--cp-text);
+}
+
+.sidebar-link[aria-current="page"],
+.sidebar-link.active {
+  font-weight: 600;
+  color: #10b981;
+  background: var(--cp-nav-active);
+}
+
+.sidebar-btn {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 10px;
+  border-radius: 6px;
+  border: none;
+  background: transparent;
+  color: var(--cp-text-secondary);
+  cursor: pointer;
+  font-size: 13px;
+  transition: background 0.15s;
+}
+
+.sidebar-btn:hover {
+  background: var(--cp-nav-hover);
+}
+
+/* ---- Custom textarea ---- */
+.custom-textarea {
+  width: 100%;
+  background: var(--cp-code-bg);
+  border: 1px solid var(--cp-border-subtle);
+  border-radius: 6px;
+  padding: 8px 12px;
+  color: var(--cp-text);
+  font-family: 'JetBrains Mono', 'Fira Code', 'Cascadia Code', monospace;
+  font-size: 0.8rem;
+  resize: vertical;
+}
+
+.custom-textarea:focus {
+  outline: none;
+  border-color: #10b981;
+}
+
 /* Log viewer monospace */
 .log-viewer {
   font-family: 'JetBrains Mono', 'Fira Code', 'Cascadia Code', monospace;

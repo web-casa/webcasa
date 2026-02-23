@@ -78,7 +78,7 @@ export default function Certificates() {
             <Card style={{ background: 'var(--cp-card)', border: '1px solid var(--cp-border)' }}>
                 {certs.length === 0 ? (
                     <Flex direction="column" align="center" justify="center" py="8">
-                        <ShieldCheck size={40} color="#3f3f46" />
+                        <ShieldCheck size={40} style={{ color: 'var(--cp-text-muted)' }} />
                         <Text size="2" color="gray" mt="3">
                             {loading ? '加载中...' : '暂无证书，点击上方"上传证书"按钮添加'}
                         </Text>

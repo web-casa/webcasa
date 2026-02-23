@@ -52,12 +52,12 @@ function StatCard({ icon: Icon, label, value, color = 'green', loading, tooltip 
 
 function InfoRow({ label, value, color }) {
     return (
-        <Flex justify="between" align="center" py="2" style={{ borderBottom: '1px solid #1e1e22' }}>
+        <Flex justify="between" align="center" py="2" style={{ borderBottom: '1px solid var(--cp-border-subtle)' }}>
             <Text size="2" color="gray">{label}</Text>
             {color ? (
                 <Badge color={color} size="1">{value}</Badge>
             ) : (
-                <Text size="2" style={{ color: '#e0e0e0' }}>{value}</Text>
+                <Text size="2" style={{ color: 'var(--cp-text)' }}>{value}</Text>
             )}
         </Flex>
     )
