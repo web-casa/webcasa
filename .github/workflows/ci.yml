@@ -146,15 +146,43 @@ jobs:
 
       - name: 'Test: Login'
         run: |
-          # First, get a slider challenge
-          CHALLENGE=$(curl -sf http://localhost:$PANEL_PORT/api/auth/challenge)
-          CHALLENGE_TOKEN=$(echo "$CHALLENGE" | jq -r '.token')
-          CHALLENGE_TARGET=$(echo "$CHALLENGE" | jq -r '.target')
-          echo "Challenge token: ${CHALLENGE_TOKEN:0:8}..., target: $CHALLENGE_TARGET"
+          # First, get an ALTCHA challenge
+          CHALLENGE_JSON=$(curl -sf http://localhost:$PANEL_PORT/api/auth/altcha-challenge)
+          echo "Challenge received: $CHALLENGE_JSON"
+
+          # Extract fields
+          CHALLENGE=$(echo "$CHALLENGE_JSON" | jq -r '.challenge')
+          SALT=$(echo "$CHALLENGE_JSON" | jq -r '.salt')
+          ALGORITHM=$(echo "$CHALLENGE_JSON" | jq -r '.algorithm')
+          SIGNATURE=$(echo "$CHALLENGE_JSON" | jq -r '.signature')
+
+          # Solve PoW using Node.js (available in CI environment)
+          NUMBER=$(SALT="$SALT" CHALLENGE="$CHALLENGE" node -e "
+            const crypto = require('crypto');
+            const salt = process.env.SALT;
+            const challenge = process.env.CHALLENGE;
+            for(let i=0; i<=50000; i++) {
+              if(crypto.createHash('sha256').update(salt + i).digest('hex') === challenge) {
+                console.log(i);
+                process.exit(0);
+              }
+            }
+          ")
+          echo "Solved PoW: $NUMBER"
+
+          # Construct payload and base64 encode
+          PAYLOAD_JSON=$(jq -n \
+            --arg alg "$ALGORITHM" \
+            --arg chal "$CHALLENGE" \
+            --argjson num "$NUMBER" \
+            --arg salt "$SALT" \
+            --arg sig "$SIGNATURE" \
+            '{algorithm: $alg, challenge: $chal, number: $num, salt: $salt, signature: $sig}')
+          ALTCHA_B64=$(echo -n "$PAYLOAD_JSON" | base64 -w 0)
 
           RESPONSE=$(curl -sf -X POST http://localhost:$PANEL_PORT/api/auth/login \
             -H 'Content-Type: application/json' \
-            -d "{\"username\":\"admin\",\"password\":\"testpassword123\",\"challenge_token\":\"$CHALLENGE_TOKEN\",\"slider_value\":$CHALLENGE_TARGET}")
+            -d "{\"username\":\"admin\",\"password\":\"testpassword123\",\"altcha\":\"$ALTCHA_B64\"}")
           TOKEN=$(echo "$RESPONSE" | jq -r '.token')
           echo "TOKEN=$TOKEN" >> $GITHUB_ENV
           echo "✅ Login succeeded"
