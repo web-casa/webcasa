@@ -267,8 +267,17 @@ install_prebuilt() {
     step "Installing CaddyPanel v${CADDYPANEL_VERSION}"
 
     # Check GLIBC version (pre-built binary requires >= 2.32)
-    local GLIBC_VER
-    GLIBC_VER=$(ldd --version 2>&1 | head -1 | grep -oP '\d+\.\d+$' || echo "0.0")
+    local GLIBC_VER="0.0"
+    if command -v ldd &>/dev/null; then
+        # Try isolating the version string (e.g. "2.35") from the first line securely
+        local RAW_VER
+        RAW_VER=$(ldd --version 2>&1 | awk 'NR==1 {print $NF}')
+        # Ensure the string only contains numbers and a dot
+        if [[ "$RAW_VER" =~ ^[0-9]+\.[0-9]+ ]]; then
+            GLIBC_VER="$RAW_VER"
+        fi
+    fi
+
     local GLIBC_MAJOR="${GLIBC_VER%%.*}"
     local GLIBC_MINOR="${GLIBC_VER##*.}"
     if [[ "$GLIBC_MAJOR" -lt 2 ]] || { [[ "$GLIBC_MAJOR" -eq 2 ]] && [[ "$GLIBC_MINOR" -lt 32 ]]; }; then
