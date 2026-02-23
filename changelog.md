@@ -6,6 +6,19 @@
 
 ---
 
+## [0.4.1] - 2026-02-23
+
+### Fixed
+- 🐛 修复 `Tooltip.Provider` 在 Radix UI Themes v3 中为 undefined 导致前端白屏 (React error #130)
+- 🐛 修复 `install.sh` 通过 `curl | bash` 管道执行时 `BASH_SOURCE[0]` unbound variable 错误
+- 🐛 修复 CI 集成测试中登录步骤未传 slider challenge 参数导致测试失败
+
+### Changed
+- 🔄 IP 检测方案优化 — 按优先级 icanhazip.com → api.ip.sb → ifconfig.me → Cloudflare trace 多级 fallback
+- 🔄 IP 检测超时从 5s 缩短为 3s（connect-timeout），总超时 5s（max-time）
+
+---
+
 ## [0.4.0] - 2026-02-23
 
 ### Added — Phase 5: 安全增强与主题系统
