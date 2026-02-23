@@ -26,9 +26,9 @@ SCRIPT_SELF="${BASH_SOURCE[0]:-}"
 if [[ -n "$SCRIPT_SELF" && -f "$(dirname "$SCRIPT_SELF")/VERSION" ]]; then
     CADDYPANEL_VERSION="$(cat "$(dirname "$SCRIPT_SELF")/VERSION" | tr -d '[:space:]')"
 elif command -v curl &>/dev/null; then
-    CADDYPANEL_VERSION="$(curl -fsSL https://api.github.com/repos/caddypanel/caddypanel/releases/latest 2>/dev/null | grep -oP '"tag_name":\s*"v?\K[^"]+' || echo "0.4.3")"
+    CADDYPANEL_VERSION="$(curl -fsSL https://api.github.com/repos/caddypanel/caddypanel/releases/latest 2>/dev/null | grep -oP '"tag_name":\s*"v?\K[^"]+' || echo "0.4.4")"
 else
-    CADDYPANEL_VERSION="0.4.3"
+    CADDYPANEL_VERSION="0.4.4"
 fi
 GITHUB_REPO="caddypanel/caddypanel"
 INSTALL_DIR="/usr/local/bin"
