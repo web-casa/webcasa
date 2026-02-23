@@ -1,5 +1,5 @@
 import { NavLink, Outlet, useNavigate } from 'react-router'
-import { Box, Flex, Text, Button, DropdownMenu, Separator, Tooltip } from '@radix-ui/themes'
+import { Box, Flex, Text, DropdownMenu, Separator } from '@radix-ui/themes'
 import { useState, useEffect } from 'react'
 import {
     Zap,
@@ -15,8 +15,11 @@ import {
     Users,
     ClipboardList,
     ChevronDown,
+    Sun,
+    Moon,
 } from 'lucide-react'
 import { useAuthStore } from '../stores/auth.js'
+import { useThemeStore } from '../stores/theme.js'
 import { dashboardAPI } from '../api/index.js'
 
 const navItems = [
@@ -45,21 +48,21 @@ function SidebarLink({ to, icon: Icon, label, end }) {
                 textDecoration: 'none',
                 fontSize: '0.875rem',
                 fontWeight: isActive ? 600 : 400,
-                color: isActive ? '#10b981' : '#a1a1aa',
-                background: isActive ? 'rgba(16, 185, 129, 0.08)' : 'transparent',
+                color: isActive ? '#10b981' : 'var(--cp-text-secondary)',
+                background: isActive ? 'var(--cp-nav-active)' : 'transparent',
                 transition: 'all 0.15s ease',
             })}
             onMouseEnter={(e) => {
                 if (!e.currentTarget.classList.contains('active')) {
-                    e.currentTarget.style.background = 'rgba(255,255,255,0.04)'
-                    e.currentTarget.style.color = '#d4d4d8'
+                    e.currentTarget.style.background = 'var(--cp-nav-hover)'
+                    e.currentTarget.style.color = 'var(--cp-text)'
                 }
             }}
             onMouseLeave={(e) => {
                 const isActive = e.currentTarget.getAttribute('aria-current') === 'page'
                 if (!isActive) {
                     e.currentTarget.style.background = 'transparent'
-                    e.currentTarget.style.color = '#a1a1aa'
+                    e.currentTarget.style.color = 'var(--cp-text-secondary)'
                 }
             }}
         >
@@ -72,6 +75,7 @@ function SidebarLink({ to, icon: Icon, label, end }) {
 export default function Layout() {
     const navigate = useNavigate()
     const { user, logout } = useAuthStore()
+    const { theme, toggle: toggleTheme } = useThemeStore()
     const [version, setVersion] = useState('')
 
     useEffect(() => {
@@ -92,8 +96,8 @@ export default function Layout() {
                 style={{
                     width: 220,
                     minWidth: 220,
-                    background: '#111113',
-                    borderRight: '1px solid #27272a',
+                    background: 'var(--cp-sidebar)',
+                    borderRight: '1px solid var(--cp-border)',
                     display: 'flex',
                     flexDirection: 'column',
                 }}
@@ -113,12 +117,12 @@ export default function Layout() {
                     >
                         <Zap size={18} color="white" />
                     </Box>
-                    <Text size="4" weight="bold" style={{ color: '#fafafa' }}>
+                    <Text size="4" weight="bold" style={{ color: 'var(--cp-text)' }}>
                         CaddyPanel
                     </Text>
                 </Flex>
 
-                <Separator size="4" style={{ background: '#27272a' }} />
+                <Separator size="4" style={{ background: 'var(--cp-border)' }} />
 
                 {/* Nav items */}
                 <Box style={{ flex: 1, padding: '8px 12px' }}>
@@ -129,8 +133,34 @@ export default function Layout() {
                     </Flex>
                 </Box>
 
-                {/* User menu */}
-                <Box p="3" style={{ borderTop: '1px solid #27272a' }}>
+                {/* Bottom: theme toggle + user menu */}
+                <Box p="3" style={{ borderTop: '1px solid var(--cp-border)' }}>
+                    {/* Theme toggle */}
+                    <button
+                        onClick={toggleTheme}
+                        style={{
+                            width: '100%',
+                            display: 'flex',
+                            alignItems: 'center',
+                            gap: 8,
+                            padding: '8px 10px',
+                            marginBottom: 4,
+                            borderRadius: 6,
+                            border: 'none',
+                            background: 'transparent',
+                            color: 'var(--cp-text-secondary)',
+                            cursor: 'pointer',
+                            fontSize: 13,
+                            transition: 'background 0.15s',
+                        }}
+                        onMouseEnter={(e) => e.currentTarget.style.background = 'var(--cp-nav-hover)'}
+                        onMouseLeave={(e) => e.currentTarget.style.background = 'transparent'}
+                    >
+                        {theme === 'dark' ? <Sun size={16} /> : <Moon size={16} />}
+                        <span>{theme === 'dark' ? '浅色模式' : '深色模式'}</span>
+                    </button>
+
+                    {/* User menu */}
                     <DropdownMenu.Root>
                         <DropdownMenu.Trigger>
                             <button
@@ -143,7 +173,7 @@ export default function Layout() {
                                     borderRadius: 6,
                                     border: 'none',
                                     background: 'transparent',
-                                    color: '#d4d4d8',
+                                    color: 'var(--cp-text-secondary)',
                                     cursor: 'pointer',
                                     fontSize: 13,
                                 }}
@@ -169,7 +199,7 @@ export default function Layout() {
             <Box
                 style={{
                     flex: 1,
-                    background: '#09090b',
+                    background: 'var(--cp-bg)',
                     overflow: 'auto',
                     position: 'relative',
                 }}
@@ -184,7 +214,7 @@ export default function Layout() {
                             position: 'fixed',
                             bottom: 8,
                             right: 12,
-                            color: '#3f3f46',
+                            color: 'var(--cp-text-muted)',
                             userSelect: 'none',
                             fontFamily: 'monospace',
                             fontSize: '0.7rem',

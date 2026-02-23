@@ -33,6 +33,7 @@ export const authAPI = {
     setup: (data) => api.post('/auth/setup', data),
     login: (data) => api.post('/auth/login', data),
     me: () => api.get('/auth/me'),
+    challenge: () => api.get('/auth/challenge'),
 }
 
 // ============ Hosts ============

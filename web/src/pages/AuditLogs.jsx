@@ -44,13 +44,13 @@ export default function AuditLogs() {
         <Box>
             <Flex align="center" gap="2" mb="1">
                 <ClipboardList size={22} style={{ color: 'var(--violet-9)' }} />
-                <Heading size="6" style={{ color: '#fafafa' }}>审计日志</Heading>
+                <Heading size="6" style={{ color: 'var(--cp-text)' }}>审计日志</Heading>
             </Flex>
             <Text size="2" color="gray" mb="5" as="p">
                 记录所有管理操作 · 共 {total} 条
             </Text>
 
-            <Card style={{ background: '#111113', border: '1px solid #1e1e22' }}>
+            <Card style={{ background: 'var(--cp-card)', border: '1px solid var(--cp-border)' }}>
                 {loading ? (
                     <Flex justify="center" p="6"><Spinner size="3" /></Flex>
                 ) : (

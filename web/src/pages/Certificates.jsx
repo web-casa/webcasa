@@ -58,7 +58,7 @@ export default function Certificates() {
         <Box>
             <Flex justify="between" align="center" mb="4">
                 <Box>
-                    <Heading size="6" mb="1" style={{ color: '#fafafa' }}>证书管理</Heading>
+                    <Heading size="6" mb="1" style={{ color: 'var(--cp-text)' }}>证书管理</Heading>
                     <Text size="2" color="gray">管理 SSL/TLS 证书，可在站点配置中引用</Text>
                 </Box>
                 <Button onClick={() => setUploadOpen(true)}>
@@ -75,7 +75,7 @@ export default function Certificates() {
                 </Callout.Root>
             )}
 
-            <Card style={{ background: '#111113', border: '1px solid #1e1e22' }}>
+            <Card style={{ background: 'var(--cp-card)', border: '1px solid var(--cp-border)' }}>
                 {certs.length === 0 ? (
                     <Flex direction="column" align="center" justify="center" py="8">
                         <ShieldCheck size={40} color="#3f3f46" />
@@ -104,7 +104,7 @@ export default function Certificates() {
                                         </Flex>
                                     </Table.Cell>
                                     <Table.Cell>
-                                        <Text size="1" style={{ fontFamily: 'monospace', color: '#a1a1aa' }}>
+                                        <Text size="1" style={{ fontFamily: 'monospace', color: 'var(--cp-text-secondary)' }}>
                                             {cert.domains || '—'}
                                         </Text>
                                     </Table.Cell>

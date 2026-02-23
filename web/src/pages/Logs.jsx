@@ -64,7 +64,7 @@ export default function Logs() {
         <Box>
             <Flex justify="between" align="center" mb="5">
                 <Box>
-                    <Heading size="6" style={{ color: '#fafafa' }}>Logs</Heading>
+                    <Heading size="6" style={{ color: 'var(--cp-text)' }}>Logs</Heading>
                     <Text size="2" color="gray">View Caddy access and error logs</Text>
                 </Box>
                 <Flex gap="2">
@@ -80,7 +80,7 @@ export default function Logs() {
             </Flex>
 
             {/* Controls */}
-            <Card style={{ background: '#111113', border: '1px solid #1e1e22' }} mb="4">
+            <Card style={{ background: 'var(--cp-card)', border: '1px solid var(--cp-border)' }} mb="4">
                 <Flex gap="3" align="end" wrap="wrap">
                     <Flex direction="column" gap="1" style={{ minWidth: 180 }}>
                         <Text size="1" weight="medium" color="gray">Log File</Text>
@@ -140,8 +140,8 @@ export default function Logs() {
             {/* Log Content */}
             <Card
                 style={{
-                    background: '#0a0a0b',
-                    border: '1px solid #1e1e22',
+                    background: 'var(--cp-code-bg)',
+                    border: '1px solid var(--cp-border)',
                     padding: 0,
                 }}
             >
@@ -186,10 +186,10 @@ export default function Logs() {
                                         gap: 12,
                                     }}
                                 >
-                                    <span style={{ color: '#3f3f46', userSelect: 'none', minWidth: 40, textAlign: 'right' }}>
+                                    <span style={{ color: 'var(--cp-text-muted)', userSelect: 'none', minWidth: 40, textAlign: 'right' }}>
                                         {i + 1}
                                     </span>
-                                    <span style={{ color: '#d4d4d8' }}>{line}</span>
+                                    <span style={{ color: 'var(--cp-text)' }}>{line}</span>
                                 </div>
                             ))}
                             <div ref={logEndRef} />

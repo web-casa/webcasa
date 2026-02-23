@@ -130,7 +130,7 @@ export default function DnsProviders() {
         <Box>
             <Flex justify="between" align="center" mb="5">
                 <Box>
-                    <Text size="5" weight="bold" style={{ color: '#fafafa' }}>
+                    <Text size="5" weight="bold" style={{ color: 'var(--cp-text)' }}>
                         DNS Providers
                     </Text>
                     <Text size="2" color="gray" as="p">
@@ -149,7 +149,7 @@ export default function DnsProviders() {
             {loading ? (
                 <Text color="gray">加载中...</Text>
             ) : providers.length === 0 ? (
-                <Card style={{ background: '#18181b', border: '1px solid #27272a' }}>
+                <Card style={{ background: 'var(--cp-input-bg)', border: '1px solid var(--cp-border-subtle)' }}>
                     <Flex direction="column" align="center" gap="3" py="6">
                         <Shield size={40} color="#52525b" />
                         <Text color="gray">还没有配置 DNS Provider</Text>
@@ -211,7 +211,7 @@ export default function DnsProviders() {
 
             {/* Create/Edit Dialog */}
             <Dialog.Root open={dialogOpen} onOpenChange={(o) => !o && setDialogOpen(false)}>
-                <Dialog.Content maxWidth="480px" style={{ background: '#111113' }}>
+                <Dialog.Content maxWidth="480px" style={{ background: 'var(--cp-card)' }}>
                     <Dialog.Title>{editId ? '编辑 DNS Provider' : '添加 DNS Provider'}</Dialog.Title>
                     <Dialog.Description size="2" color="gray" mb="4">
                         配置 DNS API 凭据用于证书 DNS 验证
@@ -250,9 +250,9 @@ export default function DnsProviders() {
                         </Flex>
 
                         {providerDef && (
-                            <Card style={{ background: '#18181b', border: '1px solid #27272a' }}>
+                            <Card style={{ background: 'var(--cp-input-bg)', border: '1px solid var(--cp-border-subtle)' }}>
                                 <Flex direction="column" gap="2">
-                                    <Text size="2" weight="bold" style={{ color: '#a1a1aa' }}>
+                                    <Text size="2" weight="bold" style={{ color: 'var(--cp-text-secondary)' }}>
                                         API 凭据
                                     </Text>
                                     {providerDef.fields.map((f) => (
@@ -302,7 +302,7 @@ export default function DnsProviders() {
 
             {/* Delete confirm */}
             <Dialog.Root open={!!deleteId} onOpenChange={(o) => !o && setDeleteId(null)}>
-                <Dialog.Content maxWidth="400px" style={{ background: '#111113' }}>
+                <Dialog.Content maxWidth="400px" style={{ background: 'var(--cp-card)' }}>
                     <Dialog.Title>确认删除</Dialog.Title>
                     <Dialog.Description size="2" color="gray">
                         删除后使用此 Provider 的站点将无法续签证书，确定要继续吗？

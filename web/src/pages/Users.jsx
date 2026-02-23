@@ -78,7 +78,7 @@ export default function Users() {
         <Box>
             <Flex justify="between" align="center" mb="4">
                 <Box>
-                    <Heading size="6" style={{ color: '#fafafa' }}>用户管理</Heading>
+                    <Heading size="6" style={{ color: 'var(--cp-text)' }}>用户管理</Heading>
                     <Text size="2" color="gray">管理面板用户和权限</Text>
                 </Box>
                 <Button onClick={openCreate}>
@@ -99,7 +99,7 @@ export default function Users() {
                 </Callout.Root>
             )}
 
-            <Card style={{ background: '#111113', border: '1px solid #1e1e22' }}>
+            <Card style={{ background: 'var(--cp-card)', border: '1px solid var(--cp-border)' }}>
                 <Table.Root>
                     <Table.Header>
                         <Table.Row>

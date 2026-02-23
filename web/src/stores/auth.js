@@ -27,8 +27,13 @@ export const useAuthStore = create((set) => ({
         }
     },
 
-    login: async (username, password) => {
-        const res = await authAPI.login({ username, password })
+    login: async (username, password, challengeToken, sliderValue) => {
+        const res = await authAPI.login({
+            username,
+            password,
+            challenge_token: challengeToken,
+            slider_value: sliderValue,
+        })
         const { token, user } = res.data
         localStorage.setItem('token', token)
         set({ token, user })

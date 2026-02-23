@@ -10,8 +10,8 @@ function StatCard({ icon: Icon, label, value, color = 'green', loading, tooltip 
     const card = (
         <Card
             style={{
-                background: '#111113',
-                border: '1px solid #1e1e22',
+                background: 'var(--cp-card)',
+                border: '1px solid var(--cp-border)',
             }}
         >
             <Flex align="center" gap="4" p="1">
@@ -35,7 +35,7 @@ function StatCard({ icon: Icon, label, value, color = 'green', loading, tooltip 
                     {loading ? (
                         <Spinner size="1" />
                     ) : (
-                        <Text size="5" weight="bold" style={{ color: '#fafafa', display: 'block' }}>
+                        <Text size="5" weight="bold" style={{ color: 'var(--cp-text)', display: 'block' }}>
                             {value}
                         </Text>
                     )}
@@ -89,7 +89,7 @@ export default function Dashboard() {
 
     return (
         <Box>
-            <Heading size="6" mb="1" style={{ color: '#fafafa' }}>
+            <Heading size="6" mb="1" style={{ color: 'var(--cp-text)' }}>
                 Dashboard
             </Heading>
             <Text size="2" color="gray" mb="5" as="p">
@@ -140,7 +140,7 @@ export default function Dashboard() {
             {/* Detail Cards */}
             <Grid columns={{ initial: '1', md: '3' }} gap="4" mb="5">
                 {/* Host Breakdown */}
-                <Card style={{ background: '#111113', border: '1px solid #1e1e22' }}>
+                <Card style={{ background: 'var(--cp-card)', border: '1px solid var(--cp-border)' }}>
                     <Flex align="center" gap="2" mb="3">
                         <Globe size={16} style={{ color: 'var(--green-9)' }} />
                         <Heading size="3">站点分布</Heading>
@@ -152,7 +152,7 @@ export default function Dashboard() {
                 </Card>
 
                 {/* TLS Breakdown */}
-                <Card style={{ background: '#111113', border: '1px solid #1e1e22' }}>
+                <Card style={{ background: 'var(--cp-card)', border: '1px solid var(--cp-border)' }}>
                     <Flex align="center" gap="2" mb="3">
                         <ShieldCheck size={16} style={{ color: 'var(--violet-9)' }} />
                         <Heading size="3">TLS 状态</Heading>
@@ -180,7 +180,7 @@ export default function Dashboard() {
                 </Card>
 
                 {/* System Info */}
-                <Card style={{ background: '#111113', border: '1px solid #1e1e22' }}>
+                <Card style={{ background: 'var(--cp-card)', border: '1px solid var(--cp-border)' }}>
                     <Flex align="center" gap="2" mb="3">
                         <Monitor size={16} style={{ color: 'var(--orange-9)' }} />
                         <Heading size="3">系统信息</Heading>

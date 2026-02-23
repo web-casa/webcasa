@@ -66,10 +66,13 @@ func main() {
 	api := r.Group("/api")
 
 	// Public routes (no auth required)
-	authH := handler.NewAuthHandler(db, cfg)
+	loginLimiter := auth.NewRateLimiter(5, 900) // 5 attempts per 15 minutes
+	challengeStore := auth.NewChallengeStore()
+	authH := handler.NewAuthHandler(db, cfg, loginLimiter, challengeStore)
 	api.POST("/auth/login", authH.Login)
 	api.POST("/auth/setup", authH.Setup)
 	api.GET("/auth/need-setup", authH.NeedSetup)
+	api.GET("/auth/challenge", authH.Challenge)
 
 	// Protected routes (JWT required)
 	protected := api.Group("")

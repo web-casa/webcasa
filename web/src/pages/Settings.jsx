@@ -150,7 +150,7 @@ export default function Settings() {
 
     return (
         <Box>
-            <Heading size="6" mb="1" style={{ color: '#fafafa' }}>Settings</Heading>
+            <Heading size="6" mb="1" style={{ color: 'var(--cp-text)' }}>Settings</Heading>
             <Text size="2" color="gray" mb="5" as="p">
                 Manage Caddy server and panel configuration
             </Text>
@@ -184,7 +184,7 @@ export default function Settings() {
 
                 {/* ---- Caddy Server Tab ---- */}
                 <Tabs.Content value="caddy">
-                    <Card mt="4" style={{ background: '#111113', border: '1px solid #1e1e22' }}>
+                    <Card mt="4" style={{ background: 'var(--cp-card)', border: '1px solid var(--cp-border)' }}>
                         <Heading size="3" mb="4">Process Control</Heading>
 
                         <Flex align="center" gap="3" mb="4">
@@ -230,7 +230,7 @@ export default function Settings() {
                         </Flex>
                     </Card>
 
-                    <Card mt="4" style={{ background: '#111113', border: '1px solid #1e1e22' }}>
+                    <Card mt="4" style={{ background: 'var(--cp-card)', border: '1px solid var(--cp-border)' }}>
                         <Heading size="3" mb="3">自动管理</Heading>
 
                         <Flex justify="between" align="center">
@@ -254,7 +254,7 @@ export default function Settings() {
                         </Callout.Root>
                     </Card>
 
-                    <Card mt="4" style={{ background: '#111113', border: '1px solid #1e1e22' }}>
+                    <Card mt="4" style={{ background: 'var(--cp-card)', border: '1px solid var(--cp-border)' }}>
                         <Heading size="3" mb="3">服务器 IP</Heading>
                         <Text size="1" color="gray" mb="3" as="p">
                             安装时自动检测。添加站点时会提示用户将域名解析到此 IP。
@@ -290,7 +290,7 @@ export default function Settings() {
 
                 {/* ---- Caddyfile Tab ---- */}
                 <Tabs.Content value="caddyfile">
-                    <Card mt="4" style={{ background: '#111113', border: '1px solid #1e1e22' }}>
+                    <Card mt="4" style={{ background: 'var(--cp-card)', border: '1px solid var(--cp-border)' }}>
                         <Flex justify="between" align="center" mb="3">
                             <Heading size="3">Generated Caddyfile</Heading>
                             <Button variant="ghost" size="1" onClick={fetchCaddyfile}>
@@ -300,15 +300,15 @@ export default function Settings() {
 
                         <Box
                             style={{
-                                background: '#0a0a0b',
-                                border: '1px solid #1e1e22',
+                                background: 'var(--cp-code-bg)',
+                                border: '1px solid var(--cp-border)',
                                 borderRadius: 8,
                                 padding: 16,
                                 maxHeight: 500,
                                 overflow: 'auto',
                             }}
                         >
-                            <pre className="log-viewer" style={{ margin: 0, color: '#d4d4d8' }}>
+                            <pre className="log-viewer" style={{ margin: 0, color: 'var(--cp-text)' }}>
                                 {caddyfile || '# No Caddyfile generated yet. Add a proxy host first.'}
                             </pre>
                         </Box>
@@ -317,7 +317,7 @@ export default function Settings() {
 
                 {/* ---- Backup Tab ---- */}
                 <Tabs.Content value="backup">
-                    <Card mt="4" style={{ background: '#111113', border: '1px solid #1e1e22' }}>
+                    <Card mt="4" style={{ background: 'var(--cp-card)', border: '1px solid var(--cp-border)' }}>
                         <Heading size="3" mb="4">Import / Export</Heading>
 
                         <Text size="2" color="gray" mb="4" as="p">

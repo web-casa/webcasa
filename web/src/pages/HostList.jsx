@@ -173,7 +173,7 @@ function HostFormDialog({ open, onClose, onSaved, host }) {
 
     return (
         <Dialog.Root open={open} onOpenChange={(o) => !o && onClose()}>
-            <Dialog.Content maxWidth="560px" style={{ background: '#111113' }}>
+            <Dialog.Content maxWidth="560px" style={{ background: 'var(--cp-card)' }}>
                 <Dialog.Title>
                     {isEdit ? 'Edit Host' : 'New Host'}
                 </Dialog.Title>
@@ -352,7 +352,7 @@ function HostFormDialog({ open, onClose, onSaved, host }) {
 
                         {/* Tab 2: Options */}
                         <Tabs.Content value="options">
-                            <Card mt="3" style={{ background: '#18181b', border: '1px solid #27272a' }}>
+                            <Card mt="3" style={{ background: 'var(--cp-input-bg)', border: '1px solid var(--cp-border-subtle)' }}>
                                 <Flex direction="column" gap="3" p="1">
                                     <Flex justify="between" align="center">
                                         <Flex direction="column">
@@ -401,7 +401,7 @@ function HostFormDialog({ open, onClose, onSaved, host }) {
                                     )}
 
                                     {(form.tls_mode === 'dns' || form.tls_mode === 'wildcard') && (
-                                        <Flex direction="column" gap="1" pl="4" style={{ borderLeft: '2px solid #27272a' }}>
+                                        <Flex direction="column" gap="1" pl="4" style={{ borderLeft: '2px solid var(--cp-border-subtle)' }}>
                                             <Text size="1" color="gray">DNS Provider</Text>
                                             <Select.Root
                                                 value={form.dns_provider_id ? String(form.dns_provider_id) : ''}
@@ -424,7 +424,7 @@ function HostFormDialog({ open, onClose, onSaved, host }) {
                                     )}
 
                                     {form.tls_mode === 'custom' && (
-                                        <Flex direction="column" gap="2" pl="4" style={{ borderLeft: '2px solid #27272a' }}>
+                                        <Flex direction="column" gap="2" pl="4" style={{ borderLeft: '2px solid var(--cp-border-subtle)' }}>
                                             <Text size="1" color="gray">选择证书</Text>
                                             <Select.Root
                                                 value={form.certificate_id ? String(form.certificate_id) : ''}
@@ -502,7 +502,7 @@ function HostFormDialog({ open, onClose, onSaved, host }) {
                                     )}
 
                                     <Separator size="4" style={{ opacity: 0.15 }} />
-                                    <Text size="2" weight="bold" style={{ color: '#a1a1aa' }}>性能</Text>
+                                    <Text size="2" weight="bold" style={{ color: 'var(--cp-text-secondary)' }}>性能</Text>
 
                                     <Flex justify="between" align="center">
                                         <Flex direction="column">
@@ -516,7 +516,7 @@ function HostFormDialog({ open, onClose, onSaved, host }) {
                                     </Flex>
 
                                     <Separator size="4" style={{ opacity: 0.15 }} />
-                                    <Text size="2" weight="bold" style={{ color: '#a1a1aa' }}>安全</Text>
+                                    <Text size="2" weight="bold" style={{ color: 'var(--cp-text-secondary)' }}>安全</Text>
 
                                     <Flex justify="between" align="center">
                                         <Flex direction="column">
@@ -541,7 +541,7 @@ function HostFormDialog({ open, onClose, onSaved, host }) {
                                     </Flex>
 
                                     {form.cors_enabled && (
-                                        <Flex direction="column" gap="2" pl="4" style={{ borderLeft: '2px solid #27272a' }}>
+                                        <Flex direction="column" gap="2" pl="4" style={{ borderLeft: '2px solid var(--cp-border-subtle)' }}>
                                             <Box>
                                                 <Text size="1" color="gray" mb="1">允许的源（逗号分隔）</Text>
                                                 <TextField.Root
@@ -570,7 +570,7 @@ function HostFormDialog({ open, onClose, onSaved, host }) {
                                     )}
 
                                     <Separator size="4" style={{ opacity: 0.15 }} />
-                                    <Text size="2" weight="bold" style={{ color: '#a1a1aa' }}>错误页</Text>
+                                    <Text size="2" weight="bold" style={{ color: 'var(--cp-text-secondary)' }}>错误页</Text>
 
                                     <Box>
                                         <Text size="2" weight="medium" mb="1">自定义错误页目录</Text>
@@ -585,7 +585,7 @@ function HostFormDialog({ open, onClose, onSaved, host }) {
                                     </Box>
 
                                     <Separator size="4" style={{ opacity: 0.15 }} />
-                                    <Text size="2" weight="bold" style={{ color: '#a1a1aa' }}>高级</Text>
+                                    <Text size="2" weight="bold" style={{ color: 'var(--cp-text-secondary)' }}>高级</Text>
 
                                     <Box>
                                         <Text size="2" weight="medium" mb="1">自定义 Caddy 指令</Text>
@@ -600,7 +600,7 @@ function HostFormDialog({ open, onClose, onSaved, host }) {
                                             style={{
                                                 width: '100%',
                                                 background: '#09090b',
-                                                border: '1px solid #27272a',
+                                                border: '1px solid var(--cp-border-subtle)',
                                                 borderRadius: 6,
                                                 padding: '8px 12px',
                                                 color: '#e4e4e7',
@@ -708,7 +708,7 @@ function DeleteDialog({ open, onClose, host, onConfirm }) {
     }
     return (
         <AlertDialog.Root open={open} onOpenChange={(o) => !o && onClose()}>
-            <AlertDialog.Content maxWidth="400px" style={{ background: '#111113' }}>
+            <AlertDialog.Content maxWidth="400px" style={{ background: 'var(--cp-card)' }}>
                 <AlertDialog.Title>Delete Host</AlertDialog.Title>
                 <AlertDialog.Description size="2">
                     Are you sure you want to delete <strong>{host?.domain}</strong>? This action cannot be
@@ -825,7 +825,7 @@ export default function HostList() {
         <Box>
             <Flex justify="between" align="center" mb="5">
                 <Box>
-                    <Heading size="6" style={{ color: '#fafafa' }}>Proxy Hosts</Heading>
+                    <Heading size="6" style={{ color: 'var(--cp-text)' }}>Proxy Hosts</Heading>
                     <Text size="2" color="gray">
                         Manage your reverse proxy and redirect configurations
                     </Text>
@@ -841,7 +841,7 @@ export default function HostList() {
                     <Spinner size="3" />
                 </Flex>
             ) : hosts.length === 0 ? (
-                <Card style={{ background: '#111113', border: '1px solid #1e1e22' }}>
+                <Card style={{ background: 'var(--cp-card)', border: '1px solid var(--cp-border)' }}>
                     <Flex direction="column" align="center" gap="3" p="6">
                         <Globe size={48} strokeWidth={1} color="#3f3f46" />
                         <Text size="3" color="gray">No proxy hosts configured</Text>
@@ -851,7 +851,7 @@ export default function HostList() {
                     </Flex>
                 </Card>
             ) : (
-                <Card style={{ background: '#111113', border: '1px solid #1e1e22', padding: 0 }}>
+                <Card style={{ background: 'var(--cp-card)', border: '1px solid var(--cp-border)', padding: 0 }}>
                     <Table.Root>
                         <Table.Header>
                             <Table.Row>

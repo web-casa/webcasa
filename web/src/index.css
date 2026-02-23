@@ -1,16 +1,61 @@
 @import "tailwindcss";
 @import "@radix-ui/themes/styles.css";
 
+/* ============================================
+   CaddyPanel Design System — Light/Dark Themes
+   ============================================ */
+
 @theme {
-  --color-panel: #111113;
-  --color-surface: #18181b;
-  --color-surface-hover: #27272a;
-  --color-border: #2e2e32;
+  --font-sans: 'Inter', system-ui, -apple-system, sans-serif;
   --color-accent: #10b981;
   --color-accent-hover: #059669;
   --color-danger: #ef4444;
   --color-warning: #f59e0b;
-  --font-sans: 'Inter', system-ui, -apple-system, sans-serif;
+}
+
+/* ---- Light Mode ---- */
+:root,
+.light-theme {
+  --cp-bg: #f8faf9;
+  --cp-sidebar: #ffffff;
+  --cp-card: #ffffff;
+  --cp-card-hover: #f4f7f5;
+  --cp-border: #e2e8e4;
+  --cp-border-subtle: #edf0ee;
+  --cp-text: #1a1d1b;
+  --cp-text-secondary: #5f6b64;
+  --cp-text-muted: #8c9690;
+  --cp-input-bg: #f4f7f5;
+  --cp-code-bg: #f0f4f1;
+  --cp-scrollbar: #c4ccc7;
+  --cp-scrollbar-hover: #a1aba5;
+  --cp-shadow: 0 1px 3px rgba(0, 0, 0, 0.06), 0 1px 2px rgba(0, 0, 0, 0.04);
+  --cp-shadow-lg: 0 4px 16px rgba(0, 0, 0, 0.08);
+  --cp-nav-active: rgba(16, 185, 129, 0.08);
+  --cp-nav-hover: rgba(0, 0, 0, 0.03);
+  --cp-overlay: rgba(0, 0, 0, 0.3);
+}
+
+/* ---- Dark Mode ---- */
+.dark-theme {
+  --cp-bg: #09090b;
+  --cp-sidebar: #0f0f12;
+  --cp-card: #111113;
+  --cp-card-hover: #1a1a1e;
+  --cp-border: #1e1e22;
+  --cp-border-subtle: #27272a;
+  --cp-text: #fafafa;
+  --cp-text-secondary: #a1a1aa;
+  --cp-text-muted: #71717a;
+  --cp-input-bg: #18181b;
+  --cp-code-bg: #0a0a0b;
+  --cp-scrollbar: #3f3f46;
+  --cp-scrollbar-hover: #52525b;
+  --cp-shadow: 0 1px 3px rgba(0, 0, 0, 0.3), 0 1px 2px rgba(0, 0, 0, 0.2);
+  --cp-shadow-lg: 0 4px 16px rgba(0, 0, 0, 0.4);
+  --cp-nav-active: rgba(16, 185, 129, 0.15);
+  --cp-nav-hover: rgba(255, 255, 255, 0.04);
+  --cp-overlay: rgba(0, 0, 0, 0.6);
 }
 
 @font-face {
@@ -23,17 +68,32 @@
 
 body {
   margin: 0;
-  background: var(--color-panel);
+  background: var(--cp-bg);
+  color: var(--cp-text);
   font-family: var(--font-sans);
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
+  transition: background-color 0.2s ease, color 0.2s ease;
 }
 
-/* Scrollbar styling */
-::-webkit-scrollbar { width: 6px; height: 6px; }
-::-webkit-scrollbar-track { background: transparent; }
-::-webkit-scrollbar-thumb { background: #3f3f46; border-radius: 3px; }
-::-webkit-scrollbar-thumb:hover { background: #52525b; }
+/* Scrollbar */
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+::-webkit-scrollbar-thumb {
+  background: var(--cp-scrollbar);
+  border-radius: 3px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: var(--cp-scrollbar-hover);
+}
 
 /* Log viewer monospace */
 .log-viewer {
@@ -42,4 +102,82 @@ body {
   line-height: 1.5;
   white-space: pre-wrap;
   word-break: break-all;
+}
+
+/* ---- Slider Captcha ---- */
+.slider-captcha {
+  position: relative;
+  width: 100%;
+  height: 40px;
+  border-radius: 8px;
+  background: var(--cp-input-bg);
+  border: 1px solid var(--cp-border);
+  overflow: hidden;
+  user-select: none;
+  touch-action: none;
+}
+
+.slider-captcha-track {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--cp-text-muted);
+  font-size: 0.75rem;
+  pointer-events: none;
+}
+
+.slider-captcha-fill {
+  position: absolute;
+  left: 0;
+  top: 0;
+  height: 100%;
+  background: linear-gradient(90deg, rgba(16, 185, 129, 0.15), rgba(16, 185, 129, 0.25));
+  border-radius: 8px 0 0 8px;
+  transition: none;
+}
+
+.slider-captcha-thumb {
+  position: absolute;
+  top: 2px;
+  width: 36px;
+  height: 36px;
+  border-radius: 6px;
+  background: var(--cp-card);
+  border: 2px solid var(--cp-border);
+  box-shadow: var(--cp-shadow);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: grab;
+  transition: border-color 0.15s;
+}
+
+.slider-captcha-thumb:hover {
+  border-color: #10b981;
+}
+
+.slider-captcha-thumb:active {
+  cursor: grabbing;
+}
+
+.slider-captcha-target {
+  position: absolute;
+  top: 6px;
+  width: 4px;
+  height: 28px;
+  border-radius: 2px;
+  background: #10b981;
+  opacity: 0.6;
+}
+
+.slider-captcha.success .slider-captcha-fill {
+  background: linear-gradient(90deg, rgba(16, 185, 129, 0.2), rgba(16, 185, 129, 0.4));
+}
+
+.slider-captcha.success .slider-captcha-thumb {
+  border-color: #10b981;
+  background: #10b981;
+  color: white;
 }

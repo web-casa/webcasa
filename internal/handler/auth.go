@@ -12,23 +12,36 @@ import (
 
 // AuthHandler manages authentication endpoints
 type AuthHandler struct {
-	db  *gorm.DB
-	cfg *config.Config
+	db        *gorm.DB
+	cfg       *config.Config
+	limiter   *auth.RateLimiter
+	challenge *auth.ChallengeStore
 }
 
 // NewAuthHandler creates a new AuthHandler
-func NewAuthHandler(db *gorm.DB, cfg *config.Config) *AuthHandler {
-	return &AuthHandler{db: db, cfg: cfg}
+func NewAuthHandler(db *gorm.DB, cfg *config.Config, limiter *auth.RateLimiter, challenge *auth.ChallengeStore) *AuthHandler {
+	return &AuthHandler{db: db, cfg: cfg, limiter: limiter, challenge: challenge}
 }
 
 type loginRequest struct {
-	Username string `json:"username" binding:"required"`
-	Password string `json:"password" binding:"required"`
+	Username     string `json:"username" binding:"required"`
+	Password     string `json:"password" binding:"required"`
+	ChallengeToken string `json:"challenge_token"`
+	SliderValue  int    `json:"slider_value"`
 }
 
 type setupRequest struct {
 	Username string `json:"username" binding:"required,min=3"`
 	Password string `json:"password" binding:"required,min=6"`
+}
+
+// Challenge generates a new slider challenge
+func (h *AuthHandler) Challenge(c *gin.Context) {
+	ch := h.challenge.Generate()
+	c.JSON(http.StatusOK, gin.H{
+		"token":  ch.Token,
+		"target": ch.Target,
+	})
 }
 
 // Setup creates the initial admin user (only works when no users exist)
@@ -75,19 +88,40 @@ func (h *AuthHandler) Setup(c *gin.Context) {
 
 // Login authenticates a user and returns a JWT token
 func (h *AuthHandler) Login(c *gin.Context) {
+	ip := c.ClientIP()
+
+	// Rate limit check
+	allowed, waitSec := h.limiter.Check(ip)
+	if !allowed {
+		c.JSON(http.StatusTooManyRequests, gin.H{
+			"error":        "Too many login attempts",
+			"retry_after":  waitSec,
+		})
+		return
+	}
+
 	var req loginRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
 	}
 
+	// Verify slider challenge
+	if !h.challenge.Verify(req.ChallengeToken, req.SliderValue) {
+		h.limiter.RecordFail(ip)
+		c.JSON(http.StatusBadRequest, gin.H{"error": "验证失败，请重新滑动验证"})
+		return
+	}
+
 	var user model.User
 	if err := h.db.Where("username = ?", req.Username).First(&user).Error; err != nil {
+		h.limiter.RecordFail(ip)
 		c.JSON(http.StatusUnauthorized, gin.H{"error": "Invalid credentials"})
 		return
 	}
 
 	if !auth.CheckPassword(user.Password, req.Password) {
+		h.limiter.RecordFail(ip)
 		c.JSON(http.StatusUnauthorized, gin.H{"error": "Invalid credentials"})
 		return
 	}
@@ -98,6 +132,7 @@ func (h *AuthHandler) Login(c *gin.Context) {
 		return
 	}
 
+	h.limiter.RecordSuccess(ip)
 	c.JSON(http.StatusOK, gin.H{
 		"token": token,
 		"user": gin.H{

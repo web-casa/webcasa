@@ -143,7 +143,7 @@ export default function CaddyfileEditor() {
                 <Flex align="center" gap="3">
                     <FileCode size={20} style={{ color: '#10b981' }} />
                     <Box>
-                        <Text size="5" weight="bold" style={{ color: '#fafafa' }}>
+                        <Text size="5" weight="bold" style={{ color: 'var(--cp-text)' }}>
                             Caddyfile 编辑器
                         </Text>
                         <Text size="2" color="gray" as="p">
@@ -212,11 +212,11 @@ export default function CaddyfileEditor() {
             <Box
                 ref={editorRef}
                 style={{
-                    border: '1px solid #27272a',
+                    border: '1px solid var(--cp-border-subtle)',
                     borderRadius: 8,
                     overflow: 'hidden',
                     minHeight: 500,
-                    background: '#111113',
+                    background: 'var(--cp-card)',
                 }}
             />
         </Box>

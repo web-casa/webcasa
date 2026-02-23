@@ -1,9 +1,100 @@
-import { useState } from 'react'
+import { useState, useEffect, useRef, useCallback } from 'react'
 import { useNavigate } from 'react-router'
 import { Box, Card, Flex, Heading, Text, TextField, Button, Callout } from '@radix-ui/themes'
-import { Zap, AlertCircle } from 'lucide-react'
+import { Zap, AlertCircle, Check, MoveRight } from 'lucide-react'
 import { useAuthStore } from '../stores/auth.js'
+import { authAPI } from '../api/index.js'
 
+// ============ Slider Captcha Component ============
+function SliderCaptcha({ onVerified, onReset }) {
+    const [target, setTarget] = useState(50)
+    const [token, setToken] = useState('')
+    const [value, setValue] = useState(0)
+    const [dragging, setDragging] = useState(false)
+    const [verified, setVerified] = useState(false)
+    const [loading, setLoading] = useState(true)
+    const trackRef = useRef(null)
+
+    const fetchChallenge = useCallback(async () => {
+        setLoading(true)
+        setVerified(false)
+        setValue(0)
+        onReset?.()
+        try {
+            const res = await authAPI.challenge()
+            setTarget(res.data.target)
+            setToken(res.data.token)
+        } catch {
+            setTarget(50)
+        }
+        setLoading(false)
+    }, [onReset])
+
+    useEffect(() => { fetchChallenge() }, [fetchChallenge])
+
+    const getPosition = (clientX) => {
+        if (!trackRef.current) return 0
+        const rect = trackRef.current.getBoundingClientRect()
+        const thumbWidth = 36
+        const maxX = rect.width - thumbWidth
+        const x = Math.max(0, Math.min(clientX - rect.left - thumbWidth / 2, maxX))
+        return Math.round((x / maxX) * 100)
+    }
+
+    const handleStart = (clientX) => {
+        if (verified || loading) return
+        setDragging(true)
+    }
+
+    const handleMove = (clientX) => {
+        if (!dragging || verified) return
+        setValue(getPosition(clientX))
+    }
+
+    const handleEnd = () => {
+        if (!dragging || verified) return
+        setDragging(false)
+        const diff = Math.abs(value - target)
+        if (diff <= 5) {
+            setVerified(true)
+            onVerified?.(token, value)
+        } else {
+            // Reset on fail
+            setValue(0)
+            fetchChallenge()
+        }
+    }
+
+    return (
+        <div
+            className={`slider-captcha${verified ? ' success' : ''}`}
+            ref={trackRef}
+            onMouseMove={(e) => handleMove(e.clientX)}
+            onMouseUp={handleEnd}
+            onMouseLeave={() => { if (dragging) { setDragging(false); setValue(0); fetchChallenge() } }}
+            onTouchMove={(e) => handleMove(e.touches[0].clientX)}
+            onTouchEnd={handleEnd}
+        >
+            <div className="slider-captcha-track">
+                {loading ? '加载中...' : verified ? '✓ 验证通过' : '拖动滑块到标记位置'}
+            </div>
+            {!loading && !verified && (
+                <div className="slider-captcha-target" style={{ left: `calc(${target}% - 2px)` }} />
+            )}
+            <div className="slider-captcha-fill" style={{ width: `${value}%` }} />
+            <div
+                className="slider-captcha-thumb"
+                style={{ left: `calc(${value}% - 18px + ${value > 0 ? 18 : 2}px)` }}
+                onMouseDown={(e) => { e.preventDefault(); handleStart(e.clientX) }}
+                onTouchStart={(e) => handleStart(e.touches[0].clientX)}
+            >
+                {verified ? <Check size={16} /> : <MoveRight size={16} style={{ color: 'var(--cp-text-muted)' }} />}
+            </div>
+        </div>
+    )
+}
+
+// ============ Login Page ============
 export default function Login() {
     const navigate = useNavigate()
     const { needSetup, loading, login, setup } = useAuthStore()
@@ -11,6 +102,21 @@ export default function Login() {
     const [password, setPassword] = useState('')
     const [error, setError] = useState('')
     const [submitting, setSubmitting] = useState(false)
+    const [challengeToken, setChallengeToken] = useState('')
+    const [sliderValue, setSliderValue] = useState(0)
+    const [sliderVerified, setSliderVerified] = useState(false)
+
+    const handleVerified = (token, value) => {
+        setChallengeToken(token)
+        setSliderValue(value)
+        setSliderVerified(true)
+    }
+
+    const handleSliderReset = () => {
+        setSliderVerified(false)
+        setChallengeToken('')
+        setSliderValue(0)
+    }
 
     const handleSubmit = async (e) => {
         e.preventDefault()
@@ -21,11 +127,19 @@ export default function Login() {
             if (needSetup) {
                 await setup(username, password)
             } else {
-                await login(username, password)
+                if (!sliderVerified) {
+                    setError('请先完成滑块验证')
+                    setSubmitting(false)
+                    return
+                }
+                await login(username, password, challengeToken, sliderValue)
             }
             navigate('/', { replace: true })
         } catch (err) {
-            setError(err.response?.data?.error || 'Connection failed')
+            const msg = err.response?.data?.error || 'Connection failed'
+            setError(msg)
+            // Reset slider on any error
+            handleSliderReset()
         } finally {
             setSubmitting(false)
         }
@@ -45,7 +159,7 @@ export default function Login() {
             justify="center"
             style={{
                 minHeight: '100vh',
-                background: 'linear-gradient(135deg, #0a0a0a 0%, #111113 50%, #0d1f17 100%)',
+                background: 'var(--cp-bg)',
             }}
         >
             <Box style={{ width: '100%', maxWidth: 400, padding: '0 16px' }}>
@@ -59,12 +173,12 @@ export default function Login() {
                             height: 56,
                             borderRadius: 16,
                             background: 'linear-gradient(135deg, #10b981 0%, #059669 100%)',
-                            boxShadow: '0 8px 32px rgba(16, 185, 129, 0.3)',
+                            boxShadow: '0 8px 32px rgba(16, 185, 129, 0.25)',
                         }}
                     >
                         <Zap size={28} color="white" />
                     </Flex>
-                    <Heading size="6" weight="bold" style={{ color: '#fafafa' }}>
+                    <Heading size="6" weight="bold" style={{ color: 'var(--cp-text)' }}>
                         CaddyPanel
                     </Heading>
                     <Text size="2" color="gray">
@@ -76,9 +190,9 @@ export default function Login() {
                 <Card
                     size="3"
                     style={{
-                        background: 'rgba(24, 24, 27, 0.8)',
-                        border: '1px solid #27272a',
-                        backdropFilter: 'blur(12px)',
+                        background: 'var(--cp-card)',
+                        border: '1px solid var(--cp-border)',
+                        boxShadow: 'var(--cp-shadow-lg)',
                     }}
                 >
                     <form onSubmit={handleSubmit}>
@@ -137,10 +251,21 @@ export default function Login() {
                                 />
                             </Flex>
 
+                            {/* Slider captcha (not shown during initial setup) */}
+                            {!needSetup && (
+                                <Flex direction="column" gap="1">
+                                    <Text size="1" color="gray">安全验证</Text>
+                                    <SliderCaptcha
+                                        onVerified={handleVerified}
+                                        onReset={handleSliderReset}
+                                    />
+                                </Flex>
+                            )}
+
                             <Button
                                 type="submit"
                                 size="3"
-                                disabled={submitting || !username || !password}
+                                disabled={submitting || !username || !password || (!needSetup && !sliderVerified)}
                                 style={{ cursor: 'pointer' }}
                             >
                                 {submitting
@@ -154,7 +279,7 @@ export default function Login() {
                 </Card>
 
                 <Text size="1" color="gray" align="center" mt="4" as="p">
-                    CaddyPanel v0.1.0 — Powered by Caddy Server
+                    CaddyPanel — Powered by Caddy Server
                 </Text>
             </Box>
         </Flex>
