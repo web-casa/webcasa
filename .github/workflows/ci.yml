@@ -372,17 +372,15 @@ jobs:
             -H 'Content-Type: application/json' \
             -d '{
               "name": "ci-test-template",
-              "tls_enabled": true,
-              "http_redirect": true,
-              "websocket": false,
-              "upstreams": [{"address": "localhost:8080"}]
+              "description": "CI test template",
+              "config": "{\"host_type\":\"proxy\",\"tls_enabled\":true,\"http_redirect\":true,\"websocket\":false,\"upstreams\":[{\"address\":\"localhost:8080\"}]}"
             }')
           TPL_ID=$(echo "$TPL" | jq -r '.id')
           [ -n "$TPL_ID" ] && [ "$TPL_ID" != "null" ] || exit 1
 
           # List
           TPL_COUNT=$(curl -sf http://localhost:$PANEL_PORT/api/templates \
-            -H "Authorization: Bearer $TOKEN" | jq 'length')
+            -H "Authorization: Bearer $TOKEN" | jq '.templates | length')
           [ "$TPL_COUNT" -ge 1 ] || exit 1
 
           # Delete
