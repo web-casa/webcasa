@@ -6,9 +6,9 @@ import (
 	"sync/atomic"
 	"testing"
 
-	"github.com/caddypanel/caddypanel/internal/caddy"
-	"github.com/caddypanel/caddypanel/internal/config"
-	"github.com/caddypanel/caddypanel/internal/model"
+	"github.com/web-casa/webcasa/internal/caddy"
+	"github.com/web-casa/webcasa/internal/config"
+	"github.com/web-casa/webcasa/internal/model"
 	"github.com/leanovate/gopter"
 	"github.com/leanovate/gopter/gen"
 	"github.com/leanovate/gopter/prop"
@@ -53,7 +53,7 @@ func setupTestDB(t *testing.T) *gorm.DB {
 // setupTestHostService creates a HostService backed by the test DB
 func setupTestHostService(t *testing.T, db *gorm.DB) *HostService {
 	t.Helper()
-	tmpDir, err := os.MkdirTemp("", "caddypanel-test-*")
+	tmpDir, err := os.MkdirTemp("", "webcasa-test-*")
 	if err != nil {
 		t.Fatalf("failed to create temp dir: %v", err)
 	}

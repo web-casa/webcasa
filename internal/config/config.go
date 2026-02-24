@@ -19,17 +19,17 @@ type Config struct {
 
 // Load reads configuration from environment variables with sensible defaults
 func Load() *Config {
-	dataDir := envOrDefault("CADDYPANEL_DATA_DIR", "./data")
+	dataDir := envOrDefault("WEBCASA_DATA_DIR", "./data")
 
 	cfg := &Config{
-		Port:          envOrDefault("CADDYPANEL_PORT", "39921"),
-		DBPath:        envOrDefault("CADDYPANEL_DB_PATH", filepath.Join(dataDir, "caddypanel.db")),
-		JWTSecret:     envOrDefault("CADDYPANEL_JWT_SECRET", "caddypanel-change-me-in-production"),
-		CaddyBin:      envOrDefault("CADDYPANEL_CADDY_BIN", "caddy"),
-		CaddyfilePath: envOrDefault("CADDYPANEL_CADDYFILE_PATH", filepath.Join(dataDir, "Caddyfile")),
-		LogDir:        envOrDefault("CADDYPANEL_LOG_DIR", filepath.Join(dataDir, "logs")),
+		Port:          envOrDefault("WEBCASA_PORT", "39921"),
+		DBPath:        envOrDefault("WEBCASA_DB_PATH", filepath.Join(dataDir, "webcasa.db")),
+		JWTSecret:     envOrDefault("WEBCASA_JWT_SECRET", "webcasa-change-me-in-production"),
+		CaddyBin:      envOrDefault("WEBCASA_CADDY_BIN", "caddy"),
+		CaddyfilePath: envOrDefault("WEBCASA_CADDYFILE_PATH", filepath.Join(dataDir, "Caddyfile")),
+		LogDir:        envOrDefault("WEBCASA_LOG_DIR", filepath.Join(dataDir, "logs")),
 		DataDir:       dataDir,
-		AdminAPI:      envOrDefault("CADDYPANEL_ADMIN_API", "http://localhost:2019"),
+		AdminAPI:      envOrDefault("WEBCASA_ADMIN_API", "http://localhost:2019"),
 	}
 
 	// Ensure directories exist

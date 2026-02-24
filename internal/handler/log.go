@@ -9,7 +9,7 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/caddypanel/caddypanel/internal/config"
+	"github.com/web-casa/webcasa/internal/config"
 	"github.com/gin-gonic/gin"
 )
 

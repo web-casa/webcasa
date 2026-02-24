@@ -50,16 +50,16 @@ jobs:
       - name: Go — Build binary
         run: |
           VERSION=$(cat VERSION | tr -d '[:space:]')
-          CGO_ENABLED=1 go build -ldflags="-s -w -X main.Version=${VERSION}" -o caddypanel .
+          CGO_ENABLED=1 go build -ldflags="-s -w -X main.Version=${VERSION}" -o webcasa .
           echo "✅ Binary built"
 
       # --- Upload for integration job ---
       - name: Upload binary + frontend
         uses: actions/upload-artifact@v4
         with:
-          name: caddypanel-build
+          name: webcasa-build
           path: |
-            caddypanel
+            webcasa
             web/dist/
           retention-days: 1
 
@@ -79,10 +79,10 @@ jobs:
       - name: Download build artifacts
         uses: actions/download-artifact@v4
         with:
-          name: caddypanel-build
+          name: webcasa-build
 
       - name: Prepare binary
-        run: chmod +x caddypanel
+        run: chmod +x webcasa
 
       # --- Install Caddy only (via official repo) ---
       - name: Install Caddy
@@ -97,18 +97,18 @@ jobs:
           sudo systemctl disable caddy
 
       # --- Setup directories & start panel ---
-      - name: Setup and start CaddyPanel
+      - name: Setup and start WebCasa
         run: |
           mkdir -p data/logs data/backups
-          export CADDYPANEL_PORT=$PANEL_PORT
-          export CADDYPANEL_JWT_SECRET=ci-test-secret-not-for-production
-          export CADDYPANEL_CADDY_BIN=$(which caddy)
-          export CADDYPANEL_DATA_DIR=./data
-          export CADDYPANEL_LOG_DIR=./data/logs
+          export WEBCASA_PORT=$PANEL_PORT
+          export WEBCASA_JWT_SECRET=ci-test-secret-not-for-production
+          export WEBCASA_CADDY_BIN=$(which caddy)
+          export WEBCASA_DATA_DIR=./data
+          export WEBCASA_LOG_DIR=./data/logs
           export GIN_MODE=release
-          ./caddypanel > /tmp/caddypanel.log 2>&1 &
-          echo $! > /tmp/caddypanel.pid
-          echo "PID: $(cat /tmp/caddypanel.pid)"
+          ./webcasa > /tmp/webcasa.log 2>&1 &
+          echo $! > /tmp/webcasa.pid
+          echo "PID: $(cat /tmp/webcasa.pid)"
 
           # Wait for API to be ready
           echo "Waiting for API..."
@@ -121,9 +121,9 @@ jobs:
           done
 
           # Check if still running
-          if ! kill -0 $(cat /tmp/caddypanel.pid) 2>/dev/null; then
-            echo "❌ CaddyPanel process died!"
-            cat /tmp/caddypanel.log
+          if ! kill -0 $(cat /tmp/webcasa.pid) 2>/dev/null; then
+            echo "❌ WebCasa process died!"
+            cat /tmp/webcasa.log
             exit 1
           fi
 
@@ -416,8 +416,8 @@ jobs:
       - name: Show logs on failure
         if: failure()
         run: |
-          echo "=== CaddyPanel process log ==="
-          cat /tmp/caddypanel.log 2>/dev/null || echo "No log file"
+          echo "=== WebCasa process log ==="
+          cat /tmp/webcasa.log 2>/dev/null || echo "No log file"
           echo ""
           echo "=== Caddyfile ==="
           cat data/Caddyfile 2>/dev/null || echo "Not found"
@@ -431,5 +431,5 @@ jobs:
       - name: Cleanup
         if: always()
         run: |
-          kill $(cat /tmp/caddypanel.pid) 2>/dev/null || true
+          kill $(cat /tmp/webcasa.pid) 2>/dev/null || true
           caddy stop 2>/dev/null || true

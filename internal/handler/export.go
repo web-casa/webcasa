@@ -3,8 +3,8 @@ package handler
 import (
 	"net/http"
 
-	"github.com/caddypanel/caddypanel/internal/model"
-	"github.com/caddypanel/caddypanel/internal/service"
+	"github.com/web-casa/webcasa/internal/model"
+	"github.com/web-casa/webcasa/internal/service"
 	"github.com/gin-gonic/gin"
 )
 
@@ -26,7 +26,7 @@ func (h *ExportHandler) Export(c *gin.Context) {
 		return
 	}
 
-	c.Header("Content-Disposition", "attachment; filename=caddypanel-export.json")
+	c.Header("Content-Disposition", "attachment; filename=webcasa-export.json")
 	c.JSON(http.StatusOK, data)
 }
 

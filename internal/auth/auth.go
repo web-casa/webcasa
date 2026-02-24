@@ -38,7 +38,7 @@ func GenerateToken(userID uint, username, secret string) (string, error) {
 		RegisteredClaims: jwt.RegisteredClaims{
 			ExpiresAt: jwt.NewNumericDate(time.Now().Add(24 * time.Hour)),
 			IssuedAt:  jwt.NewNumericDate(time.Now()),
-			Issuer:    "caddypanel",
+			Issuer:    "webcasa",
 		},
 	}
 
@@ -55,7 +55,7 @@ func GenerateTempToken(userID uint, username, secret string) (string, error) {
 		RegisteredClaims: jwt.RegisteredClaims{
 			ExpiresAt: jwt.NewNumericDate(time.Now().Add(5 * time.Minute)),
 			IssuedAt:  jwt.NewNumericDate(time.Now()),
-			Issuer:    "caddypanel",
+			Issuer:    "webcasa",
 		},
 	}
 

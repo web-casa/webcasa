@@ -4,8 +4,8 @@ import (
 	"net/http"
 	"runtime"
 
-	"github.com/caddypanel/caddypanel/internal/caddy"
-	"github.com/caddypanel/caddypanel/internal/service"
+	"github.com/web-casa/webcasa/internal/caddy"
+	"github.com/web-casa/webcasa/internal/service"
 	"github.com/gin-gonic/gin"
 )
 

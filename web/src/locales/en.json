@@ -73,7 +73,7 @@
         "sign_out": "Sign Out"
     },
     "login": {
-        "title": "Sign in to CaddyPanel",
+        "title": "Sign in to WebCasa",
         "subtitle": "Lightweight Caddy management panel",
         "username": "Username",
         "password": "Password",
@@ -86,9 +86,9 @@
         "captcha_hint": "Slide to complete verification",
         "verify_first": "Please complete security verification first",
         "setup_title": "Create Admin Account",
-        "setup_hint": "This is your first time using CaddyPanel. Please create an admin account.",
+        "setup_hint": "This is your first time using WebCasa. Please create an admin account.",
         "create_account": "Create Account",
-        "footer": "Powered by CaddyPanel",
+        "footer": "Powered by WebCasa",
         "pow": {
             "idle": "Click to verify",
             "solving": "Verifying... {{progress}}%",

@@ -5,7 +5,7 @@ import (
 	"io"
 	"net/http"
 
-	"github.com/caddypanel/caddypanel/internal/service"
+	"github.com/web-casa/webcasa/internal/service"
 	"github.com/gin-gonic/gin"
 	"gorm.io/gorm"
 )

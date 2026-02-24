@@ -64,7 +64,7 @@ Enabled *bool `gorm:"default:true"`
 
 ## 🎨 Vibe Coding 的节奏
 
-开发 CaddyPanel 的典型 Vibe Coding session：
+开发 WebCasa 的典型 Vibe Coding session：
 
 1. **用户描述需求** → "添加 DNS Provider 管理 + DNS Challenge 证书"
 2. **AI 规划** → 拆分为 Model → Handler → Service → Renderer → Frontend 的开发顺序
@@ -81,7 +81,7 @@ Enabled *bool `gorm:"default:true"`
 
 **问题**: 将滑块验证替换为 Altcha PoW 后，用户报告"验证了5分钟还在验证"，浏览器控制台报大量 `Web Crypto is not available. Secure context is required` 错误。
 
-**根因**: Altcha Widget 内部使用 `crypto.subtle`（Web Crypto API）来做 SHA-256 哈希。但 Web Crypto **只在安全上下文中可用**——即 HTTPS、localhost 或 `file://`。CaddyPanel 通常通过 `http://server-ip:2019` 访问，属于**非安全上下文**，因此 Web Crypto 不可用。
+**根因**: Altcha Widget 内部使用 `crypto.subtle`（Web Crypto API）来做 SHA-256 哈希。但 Web Crypto **只在安全上下文中可用**——即 HTTPS、localhost 或 `file://`。WebCasa 通常通过 `http://server-ip:2019` 访问，属于**非安全上下文**，因此 Web Crypto 不可用。
 
 **AI 的失误**: 在评估兼容性时，AI 关注了 Go 依赖和浏览器兼容性，但**忽略了 HTTP vs HTTPS 这个运行环境差异**。本地开发（localhost）能正常工作，但部署到远程服务器后立即失败。
 

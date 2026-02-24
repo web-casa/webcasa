@@ -92,7 +92,7 @@ tooltip={`${t('dashboard.proxy_count', { count: hosts.proxy ?? 0 })} / ${t('dash
 每改完一个文件后运行：
 
 ```bash
-cd /home/ivmm/caddypanel/web && npm run build
+cd /home/ivmm/webcasa/web && npm run build
 ```
 
 确认无编译错误。全部完成后可选择在浏览器中测试语言切换。

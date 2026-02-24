@@ -5,9 +5,9 @@ import (
 	"log"
 	"time"
 
-	"github.com/caddypanel/caddypanel/internal/caddy"
-	"github.com/caddypanel/caddypanel/internal/config"
-	"github.com/caddypanel/caddypanel/internal/model"
+	"github.com/web-casa/webcasa/internal/caddy"
+	"github.com/web-casa/webcasa/internal/config"
+	"github.com/web-casa/webcasa/internal/model"
 	"golang.org/x/crypto/bcrypt"
 	"gorm.io/gorm"
 )

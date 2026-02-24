@@ -1,4 +1,4 @@
-# Memory — CaddyPanel 开发记忆
+# Memory — WebCasa 开发记忆
 
 > **目的**: 本文件为跨 AI IDE 的开发记忆文件。无论你是 Claude Code、Gemini Code、Cursor、Windsurf 还是其他 AI 编码工具，请在开始工作前阅读本文件以获取历史上下文。
 >
@@ -83,11 +83,11 @@ Go(Gin) + React19(Vite7) 单二进制面板，管理 Caddy 反代。DB → `Rend
 
 ```bash
 # 验证构建
-cd /home/ivmm/caddypanel && go build -o /dev/null .
-cd /home/ivmm/caddypanel/web && npm run build
+cd /home/ivmm/webcasa && go build -o /dev/null .
+cd /home/ivmm/webcasa/web && npm run build
 
 # 带版本号构建
-VERSION=$(cat VERSION | tr -d '[:space:]') && go build -ldflags="-s -w -X main.Version=${VERSION}" -o caddypanel .
+VERSION=$(cat VERSION | tr -d '[:space:]') && go build -ldflags="-s -w -X main.Version=${VERSION}" -o webcasa .
 
 # 全局搜索（修改散布值前必做）
 grep -rn "搜索词" --include='*.go' --include='*.js' --include='*.jsx' --include='*.sh' .

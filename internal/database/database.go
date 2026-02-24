@@ -3,7 +3,7 @@ package database
 import (
 	"log"
 
-	"github.com/caddypanel/caddypanel/internal/model"
+	"github.com/web-casa/webcasa/internal/model"
 	"gorm.io/driver/sqlite"
 	"gorm.io/gorm"
 	"gorm.io/gorm/logger"

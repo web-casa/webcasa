@@ -5,12 +5,12 @@ all: build
 
 # Build everything (frontend + backend)
 build: frontend backend
-	@echo "✅ Build complete: ./caddypanel"
+	@echo "✅ Build complete: ./webcasa"
 
 # Build backend only
 backend:
 	@echo "🔨 Building Go backend..."
-	CGO_ENABLED=1 go build -o caddypanel .
+	CGO_ENABLED=1 go build -o webcasa .
 
 # Build frontend
 frontend:
@@ -21,15 +21,15 @@ frontend:
 dev:
 	@echo "🚀 Starting backend in dev mode..."
 	@echo "   Run 'cd web && npm run dev' in another terminal for the frontend"
-	CADDYPANEL_PORT=8080 go run .
+	WEBCASA_PORT=8080 go run .
 
 # Run the built binary
 run: build
-	./caddypanel
+	./webcasa
 
 # Clean build artifacts
 clean:
-	rm -f caddypanel
+	rm -f webcasa
 	rm -rf web/dist
 	rm -rf web/node_modules
 
@@ -39,17 +39,17 @@ install-frontend:
 
 # Docker build
 docker-build:
-	docker build -t caddypanel .
+	docker build -t webcasa .
 
 # Docker run
 docker-run:
 	docker run -d \
-		--name caddypanel \
+		--name webcasa \
 		-p 8080:8080 \
 		-p 80:80 \
 		-p 443:443 \
-		-v caddypanel-data:/app/data \
-		caddypanel
+		-v webcasa-data:/app/data \
+		webcasa
 
 # Run tests
 test:

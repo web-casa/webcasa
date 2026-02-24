@@ -4,10 +4,10 @@ import (
 	"fmt"
 	"net/http"
 
-	"github.com/caddypanel/caddypanel/internal/auth"
-	"github.com/caddypanel/caddypanel/internal/config"
-	"github.com/caddypanel/caddypanel/internal/model"
-	"github.com/caddypanel/caddypanel/internal/service"
+	"github.com/web-casa/webcasa/internal/auth"
+	"github.com/web-casa/webcasa/internal/config"
+	"github.com/web-casa/webcasa/internal/model"
+	"github.com/web-casa/webcasa/internal/service"
 	"github.com/gin-gonic/gin"
 	"gorm.io/gorm"
 )

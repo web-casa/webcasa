@@ -2,7 +2,7 @@
 
 ## 概述
 
-本设计文档描述 CaddyPanel Phase 6 的 6 个新功能和 i18n 翻译的技术实现方案。所有功能基于现有架构（Go Gin + GORM + React 19 + Radix UI）扩展，遵循项目既有的分层模式：Model → Service → Handler → Frontend。
+本设计文档描述 WebCasa Phase 6 的 6 个新功能和 i18n 翻译的技术实现方案。所有功能基于现有架构（Go Gin + GORM + React 19 + Radix UI）扩展，遵循项目既有的分层模式：Model → Service → Handler → Frontend。
 
 ### 功能范围
 

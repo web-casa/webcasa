@@ -1,5 +1,5 @@
 #!/bin/bash
-# 自动更新 CaddyPanel 版本号的脚本
+# 自动更新 WebCasa 版本号的脚本
 
 set -e
 
@@ -41,7 +41,7 @@ echo "✅ 更新 web/package.json 和 package-lock.json"
 # 3. 更新 install.sh 中的 fallback 版本号
 # 使用 sed 替换 install.sh 中的版本号 fallback
 sed -i "s/|| echo \"$OLD_VERSION\")/|| echo \"$NEW_VERSION\")/g" install.sh
-sed -i "s/CADDYPANEL_VERSION=\"$OLD_VERSION\"/CADDYPANEL_VERSION=\"$NEW_VERSION\"/g" install.sh
+sed -i "s/WEBCASA_VERSION=\"$OLD_VERSION\"/WEBCASA_VERSION=\"$NEW_VERSION\"/g" install.sh
 echo "✅ 更新 install.sh 中的 fallback 版本"
 
 # 4. 更新 memory.md 中的状态记录

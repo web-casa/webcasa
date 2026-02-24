@@ -1,0 +1,33 @@
+[Unit]
+Description=WebCasa - Caddy Reverse Proxy Management Panel
+Documentation=https://github.com/web-casa/webcasa
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=webcasa
+Group=webcasa
+ExecStart=/usr/local/bin/webcasa
+WorkingDirectory=/var/lib/webcasa
+Restart=on-failure
+RestartSec=5
+LimitNOFILE=65536
+
+# Environment
+EnvironmentFile=-/etc/webcasa/webcasa.env
+
+# Security hardening
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/var/lib/webcasa /var/log/webcasa
+PrivateTmp=true
+
+# Logging
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=webcasa
+
+[Install]
+WantedBy=multi-user.target

@@ -114,7 +114,7 @@ export default function Layout() {
                     <Zap size={18} color="white" />
                 </Box>
                 <Text size="4" weight="bold" style={{ color: 'var(--cp-text)' }}>
-                    CaddyPanel
+                    WebCasa
                 </Text>
                 {isMobile && (
                     <button
@@ -217,7 +217,7 @@ export default function Layout() {
                             <Zap size={14} color="white" />
                         </Box>
                         <Text size="3" weight="bold" style={{ color: 'var(--cp-text)' }}>
-                            CaddyPanel
+                            WebCasa
                         </Text>
                     </Flex>
                     <Box style={{ width: 22 }} /> {/* Spacer for centering */}
@@ -273,7 +273,7 @@ export default function Layout() {
                             fontSize: '0.7rem',
                         }}
                     >
-                        CaddyPanel v{version}
+                        WebCasa v{version}
                     </Text>
                 )}
             </Box>

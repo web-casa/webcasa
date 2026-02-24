@@ -9,8 +9,8 @@ import (
 	"path/filepath"
 	"strconv"
 
-	"github.com/caddypanel/caddypanel/internal/config"
-	"github.com/caddypanel/caddypanel/internal/service"
+	"github.com/web-casa/webcasa/internal/config"
+	"github.com/web-casa/webcasa/internal/service"
 	"github.com/gin-gonic/gin"
 )
 

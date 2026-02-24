@@ -10,10 +10,10 @@ import (
 	"sync/atomic"
 	"testing"
 
-	"github.com/caddypanel/caddypanel/internal/caddy"
-	"github.com/caddypanel/caddypanel/internal/config"
-	"github.com/caddypanel/caddypanel/internal/model"
-	"github.com/caddypanel/caddypanel/internal/service"
+	"github.com/web-casa/webcasa/internal/caddy"
+	"github.com/web-casa/webcasa/internal/config"
+	"github.com/web-casa/webcasa/internal/model"
+	"github.com/web-casa/webcasa/internal/service"
 	"github.com/gin-gonic/gin"
 	"github.com/leanovate/gopter"
 	"github.com/leanovate/gopter/gen"
@@ -48,7 +48,7 @@ func setupAuditTestDB(t *testing.T, name string) *gorm.DB {
 
 func setupAuditTestServices(t *testing.T, db *gorm.DB) (*service.HostService, *service.GroupService, *service.TagService, *service.TemplateService) {
 	t.Helper()
-	tmpDir, err := os.MkdirTemp("", "caddypanel-audit-test-*")
+	tmpDir, err := os.MkdirTemp("", "webcasa-audit-test-*")
 	if err != nil {
 		t.Fatalf("failed to create temp dir: %v", err)
 	}

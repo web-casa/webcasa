@@ -12,8 +12,8 @@ import (
 	mrand "math/rand"
 	"time"
 
-	"github.com/caddypanel/caddypanel/internal/config"
-	"github.com/caddypanel/caddypanel/internal/model"
+	"github.com/web-casa/webcasa/internal/config"
+	"github.com/web-casa/webcasa/internal/model"
 	"github.com/pquerna/otp/totp"
 	"golang.org/x/crypto/bcrypt"
 	"gorm.io/gorm"
@@ -91,7 +91,7 @@ func (s *TOTPService) GenerateSecret(userID uint) (string, error) {
 	}
 
 	key, err := totp.Generate(totp.GenerateOpts{
-		Issuer:      "CaddyPanel",
+		Issuer:      "WebCasa",
 		AccountName: user.Username,
 	})
 	if err != nil {

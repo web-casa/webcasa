@@ -9,13 +9,13 @@ import (
 	"path/filepath"
 	"strings"
 
-	"github.com/caddypanel/caddypanel/internal/auth"
-	"github.com/caddypanel/caddypanel/internal/caddy"
-	"github.com/caddypanel/caddypanel/internal/config"
-	"github.com/caddypanel/caddypanel/internal/database"
-	"github.com/caddypanel/caddypanel/internal/handler"
-	"github.com/caddypanel/caddypanel/internal/model"
-	"github.com/caddypanel/caddypanel/internal/service"
+	"github.com/web-casa/webcasa/internal/auth"
+	"github.com/web-casa/webcasa/internal/caddy"
+	"github.com/web-casa/webcasa/internal/config"
+	"github.com/web-casa/webcasa/internal/database"
+	"github.com/web-casa/webcasa/internal/handler"
+	"github.com/web-casa/webcasa/internal/model"
+	"github.com/web-casa/webcasa/internal/service"
 	"github.com/gin-contrib/cors"
 	"github.com/gin-gonic/gin"
 	"golang.org/x/crypto/bcrypt"
@@ -32,7 +32,7 @@ func main() {
 			resetPassword()
 			return
 		case "--version", "-v":
-			fmt.Printf("CaddyPanel v%s\n", Version)
+			fmt.Printf("WebCasa v%s\n", Version)
 			return
 		}
 	}
@@ -214,7 +214,7 @@ func main() {
 
 	// Start server
 	addr := ":" + cfg.Port
-	log.Printf("🚀 CaddyPanel starting on http://localhost%s", addr)
+	log.Printf("🚀 WebCasa starting on http://localhost%s", addr)
 	log.Printf("📁 Data directory: %s", cfg.DataDir)
 	log.Printf("📄 Caddyfile path: %s", cfg.CaddyfilePath)
 
@@ -265,7 +265,7 @@ func setupFrontend(r *gin.Engine) {
 
 // resetPassword handles the --reset-password CLI command
 func resetPassword() {
-	fmt.Println("🔐 CaddyPanel — 密码重置工具")
+	fmt.Println("🔐 WebCasa — 密码重置工具")
 	fmt.Println("============================")
 
 	// Load config to get DB path
@@ -323,6 +323,6 @@ func resetPassword() {
 		fmt.Printf("✅ 已重置用户 %s 的密码\n", username)
 	}
 
-	fmt.Println("\n请重启 CaddyPanel 服务后使用新密码登录:")
-	fmt.Println("  systemctl restart caddypanel")
+	fmt.Println("\n请重启 WebCasa 服务后使用新密码登录:")
+	fmt.Println("  systemctl restart webcasa")
 }

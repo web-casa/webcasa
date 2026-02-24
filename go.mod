@@ -1,4 +1,4 @@
-module github.com/caddypanel/caddypanel
+module github.com/web-casa/webcasa
 
 go 1.26.0
 

@@ -187,7 +187,7 @@ export default function Dashboard() {
                         <Monitor size={16} style={{ color: 'var(--orange-9)' }} />
                         <Heading size="3">{t('dashboard.system_info')}</Heading>
                     </Flex>
-                    <InfoRow label="CaddyPanel" value={`v${system.panel_version || '-'}`} />
+                    <InfoRow label="WebCasa" value={`v${system.panel_version || '-'}`} />
                     <InfoRow
                         label="Caddy"
                         value={caddy?.version || t('common.unknown')}

@@ -73,7 +73,7 @@
         "sign_out": "退出登录"
     },
     "login": {
-        "title": "登录 CaddyPanel",
+        "title": "登录 WebCasa",
         "subtitle": "轻量级 Caddy 管理面板",
         "username": "用户名",
         "password": "密码",
@@ -86,9 +86,9 @@
         "captcha_hint": "请按住滑块拖动到最右侧",
         "verify_first": "请先完成安全验证",
         "setup_title": "创建管理员账户",
-        "setup_hint": "这是您首次使用 CaddyPanel，请创建一个管理员账户。",
+        "setup_hint": "这是您首次使用 WebCasa，请创建一个管理员账户。",
         "create_account": "创建账户",
-        "footer": "由 CaddyPanel 驱动",
+        "footer": "由 WebCasa 驱动",
         "pow": {
             "idle": "点击进行验证",
             "solving": "验证中... {{progress}}%",

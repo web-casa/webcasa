@@ -4,7 +4,7 @@
 
 ## Project Overview
 
-CaddyPanel is a web-based management panel for the Caddy reverse proxy server, similar to Nginx Proxy Manager. It generates Caddyfile configurations from a SQLite database and manages the Caddy process lifecycle.
+WebCasa is a web-based management panel for the Caddy reverse proxy server, similar to Nginx Proxy Manager. It generates Caddyfile configurations from a SQLite database and manages the Caddy process lifecycle.
 
 ## Architecture
 
@@ -18,14 +18,14 @@ CaddyPanel is a web-based management panel for the Caddy reverse proxy server, s
 1. **Caddyfile over Admin API** — Human-readable config, file-based persistence, simpler rollback (backup before write), `caddy reload` is graceful (zero-downtime)
 2. **Atomic writes** — Write temp → validate → backup → rename. Never partial writes.
 3. **Caddy binary optional** — The panel works without Caddy installed (skips validation, shows config preview). Useful for UI development.
-4. **Single service user** — `caddypanel` system user runs both the panel and controls Caddy via CLI commands.
+4. **Single service user** — `webcasa` system user runs both the panel and controls Caddy via CLI commands.
 5. **Multi-user with roles** — Users have `admin` or `viewer` roles. All mutations are audit-logged.
 
 ## Directory Map
 
 ```
 main.go                          → Entry point, route registration, SPA serving
-internal/config/config.go        → Env var config loading (CADDYPANEL_* vars)
+internal/config/config.go        → Env var config loading (WEBCASA_* vars)
 internal/model/model.go          → All GORM models + request DTOs
 internal/database/database.go    → SQLite init, auto-migrate, WAL mode
 internal/auth/auth.go            → JWT generate/parse/middleware, bcrypt helpers
@@ -125,15 +125,15 @@ The renderer dispatches to `renderProxyHost()`, `renderRedirect()`, `renderStati
 
 - Public endpoints: `POST /api/auth/setup`, `POST /api/auth/login`, `GET /api/auth/need-setup`
 - All other endpoints require `Authorization: Bearer <jwt>` header
-- JWT: HS256, 24h expiry, signed with `CADDYPANEL_JWT_SECRET` env var
+- JWT: HS256, 24h expiry, signed with `WEBCASA_JWT_SECRET` env var
 - Auth middleware in `internal/auth/auth.go` sets `user_id` and `username` in Gin context
 
 ## Environment Variables
 
-All prefixed with `CADDYPANEL_`:
+All prefixed with `WEBCASA_`:
 - `PORT` (default: 39921)
 - `DATA_DIR` (default: ./data)
-- `DB_PATH` (default: data/caddypanel.db)
+- `DB_PATH` (default: data/webcasa.db)
 - `JWT_SECRET` (default: insecure dev value — MUST change in production)
 - `CADDY_BIN` (default: "caddy" from PATH)
 - `CADDYFILE_PATH` (default: data/Caddyfile)

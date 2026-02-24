@@ -1,17 +1,17 @@
 #!/usr/bin/env bash
 # ============================================================================
-#  CaddyPanel — One-Click Install Script
+#  WebCasa — One-Click Install Script
 #  Supports: Ubuntu 20+, Debian 11+, CentOS Stream 8+, AlmaLinux 8+, Fedora 38+
 #           openAnolis, Alibaba Cloud Linux, openEuler, openCloudOS, Kylin (银河麒麟)
 #
 #  Usage:
-#    curl -fsSL https://raw.githubusercontent.com/caddypanel/caddypanel/main/install.sh | bash
+#    curl -fsSL https://raw.githubusercontent.com/web-casa/webcasa/main/install.sh | bash
 #    or:
 #    bash install.sh
 #
 #  Options:
-#    --uninstall     Remove CaddyPanel (keeps data by default)
-#    --purge         Remove CaddyPanel and all data
+#    --uninstall     Remove WebCasa (keeps data by default)
+#    --purge         Remove WebCasa and all data
 #    --no-caddy      Skip Caddy installation
 #    --port PORT     Set panel port (default: 39921)
 #    --from-source   Build from source instead of downloading pre-built binary
@@ -24,18 +24,18 @@ set -euo pipefail
 # Auto-detect version: local VERSION file → GitHub latest release → fallback
 SCRIPT_SELF="${BASH_SOURCE[0]:-}"
 if [[ -n "$SCRIPT_SELF" && -f "$(dirname "$SCRIPT_SELF")/VERSION" ]]; then
-    CADDYPANEL_VERSION="$(cat "$(dirname "$SCRIPT_SELF")/VERSION" | tr -d '[:space:]')"
+    WEBCASA_VERSION="$(cat "$(dirname "$SCRIPT_SELF")/VERSION" | tr -d '[:space:]')"
 elif command -v curl &>/dev/null; then
-    CADDYPANEL_VERSION="$(curl -fsSL https://api.github.com/repos/caddypanel/caddypanel/releases/latest 2>/dev/null | grep -oP '"tag_name":\s*"v?\K[^"]+' || echo "0.7.0")"
+    WEBCASA_VERSION="$(curl -fsSL https://api.github.com/repos/web-casa/webcasa/releases/latest 2>/dev/null | grep -oP '"tag_name":\s*"v?\K[^"]+' || echo "0.1.0")"
 else
-    CADDYPANEL_VERSION="0.7.0"
+    WEBCASA_VERSION="0.1.0"
 fi
-GITHUB_REPO="caddypanel/caddypanel"
+GITHUB_REPO="web-casa/webcasa"
 INSTALL_DIR="/usr/local/bin"
-DATA_DIR="/var/lib/caddypanel"
-LOG_DIR="/var/log/caddypanel"
-CONFIG_DIR="/etc/caddypanel"
-SERVICE_USER="caddypanel"
+DATA_DIR="/var/lib/webcasa"
+LOG_DIR="/var/log/webcasa"
+CONFIG_DIR="/etc/webcasa"
+SERVICE_USER="webcasa"
 PANEL_PORT="39921"
 SKIP_CADDY=false
 UNINSTALL=false
@@ -143,13 +143,13 @@ parse_args() {
 
 usage() {
     cat <<EOF
-${BOLD}CaddyPanel Installer v${CADDYPANEL_VERSION}${NC}
+${BOLD}WebCasa Installer v${WEBCASA_VERSION}${NC}
 
 Usage: bash install.sh [OPTIONS]
 
 Options:
-  --uninstall      Remove CaddyPanel (keeps data)
-  --purge          Remove CaddyPanel and all data
+  --uninstall      Remove WebCasa (keeps data)
+  --purge          Remove WebCasa and all data
   --no-caddy       Skip Caddy installation
   --port PORT      Set panel port (default: 39921)
   --from-source    Build from source (requires Go + Node.js)
@@ -166,20 +166,20 @@ EOF
 
 # ==================== Uninstall ====================
 do_uninstall() {
-    step "Uninstalling CaddyPanel"
+    step "Uninstalling WebCasa"
 
     # Stop and disable service
-    if systemctl is-active --quiet caddypanel 2>/dev/null; then
-        info "Stopping CaddyPanel service..."
-        systemctl stop caddypanel
+    if systemctl is-active --quiet webcasa 2>/dev/null; then
+        info "Stopping WebCasa service..."
+        systemctl stop webcasa
     fi
-    if systemctl is-enabled --quiet caddypanel 2>/dev/null; then
-        systemctl disable caddypanel
+    if systemctl is-enabled --quiet webcasa 2>/dev/null; then
+        systemctl disable webcasa
     fi
 
     # Remove files
-    rm -f /etc/systemd/system/caddypanel.service
-    rm -f "$INSTALL_DIR/caddypanel"
+    rm -f /etc/systemd/system/webcasa.service
+    rm -f "$INSTALL_DIR/webcasa"
     systemctl daemon-reload
 
     if $PURGE; then
@@ -189,11 +189,11 @@ do_uninstall() {
         rm -rf "$CONFIG_DIR"
         userdel -r "$SERVICE_USER" 2>/dev/null || true
         groupdel "$SERVICE_USER" 2>/dev/null || true
-        success "CaddyPanel completely removed (including data)"
+        success "WebCasa completely removed (including data)"
     else
         info "Data preserved at: $DATA_DIR"
         info "Config preserved at: $CONFIG_DIR"
-        success "CaddyPanel removed (data kept). Use --purge to remove everything."
+        success "WebCasa removed (data kept). Use --purge to remove everything."
     fi
 
     exit 0
@@ -255,16 +255,16 @@ install_caddy() {
             ;;
     esac
 
-    # Stop the default caddy service (CaddyPanel manages it)
+    # Stop the default caddy service (WebCasa manages it)
     systemctl stop caddy 2>/dev/null || true
     systemctl disable caddy 2>/dev/null || true
 
     success "Caddy $(caddy version 2>/dev/null || echo '') installed"
 }
 
-# ==================== Install CaddyPanel (Download Pre-built) ====================
+# ==================== Install WebCasa (Download Pre-built) ====================
 install_prebuilt() {
-    step "Installing CaddyPanel v${CADDYPANEL_VERSION}"
+    step "Installing WebCasa v${WEBCASA_VERSION}"
 
     # Check GLIBC version (pre-built binary requires >= 2.32)
     local GLIBC_VER="0.0"
@@ -289,12 +289,12 @@ install_prebuilt() {
     fi
 
     # Determine download URL
-    local TARBALL="caddypanel-${ARCH_SUFFIX}.tar.gz"
-    local URL="https://github.com/${GITHUB_REPO}/releases/download/v${CADDYPANEL_VERSION}/${TARBALL}"
+    local TARBALL="webcasa-${ARCH_SUFFIX}.tar.gz"
+    local URL="https://github.com/${GITHUB_REPO}/releases/download/v${WEBCASA_VERSION}/${TARBALL}"
 
     info "Downloading from ${URL} ..."
     wget -q --show-progress -O "/tmp/${TARBALL}" "$URL" || {
-        error "Download failed. The release v${CADDYPANEL_VERSION} may not exist."
+        error "Download failed. The release v${WEBCASA_VERSION} may not exist."
         error "Try: bash install.sh --from-source"
         exit 1
     }
@@ -310,11 +310,11 @@ install_prebuilt() {
     info "Extracting..."
     tar -xzf "/tmp/${TARBALL}" -C /tmp/
 
-    local EXTRACT_DIR="/tmp/caddypanel-${ARCH_SUFFIX}"
+    local EXTRACT_DIR="/tmp/webcasa-${ARCH_SUFFIX}"
 
     # Install binary
-    cp -f "${EXTRACT_DIR}/caddypanel" "$INSTALL_DIR/caddypanel"
-    chmod 755 "$INSTALL_DIR/caddypanel"
+    cp -f "${EXTRACT_DIR}/webcasa" "$INSTALL_DIR/webcasa"
+    chmod 755 "$INSTALL_DIR/webcasa"
 
     # Install frontend
     mkdir -p "$DATA_DIR/web"
@@ -323,12 +323,12 @@ install_prebuilt() {
     # Cleanup
     rm -rf "/tmp/${TARBALL}" "/tmp/${TARBALL}.sha256" "$EXTRACT_DIR"
 
-    success "CaddyPanel v${CADDYPANEL_VERSION} installed"
+    success "WebCasa v${WEBCASA_VERSION} installed"
 }
 
-# ==================== Install CaddyPanel (Build from Source) ====================
+# ==================== Install WebCasa (Build from Source) ====================
 install_from_source() {
-    step "Building CaddyPanel from source"
+    step "Building WebCasa from source"
 
     # Install Go
     install_go
@@ -356,8 +356,8 @@ install_from_source() {
     elif [[ -f "$SCRIPT_DIR/../main.go" ]]; then
         SRC_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
     else
-        info "Cloning CaddyPanel source..."
-        SRC_DIR="/tmp/caddypanel-build"
+        info "Cloning WebCasa source..."
+        SRC_DIR="/tmp/webcasa-build"
         rm -rf "$SRC_DIR"
         git clone --depth 1 https://github.com/${GITHUB_REPO}.git "$SRC_DIR"
     fi
@@ -376,18 +376,18 @@ install_from_source() {
     cd "$SRC_DIR"
     export PATH=$PATH:/usr/local/go/bin
     export CGO_ENABLED=1
-    go build -ldflags="-s -w -X main.Version=${CADDYPANEL_VERSION}" -o caddypanel .
+    go build -ldflags="-s -w -X main.Version=${WEBCASA_VERSION}" -o webcasa .
     success "Backend built"
 
     # Install binary
-    cp -f caddypanel "$INSTALL_DIR/caddypanel"
-    chmod 755 "$INSTALL_DIR/caddypanel"
+    cp -f webcasa "$INSTALL_DIR/webcasa"
+    chmod 755 "$INSTALL_DIR/webcasa"
 
     # Install frontend
     mkdir -p "$DATA_DIR/web/dist"
     cp -r web/dist/* "$DATA_DIR/web/dist/"
 
-    success "CaddyPanel v${CADDYPANEL_VERSION} installed"
+    success "WebCasa v${WEBCASA_VERSION} installed"
 }
 
 install_go() {
@@ -477,9 +477,9 @@ setup_user() {
 }
 
 setup_config() {
-    step "Configuring CaddyPanel"
+    step "Configuring WebCasa"
 
-    ENV_FILE="$CONFIG_DIR/caddypanel.env"
+    ENV_FILE="$CONFIG_DIR/webcasa.env"
 
     if [[ -f "$ENV_FILE" ]]; then
         info "Config file already exists, preserving: $ENV_FILE"
@@ -488,17 +488,17 @@ setup_config() {
         CADDY_BIN=$(command -v caddy 2>/dev/null || echo "/usr/bin/caddy")
 
         cat > "$ENV_FILE" <<ENVEOF
-# CaddyPanel Configuration
+# WebCasa Configuration
 # Generated on $(date -Iseconds)
 
-CADDYPANEL_PORT=${PANEL_PORT}
-CADDYPANEL_DATA_DIR=${DATA_DIR}
-CADDYPANEL_DB_PATH=${DATA_DIR}/caddypanel.db
-CADDYPANEL_JWT_SECRET=${JWT_SECRET}
-CADDYPANEL_CADDY_BIN=${CADDY_BIN}
-CADDYPANEL_CADDYFILE_PATH=${DATA_DIR}/Caddyfile
-CADDYPANEL_LOG_DIR=${LOG_DIR}
-CADDYPANEL_ADMIN_API=http://localhost:2019
+WEBCASA_PORT=${PANEL_PORT}
+WEBCASA_DATA_DIR=${DATA_DIR}
+WEBCASA_DB_PATH=${DATA_DIR}/webcasa.db
+WEBCASA_JWT_SECRET=${JWT_SECRET}
+WEBCASA_CADDY_BIN=${CADDY_BIN}
+WEBCASA_CADDYFILE_PATH=${DATA_DIR}/Caddyfile
+WEBCASA_LOG_DIR=${LOG_DIR}
+WEBCASA_ADMIN_API=http://localhost:2019
 ENVEOF
 
         chmod 600 "$ENV_FILE"
@@ -511,7 +511,7 @@ ENVEOF
     if [[ ! -f "$CADDYFILE" ]]; then
         cat > "$CADDYFILE" <<CFEOF
 # ============================================
-# Auto-generated by CaddyPanel
+# Auto-generated by WebCasa
 # DO NOT EDIT MANUALLY — changes will be overwritten
 # ============================================
 
@@ -534,9 +534,9 @@ CFEOF
 setup_systemd() {
     step "Setting up systemd service"
 
-    cat > /etc/systemd/system/caddypanel.service <<SVCEOF
+    cat > /etc/systemd/system/webcasa.service <<SVCEOF
 [Unit]
-Description=CaddyPanel - Caddy Reverse Proxy Management Panel
+Description=WebCasa - Caddy Reverse Proxy Management Panel
 Documentation=https://github.com/${GITHUB_REPO}
 After=network-online.target
 Wants=network-online.target
@@ -545,14 +545,14 @@ Wants=network-online.target
 Type=simple
 User=${SERVICE_USER}
 Group=${SERVICE_USER}
-ExecStart=${INSTALL_DIR}/caddypanel
+ExecStart=${INSTALL_DIR}/webcasa
 WorkingDirectory=${DATA_DIR}
 Restart=on-failure
 RestartSec=5
 LimitNOFILE=65536
 
 # Environment
-EnvironmentFile=-${CONFIG_DIR}/caddypanel.env
+EnvironmentFile=-${CONFIG_DIR}/webcasa.env
 
 # Security hardening
 NoNewPrivileges=true
@@ -567,14 +567,14 @@ AmbientCapabilities=CAP_NET_BIND_SERVICE
 # Logging
 StandardOutput=journal
 StandardError=journal
-SyslogIdentifier=caddypanel
+SyslogIdentifier=webcasa
 
 [Install]
 WantedBy=multi-user.target
 SVCEOF
 
     systemctl daemon-reload
-    systemctl enable caddypanel
+    systemctl enable webcasa
 
     success "Systemd service installed and enabled"
 }
@@ -583,7 +583,7 @@ setup_firewall() {
     step "Configuring firewall"
 
     if command -v ufw &>/dev/null; then
-        ufw allow "$PANEL_PORT"/tcp comment "CaddyPanel" > /dev/null 2>&1 || true
+        ufw allow "$PANEL_PORT"/tcp comment "WebCasa" > /dev/null 2>&1 || true
         ufw allow 80/tcp comment "HTTP" > /dev/null 2>&1 || true
         ufw allow 443/tcp comment "HTTPS" > /dev/null 2>&1 || true
         success "UFW rules added (ports $PANEL_PORT, 80, 443)"
@@ -605,8 +605,8 @@ setup_caddy_permissions() {
     if [[ -n "$CADDY_BIN" ]]; then
         setcap 'cap_net_bind_service=+ep' "$CADDY_BIN" 2>/dev/null || true
         if [[ -d /etc/sudoers.d ]]; then
-            echo "${SERVICE_USER} ALL=(ALL) NOPASSWD: ${CADDY_BIN}" > /etc/sudoers.d/caddypanel 2>/dev/null || true
-            chmod 0440 /etc/sudoers.d/caddypanel 2>/dev/null || true
+            echo "${SERVICE_USER} ALL=(ALL) NOPASSWD: ${CADDY_BIN}" > /etc/sudoers.d/webcasa 2>/dev/null || true
+            chmod 0440 /etc/sudoers.d/webcasa 2>/dev/null || true
         fi
     fi
 }
@@ -620,7 +620,7 @@ prompt_port() {
 
     echo ""
     echo -e "${BOLD}📌 Panel Port Configuration${NC}"
-    echo -e "   CaddyPanel will listen on this port for the management UI."
+    echo -e "   WebCasa will listen on this port for the management UI."
     echo -e "   Default: ${GREEN}${PANEL_PORT}${NC}"
     echo ""
 
@@ -640,16 +640,16 @@ prompt_port() {
 }
 # ==================== Start Service ====================
 start_service() {
-    step "Starting CaddyPanel"
+    step "Starting WebCasa"
 
-    systemctl start caddypanel
+    systemctl start webcasa
     sleep 2
 
-    if systemctl is-active --quiet caddypanel; then
-        success "CaddyPanel is running!"
+    if systemctl is-active --quiet webcasa; then
+        success "WebCasa is running!"
     else
-        error "CaddyPanel failed to start. Check logs with:"
-        echo "  journalctl -u caddypanel -n 50 --no-pager"
+        error "WebCasa failed to start. Check logs with:"
+        echo "  journalctl -u webcasa -n 50 --no-pager"
         exit 1
     fi
 }
@@ -681,9 +681,9 @@ detect_public_ip() {
     fi
 
     # Write to SQLite settings table
-    local DB_PATH="${DATA_DIR}/caddypanel.db"
+    local DB_PATH="${DATA_DIR}/webcasa.db"
 
-    # Wait for CaddyPanel to create the database (up to 10 seconds)
+    # Wait for WebCasa to create the database (up to 10 seconds)
     local WAIT_COUNT=0
     while [[ ! -f "$DB_PATH" ]] && [[ $WAIT_COUNT -lt 10 ]]; do
         sleep 1
@@ -722,7 +722,7 @@ print_summary() {
 
     echo ""
     echo -e "${GREEN}${BOLD}╔══════════════════════════════════════════════════════════════╗${NC}"
-    echo -e "${GREEN}${BOLD}║           CaddyPanel Installation Complete! 🎉              ║${NC}"
+    echo -e "${GREEN}${BOLD}║           WebCasa Installation Complete! 🎉              ║${NC}"
     echo -e "${GREEN}${BOLD}╚══════════════════════════════════════════════════════════════╝${NC}"
     echo ""
     echo -e "  ${BOLD}Panel URL:${NC}      http://${DISPLAY_IP}:${PANEL_PORT}"
@@ -734,15 +734,15 @@ print_summary() {
         echo -e "  ${BOLD}IPv6:${NC}           ${PUBLIC_IPV6}"
     fi
     echo ""
-    echo -e "  ${BOLD}Config:${NC}         ${CONFIG_DIR}/caddypanel.env"
+    echo -e "  ${BOLD}Config:${NC}         ${CONFIG_DIR}/webcasa.env"
     echo -e "  ${BOLD}Data:${NC}           ${DATA_DIR}/"
     echo -e "  ${BOLD}Logs:${NC}           ${LOG_DIR}/"
-    echo -e "  ${BOLD}Binary:${NC}         ${INSTALL_DIR}/caddypanel"
+    echo -e "  ${BOLD}Binary:${NC}         ${INSTALL_DIR}/webcasa"
     echo ""
     echo -e "  ${BOLD}Service Commands:${NC}"
-    echo -e "    systemctl status caddypanel    ${CYAN}# Check status${NC}"
-    echo -e "    systemctl restart caddypanel   ${CYAN}# Restart${NC}"
-    echo -e "    journalctl -u caddypanel -f    ${CYAN}# View logs${NC}"
+    echo -e "    systemctl status webcasa    ${CYAN}# Check status${NC}"
+    echo -e "    systemctl restart webcasa   ${CYAN}# Restart${NC}"
+    echo -e "    journalctl -u webcasa -f    ${CYAN}# View logs${NC}"
     echo ""
     echo -e "  ${YELLOW}⚠  First visit: create your admin account at the URL above${NC}"
     echo ""
@@ -758,7 +758,7 @@ main() {
     echo '  \____\__,_|\__,_|\__,_|\__, |_|   \__,_|_| |_|\___|_|'
     echo '                         |___/                          '
     echo -e "${NC}"
-    echo -e "  ${BOLD}One-Click Installer v${CADDYPANEL_VERSION}${NC}"
+    echo -e "  ${BOLD}One-Click Installer v${WEBCASA_VERSION}${NC}"
     echo ""
 
     parse_args "$@"
@@ -781,7 +781,7 @@ main() {
     install_caddy
     setup_user
 
-    # Install CaddyPanel binary + frontend
+    # Install WebCasa binary + frontend
     if $FROM_SOURCE; then
         info "Building from source (--from-source)"
         install_from_source

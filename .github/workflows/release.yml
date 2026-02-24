@@ -8,7 +8,7 @@ permissions:
   contents: write
 
 env:
-  GITHUB_REPO: caddypanel/caddypanel
+  GITHUB_REPO: web-casa/webcasa
 
 jobs:
   release:
@@ -55,15 +55,15 @@ jobs:
           VERSION="${GITHUB_REF_NAME#v}"
           go build \
             -ldflags="-s -w -X main.Version=${VERSION}" \
-            -o caddypanel .
-          echo "✅ Built caddypanel for ${{ matrix.suffix }}"
+            -o webcasa .
+          echo "✅ Built webcasa for ${{ matrix.suffix }}"
 
       # --- Package Tarball ---
       - name: Package
         run: |
-          RELEASE_DIR="caddypanel-${{ matrix.suffix }}"
+          RELEASE_DIR="webcasa-${{ matrix.suffix }}"
           mkdir -p "${RELEASE_DIR}/web"
-          cp caddypanel "${RELEASE_DIR}/"
+          cp webcasa "${RELEASE_DIR}/"
           cp -r web/dist "${RELEASE_DIR}/web/"
           cp install.sh "${RELEASE_DIR}/"
           tar -czf "${RELEASE_DIR}.tar.gz" "${RELEASE_DIR}"
@@ -75,6 +75,6 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           files: |
-            caddypanel-${{ matrix.suffix }}.tar.gz
-            caddypanel-${{ matrix.suffix }}.tar.gz.sha256
+            webcasa-${{ matrix.suffix }}.tar.gz
+            webcasa-${{ matrix.suffix }}.tar.gz.sha256
           generate_release_notes: true

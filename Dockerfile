@@ -14,7 +14,7 @@ COPY go.mod go.sum ./
 RUN go mod download
 COPY . .
 COPY --from=frontend /app/web/dist ./web/dist
-RUN CGO_ENABLED=1 go build -o caddypanel .
+RUN CGO_ENABLED=1 go build -o webcasa .
 
 # Runtime stage
 FROM alpine:3.19
@@ -25,18 +25,18 @@ RUN curl -sSL "https://caddyserver.com/api/download?os=linux&arch=$(uname -m | s
     && chmod +x /usr/local/bin/caddy
 
 WORKDIR /app
-COPY --from=backend /app/caddypanel .
+COPY --from=backend /app/webcasa .
 
 # Create data directory
 RUN mkdir -p /app/data/logs /app/data/backups
 
 # Environment defaults
-ENV CADDYPANEL_PORT=8080
-ENV CADDYPANEL_DATA_DIR=/app/data
-ENV CADDYPANEL_CADDY_BIN=/usr/local/bin/caddy
+ENV WEBCASA_PORT=8080
+ENV WEBCASA_DATA_DIR=/app/data
+ENV WEBCASA_CADDY_BIN=/usr/local/bin/caddy
 
 EXPOSE 8080 80 443
 
 VOLUME ["/app/data"]
 
-CMD ["./caddypanel"]
+CMD ["./webcasa"]

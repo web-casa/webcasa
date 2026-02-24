@@ -3,7 +3,7 @@ package service
 import (
 	"fmt"
 
-	"github.com/caddypanel/caddypanel/internal/model"
+	"github.com/web-casa/webcasa/internal/model"
 	"gorm.io/gorm"
 )
 

@@ -19,7 +19,7 @@ i18n
         },
         detection: {
             order: ['localStorage', 'navigator'],
-            lookupLocalStorage: 'caddypanel-lang',
+            lookupLocalStorage: 'webcasa-lang',
             caches: ['localStorage'],
         },
     })

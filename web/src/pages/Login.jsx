@@ -250,7 +250,7 @@ export default function Login() {
                         <Zap size={28} color="white" />
                     </Flex>
                     <Heading size="6" weight="bold" style={{ color: 'var(--cp-text)' }}>
-                        CaddyPanel
+                        WebCasa
                     </Heading>
                     <Text size="2" color="gray">
                         {t('login.subtitle')}

@@ -1,6 +1,6 @@
 <div align="center">
 
-# ⚡ CaddyPanel
+# ⚡ WebCasa
 
 **开源的 Caddy 反向代理 Web 管理面板**
 
@@ -60,8 +60,8 @@
 支持 Ubuntu 20+、Debian 11+、CentOS Stream 8+、AlmaLinux、Rocky Linux、Fedora、openAnolis、Alibaba Cloud Linux、openEuler、openCloudOS、银河麒麟 等主流 Linux 发行版。
 
 ```bash
-# 下载并运行安装脚本（自动安装 Caddy + CaddyPanel）
-curl -fsSL https://raw.githubusercontent.com/caddypanel/caddypanel/main/install.sh | sudo bash
+# 下载并运行安装脚本（自动安装 Caddy + WebCasa）
+curl -fsSL https://raw.githubusercontent.com/web-casa/webcasa/main/install.sh | sudo bash
 ```
 
 > 脚本会自动安装 Caddy Server、Go、Node.js 等所有依赖，编译面板，配置 systemd 服务并启动。无需手动安装任何组件。
@@ -87,8 +87,8 @@ sudo bash install.sh --purge
 ### Docker 安装
 
 ```bash
-git clone https://github.com/caddypanel/caddypanel.git
-cd caddypanel
+git clone https://github.com/web-casa/webcasa.git
+cd webcasa
 docker compose up -d
 ```
 
@@ -99,14 +99,14 @@ docker compose up -d
 **前置要求：** Go 1.26+、Node.js 24+、GCC
 
 ```bash
-git clone https://github.com/caddypanel/caddypanel.git
-cd caddypanel
+git clone https://github.com/web-casa/webcasa.git
+cd webcasa
 
 # 编译前端 + 后端
 make build
 
 # 运行
-./caddypanel
+./webcasa
 ```
 
 ## 🛠️ 开发指南
@@ -124,7 +124,7 @@ cd web && npm install && npm run dev
 ## 📂 目录结构
 
 ```
-caddypanel/
+webcasa/
 ├── main.go                  # 入口
 ├── VERSION                  # 版本号（唯一真相源）
 ├── internal/
@@ -144,17 +144,17 @@ caddypanel/
 
 ## ⚙️ 配置说明
 
-所有配置通过环境变量设置，安装脚本会自动生成 `/etc/caddypanel/caddypanel.env`：
+所有配置通过环境变量设置，安装脚本会自动生成 `/etc/web-casa/webcasa.env`：
 
 | 环境变量 | 默认值 | 说明 |
 |----------|--------|------|
-| `CADDYPANEL_PORT` | `39921` | 面板端口 |
-| `CADDYPANEL_DATA_DIR` | `./data` | 数据目录 |
-| `CADDYPANEL_DB_PATH` | `data/caddypanel.db` | 数据库路径 |
-| `CADDYPANEL_JWT_SECRET` | — | JWT 签名密钥（必须修改） |
-| `CADDYPANEL_CADDY_BIN` | `caddy` | Caddy 二进制路径 |
-| `CADDYPANEL_CADDYFILE_PATH` | `data/Caddyfile` | 生成的 Caddyfile 路径 |
-| `CADDYPANEL_LOG_DIR` | `data/logs` | 日志目录 |
+| `WEBCASA_PORT` | `39921` | 面板端口 |
+| `WEBCASA_DATA_DIR` | `./data` | 数据目录 |
+| `WEBCASA_DB_PATH` | `data/webcasa.db` | 数据库路径 |
+| `WEBCASA_JWT_SECRET` | — | JWT 签名密钥（必须修改） |
+| `WEBCASA_CADDY_BIN` | `caddy` | Caddy 二进制路径 |
+| `WEBCASA_CADDYFILE_PATH` | `data/Caddyfile` | 生成的 Caddyfile 路径 |
+| `WEBCASA_LOG_DIR` | `data/logs` | 日志目录 |
 
 ## 🗺️ 路线图
 
