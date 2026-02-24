@@ -1,10 +1,11 @@
 import { useState, useEffect, useCallback } from 'react'
 import { useNavigate } from 'react-router'
 import { Box, Card, Flex, Heading, Text, TextField, Button, Callout } from '@radix-ui/themes'
-import { Zap, AlertCircle, Check, ShieldCheck, Loader2, Languages } from 'lucide-react'
+import { AlertCircle, Check, ShieldCheck, Loader2, Languages } from 'lucide-react'
 import { useAuthStore } from '../stores/auth.js'
 import { useTranslation } from 'react-i18next'
 import sha256 from '../utils/sha256.js'
+import logoImg from '../assets/logo.png'
 
 // ============ PoW Captcha Component ============
 // Pure JS implementation — works over HTTP (no Web Crypto needed)
@@ -236,19 +237,16 @@ export default function Login() {
             <Box style={{ width: '100%', maxWidth: 400, padding: '0 16px' }}>
                 {/* Logo */}
                 <Flex direction="column" align="center" gap="2" mb="6">
-                    <Flex
-                        align="center"
-                        justify="center"
+                    <img
+                        src={logoImg}
+                        alt="WebCasa"
                         style={{
                             width: 56,
                             height: 56,
                             borderRadius: 16,
-                            background: 'linear-gradient(135deg, #10b981 0%, #059669 100%)',
                             boxShadow: '0 8px 32px rgba(16, 185, 129, 0.25)',
                         }}
-                    >
-                        <Zap size={28} color="white" />
-                    </Flex>
+                    />
                     <Heading size="6" weight="bold" style={{ color: 'var(--cp-text)' }}>
                         WebCasa
                     </Heading>

@@ -304,10 +304,12 @@ jobs:
 
           # Clone it
           CLONE=$(curl -sf -X POST "http://localhost:$PANEL_PORT/api/hosts/$SRC_ID/clone" \
-            -H "Authorization: Bearer $TOKEN")
+            -H "Authorization: Bearer $TOKEN" \
+            -H 'Content-Type: application/json' \
+            -d '{"domain":"clone-copy.test:8888"}')
           CLONE_DOMAIN=$(echo "$CLONE" | jq -r '.domain')
           CLONE_WS=$(echo "$CLONE" | jq -r '.websocket')
-          echo "$CLONE_DOMAIN" | grep -q "clone-source.test" || exit 1
+          [ "$CLONE_DOMAIN" = "clone-copy.test:8888" ] || exit 1
           [ "$CLONE_WS" = "true" ] || exit 1
           CLONE_ID=$(echo "$CLONE" | jq -r '.id')
 

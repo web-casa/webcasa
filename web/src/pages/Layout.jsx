@@ -2,7 +2,6 @@ import { NavLink, Outlet, useNavigate, useLocation } from 'react-router'
 import { Box, Flex, Text, DropdownMenu, Separator } from '@radix-ui/themes'
 import { useState, useEffect, useCallback } from 'react'
 import {
-    Zap,
     LayoutDashboard,
     Globe,
     FileText,
@@ -26,6 +25,7 @@ import { useAuthStore } from '../stores/auth.js'
 import { useThemeStore } from '../stores/theme.js'
 import { dashboardAPI } from '../api/index.js'
 import { useTranslation } from 'react-i18next'
+import logoImg from '../assets/logo.png'
 
 const navItems = [
     { to: '/', icon: LayoutDashboard, labelKey: 'nav.dashboard', end: true },
@@ -100,19 +100,7 @@ export default function Layout() {
         <>
             {/* Logo */}
             <Flex align="center" gap="2" p="4" pb="2">
-                <Box
-                    style={{
-                        width: 32,
-                        height: 32,
-                        borderRadius: 8,
-                        background: 'linear-gradient(135deg, #10b981, #059669)',
-                        display: 'flex',
-                        alignItems: 'center',
-                        justifyContent: 'center',
-                    }}
-                >
-                    <Zap size={18} color="white" />
-                </Box>
+                <img src={logoImg} alt="WebCasa" style={{ width: 32, height: 32, borderRadius: 8 }} />
                 <Text size="4" weight="bold" style={{ color: 'var(--cp-text)' }}>
                     WebCasa
                 </Text>
@@ -203,19 +191,7 @@ export default function Layout() {
                         <Menu size={22} />
                     </button>
                     <Flex align="center" gap="2">
-                        <Box
-                            style={{
-                                width: 24,
-                                height: 24,
-                                borderRadius: 6,
-                                background: 'linear-gradient(135deg, #10b981, #059669)',
-                                display: 'flex',
-                                alignItems: 'center',
-                                justifyContent: 'center',
-                            }}
-                        >
-                            <Zap size={14} color="white" />
-                        </Box>
+                        <img src={logoImg} alt="WebCasa" style={{ width: 24, height: 24, borderRadius: 6 }} />
                         <Text size="3" weight="bold" style={{ color: 'var(--cp-text)' }}>
                             WebCasa
                         </Text>
