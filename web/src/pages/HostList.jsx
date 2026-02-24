@@ -274,13 +274,13 @@ function HostFormDialog({ open, onClose, onSaved, host }) {
                         <Flex direction="column" gap="1" style={{ flex: 1 }}>
                             <Text size="2" weight="medium">{t('group.label')}</Text>
                             <Select.Root
-                                value={form.group_id ? String(form.group_id) : ''}
-                                onValueChange={(v) => setForm({ ...form, group_id: v ? Number(v) : null })}
+                                value={form.group_id ? String(form.group_id) : '__none__'}
+                                onValueChange={(v) => setForm({ ...form, group_id: v === '__none__' ? null : Number(v) })}
                                 size="2"
                             >
                                 <Select.Trigger placeholder={t('group.select_placeholder')} />
                                 <Select.Content>
-                                    <Select.Item value="">{t('group.none')}</Select.Item>
+                                    <Select.Item value="__none__">{t('group.none')}</Select.Item>
                                     {groups.map(g => (
                                         <Select.Item key={g.id} value={String(g.id)}>
                                             <Flex align="center" gap="2">

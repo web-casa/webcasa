@@ -37,7 +37,7 @@ jobs:
         run: go vet ./...
 
       - name: Go — Unit tests
-        run: go test ./... -v -count=1
+        run: go test ./... -v -count=1 -timeout 600s
 
       # --- Frontend ---
       - name: Frontend — Install & Build
@@ -284,6 +284,122 @@ jobs:
             -H "Authorization: Bearer $TOKEN" | jq '.total')
           [ "$COUNT" -eq 0 ] || exit 1
           echo "✅ Host deleted, list empty"
+
+      # ==================== Phase 6 API Tests ====================
+
+      - name: 'Test: Clone host'
+        run: |
+          # Create a host to clone
+          RESPONSE=$(curl -sf -X POST http://localhost:$PANEL_PORT/api/hosts \
+            -H "Authorization: Bearer $TOKEN" \
+            -H 'Content-Type: application/json' \
+            -d '{
+              "domain": "clone-source.test:8888",
+              "tls_enabled": false,
+              "http_redirect": false,
+              "websocket": true,
+              "upstreams": [{"address": "localhost:3000"}]
+            }')
+          SRC_ID=$(echo "$RESPONSE" | jq -r '.id')
+
+          # Clone it
+          CLONE=$(curl -sf -X POST "http://localhost:$PANEL_PORT/api/hosts/$SRC_ID/clone" \
+            -H "Authorization: Bearer $TOKEN")
+          CLONE_DOMAIN=$(echo "$CLONE" | jq -r '.domain')
+          CLONE_WS=$(echo "$CLONE" | jq -r '.websocket')
+          echo "$CLONE_DOMAIN" | grep -q "clone-source.test" || exit 1
+          [ "$CLONE_WS" = "true" ] || exit 1
+          CLONE_ID=$(echo "$CLONE" | jq -r '.id')
+
+          # Cleanup
+          curl -sf -X DELETE "http://localhost:$PANEL_PORT/api/hosts/$SRC_ID" -H "Authorization: Bearer $TOKEN" > /dev/null
+          curl -sf -X DELETE "http://localhost:$PANEL_PORT/api/hosts/$CLONE_ID" -H "Authorization: Bearer $TOKEN" > /dev/null
+          echo "✅ Host clone OK"
+
+      - name: 'Test: Group CRUD'
+        run: |
+          # Create
+          GRP=$(curl -sf -X POST http://localhost:$PANEL_PORT/api/groups \
+            -H "Authorization: Bearer $TOKEN" \
+            -H 'Content-Type: application/json' \
+            -d '{"name":"ci-test-group"}')
+          GRP_ID=$(echo "$GRP" | jq -r '.id')
+          [ -n "$GRP_ID" ] && [ "$GRP_ID" != "null" ] || exit 1
+
+          # List
+          GRP_COUNT=$(curl -sf http://localhost:$PANEL_PORT/api/groups \
+            -H "Authorization: Bearer $TOKEN" | jq 'length')
+          [ "$GRP_COUNT" -ge 1 ] || exit 1
+
+          # Update
+          curl -sf -X PUT "http://localhost:$PANEL_PORT/api/groups/$GRP_ID" \
+            -H "Authorization: Bearer $TOKEN" \
+            -H 'Content-Type: application/json' \
+            -d '{"name":"ci-test-group-updated"}' > /dev/null
+
+          # Delete
+          curl -sf -X DELETE "http://localhost:$PANEL_PORT/api/groups/$GRP_ID" \
+            -H "Authorization: Bearer $TOKEN" > /dev/null
+          echo "✅ Group CRUD OK"
+
+      - name: 'Test: Tag CRUD'
+        run: |
+          # Create
+          TAG=$(curl -sf -X POST http://localhost:$PANEL_PORT/api/tags \
+            -H "Authorization: Bearer $TOKEN" \
+            -H 'Content-Type: application/json' \
+            -d '{"name":"ci-test-tag","color":"#ff0000"}')
+          TAG_ID=$(echo "$TAG" | jq -r '.id')
+          [ -n "$TAG_ID" ] && [ "$TAG_ID" != "null" ] || exit 1
+
+          # List
+          TAG_COUNT=$(curl -sf http://localhost:$PANEL_PORT/api/tags \
+            -H "Authorization: Bearer $TOKEN" | jq 'length')
+          [ "$TAG_COUNT" -ge 1 ] || exit 1
+
+          # Delete
+          curl -sf -X DELETE "http://localhost:$PANEL_PORT/api/tags/$TAG_ID" \
+            -H "Authorization: Bearer $TOKEN" > /dev/null
+          echo "✅ Tag CRUD OK"
+
+      - name: 'Test: Template CRUD'
+        run: |
+          # Create
+          TPL=$(curl -sf -X POST http://localhost:$PANEL_PORT/api/templates \
+            -H "Authorization: Bearer $TOKEN" \
+            -H 'Content-Type: application/json' \
+            -d '{
+              "name": "ci-test-template",
+              "tls_enabled": true,
+              "http_redirect": true,
+              "websocket": false,
+              "upstreams": [{"address": "localhost:8080"}]
+            }')
+          TPL_ID=$(echo "$TPL" | jq -r '.id')
+          [ -n "$TPL_ID" ] && [ "$TPL_ID" != "null" ] || exit 1
+
+          # List
+          TPL_COUNT=$(curl -sf http://localhost:$PANEL_PORT/api/templates \
+            -H "Authorization: Bearer $TOKEN" | jq 'length')
+          [ "$TPL_COUNT" -ge 1 ] || exit 1
+
+          # Delete
+          curl -sf -X DELETE "http://localhost:$PANEL_PORT/api/templates/$TPL_ID" \
+            -H "Authorization: Bearer $TOKEN" > /dev/null
+          echo "✅ Template CRUD OK"
+
+      - name: 'Test: DNS check'
+        run: |
+          RESPONSE=$(curl -s -o /tmp/dns_response.json -w "%{http_code}" \
+            -X POST http://localhost:$PANEL_PORT/api/dns/check \
+            -H "Authorization: Bearer $TOKEN" \
+            -H 'Content-Type: application/json' \
+            -d '{"domain":"example.com"}')
+          echo "HTTP $RESPONSE"
+          cat /tmp/dns_response.json | jq .
+          # DNS check should return 200 regardless of resolution result
+          [ "$RESPONSE" = "200" ] || exit 1
+          echo "✅ DNS check OK"
 
       - name: 'Test: Stop Caddy'
         if: env.CADDY_RUNNING == 'true'
