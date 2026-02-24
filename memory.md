@@ -8,7 +8,7 @@
 
 ## 📍 项目当前状态
 
-- **版本**: `0.5.2` (定义在 `/VERSION`，唯一真相源)
+- **版本**: `0.6.0` (定义在 `/VERSION`，唯一真相源)
 - **阶段**: Phase 5 完成（安全增强与主题系统）
 - **构建状态**: ✅ `go build` + `npm run build` 通过
 - **开发方式**: AI Vibe Coding (Gemini 2.5 Pro + Antigravity Agent)
