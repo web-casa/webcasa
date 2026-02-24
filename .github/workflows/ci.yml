@@ -391,10 +391,8 @@ jobs:
       - name: 'Test: DNS check'
         run: |
           RESPONSE=$(curl -s -o /tmp/dns_response.json -w "%{http_code}" \
-            -X POST http://localhost:$PANEL_PORT/api/dns/check \
-            -H "Authorization: Bearer $TOKEN" \
-            -H 'Content-Type: application/json' \
-            -d '{"domain":"example.com"}')
+            "http://localhost:$PANEL_PORT/api/dns-check?domain=example.com" \
+            -H "Authorization: Bearer $TOKEN")
           echo "HTTP $RESPONSE"
           cat /tmp/dns_response.json | jq .
           # DNS check should return 200 regardless of resolution result
