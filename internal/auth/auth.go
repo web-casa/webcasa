@@ -12,8 +12,9 @@ import (
 
 // Claims defines JWT token claims
 type Claims struct {
-	UserID   uint   `json:"user_id"`
-	Username string `json:"username"`
+	UserID     uint   `json:"user_id"`
+	Username   string `json:"username"`
+	Pending2FA bool   `json:"pending_2fa,omitempty"`
 	jwt.RegisteredClaims
 }
 
@@ -36,6 +37,23 @@ func GenerateToken(userID uint, username, secret string) (string, error) {
 		Username: username,
 		RegisteredClaims: jwt.RegisteredClaims{
 			ExpiresAt: jwt.NewNumericDate(time.Now().Add(24 * time.Hour)),
+			IssuedAt:  jwt.NewNumericDate(time.Now()),
+			Issuer:    "caddypanel",
+		},
+	}
+
+	token := jwt.NewWithClaims(jwt.SigningMethodHS256, claims)
+	return token.SignedString([]byte(secret))
+}
+
+// GenerateTempToken creates a short-lived JWT (5 min) with pending_2fa flag
+func GenerateTempToken(userID uint, username, secret string) (string, error) {
+	claims := Claims{
+		UserID:     userID,
+		Username:   username,
+		Pending2FA: true,
+		RegisteredClaims: jwt.RegisteredClaims{
+			ExpiresAt: jwt.NewNumericDate(time.Now().Add(5 * time.Minute)),
 			IssuedAt:  jwt.NewNumericDate(time.Now()),
 			Issuer:    "caddypanel",
 		},
@@ -89,6 +107,14 @@ func Middleware(secret string) gin.HandlerFunc {
 		// Store user info in context
 		c.Set("user_id", claims.UserID)
 		c.Set("username", claims.Username)
+
+		// Reject pending_2fa tokens from accessing protected routes
+		if claims.Pending2FA {
+			c.JSON(http.StatusUnauthorized, gin.H{"error": "2FA verification required", "error_key": "error.2fa_required"})
+			c.Abort()
+			return
+		}
+
 		c.Next()
 	}
 }

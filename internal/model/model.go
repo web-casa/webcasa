@@ -6,12 +6,15 @@ import (
 
 // User represents a panel administrator
 type User struct {
-	ID        uint      `gorm:"primaryKey" json:"id"`
-	Username  string    `gorm:"uniqueIndex;not null;size:64" json:"username"`
-	Password  string    `gorm:"not null" json:"-"` // bcrypt hash, never exposed in JSON
-	Role      string    `gorm:"not null;size:16;default:admin" json:"role"` // "admin" or "viewer"
-	CreatedAt time.Time `json:"created_at"`
-	UpdatedAt time.Time `json:"updated_at"`
+	ID             uint      `gorm:"primaryKey" json:"id"`
+	Username       string    `gorm:"uniqueIndex;not null;size:64" json:"username"`
+	Password       string    `gorm:"not null" json:"-"` // bcrypt hash, never exposed in JSON
+	Role           string    `gorm:"not null;size:16;default:admin" json:"role"` // "admin" or "viewer"
+	TOTPSecret     string    `gorm:"size:512" json:"-"`                          // AES-GCM encrypted TOTP secret
+	TOTPEnabled    *bool     `gorm:"default:false" json:"totp_enabled"`          // whether 2FA is enabled
+	RecoveryCodes  string    `gorm:"type:text" json:"-"`                         // JSON array of recovery code hashes
+	CreatedAt      time.Time `json:"created_at"`
+	UpdatedAt      time.Time `json:"updated_at"`
 }
 
 // DnsProvider represents a DNS API provider for ACME DNS challenge
@@ -72,10 +75,14 @@ type Host struct {
 	ErrorPagePath   string `gorm:"size:512" json:"error_page_path"`        // custom error page directory
 	CustomDirectives string         `gorm:"type:text" json:"custom_directives"` // raw Caddy directives
 	// Phase 4 batch 3: new host types
-	RootPath        string `gorm:"size:512" json:"root_path"`          // root directory for static/PHP hosts
+	RootPath        string `gorm:"size:512" json:"root_path"`            // root directory for static/PHP hosts
 	DirectoryBrowse *bool  `gorm:"default:false" json:"directory_browse"` // enable directory listing
 	PHPFastCGI      string `gorm:"size:255" json:"php_fastcgi"`        // PHP-FPM address e.g. "localhost:9000"
 	IndexFiles      string `gorm:"size:255" json:"index_files"`        // custom index files e.g. "index.html index.php"
+	// Phase 6: group and tag associations
+	GroupID         *uint  `json:"group_id"`                              // FK to Group (optional)
+	Group           *Group `gorm:"foreignKey:GroupID" json:"group,omitempty"` // GORM association for Preload
+	Tags            []Tag  `gorm:"many2many:host_tags" json:"tags"`        // many-to-many via host_tags
 	Upstreams        []Upstream     `gorm:"foreignKey:HostID;constraint:OnDelete:CASCADE" json:"upstreams"`
 	CustomHeaders  []CustomHeader `gorm:"foreignKey:HostID;constraint:OnDelete:CASCADE" json:"custom_headers"`
 	AccessRules    []AccessRule   `gorm:"foreignKey:HostID;constraint:OnDelete:CASCADE" json:"access_rules"`
@@ -163,6 +170,9 @@ type HostCreateRequest struct {
 	CustomHeaders    []HeaderInput    `json:"custom_headers"`
 	AccessRules      []AccessInput    `json:"access_rules"`
 	BasicAuths       []BasicAuthInput `json:"basic_auths"`
+	// Phase 6: group and tag associations
+	GroupID          *uint            `json:"group_id"`
+	TagIDs           []uint           `json:"tag_ids"`
 }
 
 // UpstreamInput is input for creating an upstream
@@ -209,4 +219,39 @@ type AuditLog struct {
 	Detail    string    `gorm:"type:text" json:"detail"`        // human-readable description
 	IP        string    `gorm:"size:45" json:"ip"`
 	CreatedAt time.Time `json:"created_at"`
+}
+
+// Group represents a host group for organizing sites
+type Group struct {
+	ID        uint      `gorm:"primaryKey" json:"id"`
+	Name      string    `gorm:"uniqueIndex;not null;size:64" json:"name"`
+	Color     string    `gorm:"size:16" json:"color"`
+	CreatedAt time.Time `json:"created_at"`
+	UpdatedAt time.Time `json:"updated_at"`
+}
+
+// Tag represents a label that can be attached to hosts
+type Tag struct {
+	ID        uint      `gorm:"primaryKey" json:"id"`
+	Name      string    `gorm:"uniqueIndex;not null;size:64" json:"name"`
+	Color     string    `gorm:"size:16" json:"color"`
+	CreatedAt time.Time `json:"created_at"`
+	UpdatedAt time.Time `json:"updated_at"`
+}
+
+// HostTag represents the many-to-many relationship between hosts and tags
+type HostTag struct {
+	HostID uint `gorm:"primaryKey" json:"host_id"`
+	TagID  uint `gorm:"primaryKey" json:"tag_id"`
+}
+
+// Template represents a reusable host configuration template
+type Template struct {
+	ID          uint      `gorm:"primaryKey" json:"id"`
+	Name        string    `gorm:"not null;size:128" json:"name"`
+	Description string    `gorm:"size:512" json:"description"`
+	Type        string    `gorm:"not null;size:16;default:custom" json:"type"` // "preset" or "custom"
+	Config      string    `gorm:"type:text;not null" json:"config"`            // JSON snapshot
+	CreatedAt   time.Time `json:"created_at"`
+	UpdatedAt   time.Time `json:"updated_at"`
 }

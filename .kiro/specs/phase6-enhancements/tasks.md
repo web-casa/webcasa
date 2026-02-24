@@ -1,0 +1,302 @@
+# 实施计划：Phase 6 增强功能
+
+## 概述
+
+基于设计文档的分层架构（Model → Service → Handler → Frontend），按功能模块逐步实现。每个功能先完成后端（模型 → 服务 → 处理器 → 路由注册），再完成前端，最后统一处理 i18n。所有代码变更增量构建，确保每一步都可编译运行。
+
+## 任务
+
+- [x] 1. 数据模型与数据库迁移
+  - [x] 1.1 在 `internal/model/model.go` 中新增 Group、Tag、HostTag、Template 模型定义
+    - 按设计文档定义 Group（Name unique, Color）、Tag（Name unique, Color）、HostTag（复合主键）、Template（Name, Description, Type, Config）
+    - _需求: 5.1, 5.2, 6.1_
+  - [x] 1.2 在 `internal/model/model.go` 中扩展 User 模型，新增 TOTPSecret、TOTPEnabled（`*bool`）、RecoveryCodes 字段
+    - TOTPEnabled 使用 `*bool` 指针，遵循项目 GORM 零值约定
+    - _需求: 4.1, 4.4_
+  - [x] 1.3 在 `internal/model/model.go` 中扩展 Host 模型，新增 GroupID（`*uint`）和 Tags 多对多关联
+    - GroupID 为可选外键，Tags 使用 `gorm:"many2many:host_tags"` 标签
+    - _需求: 5.3, 5.4_
+  - [x] 1.4 在 `internal/database/database.go` 的 AutoMigrate 中添加新模型
+    - 确保 Group、Tag、HostTag、Template 以及 User/Host 的新字段自动迁移
+    - _需求: 5.1, 5.2, 6.1, 4.1_
+
+- [x] 2. 站点克隆功能（后端）
+  - [x] 2.1 在 `internal/service/host.go` 中实现 `CloneHost(sourceID uint, newDomain string) (*model.Host, error)`
+    - 使用 `db.Transaction` 确保原子性
+    - 深拷贝主表所有字段（排除 ID、Domain、CreatedAt、UpdatedAt）
+    - 深拷贝子表：upstreams、custom_headers、access_rules、basic_auths、routes
+    - 子表记录清零 ID 和 HostID
+    - 域名唯一性检查，重复返回 `error.domain_exists`
+    - 克隆完成后调用 `ApplyConfig()`
+    - _需求: 1.2, 1.3, 1.4, 1.5, 1.7_
+  - [x] 2.2 在 `internal/handler/host.go` 中新增 `Clone(c *gin.Context)` 处理器
+    - 路由 `POST /api/hosts/:id/clone`，请求体 `{ "domain": "new.example.com" }`
+    - 调用 `h.audit(c, "CLONE", "Cloned host 'old.com' → 'new.com'")`
+    - 错误响应包含 `error_key` 字段
+    - _需求: 1.1, 1.6, 7.5_
+  - [x] 2.3 在 `main.go` 的 protected 路由组中注册克隆路由
+    - `protected.POST("/hosts/:id/clone", hostHandler.Clone)`
+    - _需求: 1.1_
+  - [x] 2.4 编写克隆属性测试
+    - **Property 1: 克隆产生等价 Host**
+    - **Property 2: 克隆产生独立记录**
+    - **验证: 需求 1.2, 1.3, 1.4**
+
+- [x] 3. DNS 解析检查功能（后端）
+  - [x] 3.1 创建 `internal/service/dns_check.go`，实现 `DnsCheckService.Check(domain string) (*DnsCheckResult, error)`
+    - 使用 `net.LookupHost()` / `net.LookupIP()` 查询 A/AAAA 记录
+    - 从 Settings 读取 server_ipv4 和 server_ipv6
+    - 实现状态判定逻辑：matched / mismatched / no_record / records_only
+    - _需求: 2.1, 2.2, 2.3, 2.4, 2.5, 2.8_
+  - [x] 3.2 创建 `internal/handler/dns_check.go`，实现 `DnsCheckHandler`
+    - `GET /api/dns-check?domain=xxx`
+    - 返回 JSON：status、a_records、aaaa_records、expected_ipv4、expected_ipv6
+    - _需求: 2.1_
+  - [x] 3.3 在 `main.go` 中注册 DNS 检查路由
+    - `protected.GET("/dns-check", dnsCheckHandler.Check)`
+    - _需求: 2.1_
+  - [x] 3.4 编写 DNS 状态判定属性测试
+    - **Property 3: DNS 状态判定正确性**
+    - **验证: 需求 2.2, 2.3, 2.4, 2.8**
+
+- [x] 4. 检查点 — 确保后端克隆和 DNS 功能编译通过
+  - 确保所有测试通过，如有问题请向用户确认。
+
+- [x] 5. 2FA TOTP 认证功能（后端）
+  - [x] 5.1 添加 Go 依赖 `github.com/pquerna/otp`
+    - 运行 `go get github.com/pquerna/otp`
+    - _需求: 4.1_
+  - [x] 5.2 创建 `internal/service/totp.go`，实现 `TOTPService`
+    - `GenerateSecret(userID uint)` — 生成 TOTP 密钥，AES-GCM 加密存储，返回 otpauth URI
+    - `VerifyAndEnable(userID uint, code string)` — 验证 TOTP 码，启用 2FA，生成 8 个恢复码（bcrypt 哈希存储）
+    - `Disable(userID uint, code string)` — 验证 TOTP 码后禁用 2FA
+    - `ValidateLogin(userID uint, code string)` — 验证 TOTP 码或恢复码（恢复码一次性使用）
+    - _需求: 4.1, 4.3, 4.4, 4.5, 4.6, 4.7, 4.8_
+  - [x] 5.3 修改 `internal/handler/auth.go` 的 Login 流程
+    - 密码验证通过后检查 `user.TOTPEnabled`
+    - 2FA 已启用且无 totp_code → 返回 `{ "requires_2fa": true, "temp_token": "..." }`
+    - temp_token 为 5 分钟短期 JWT，claims 含 `pending_2fa: true`
+    - 有 totp_code → 验证后签发正式 JWT
+    - _需求: 4.5, 4.6, 4.7, 4.10_
+  - [x] 5.4 在 `internal/handler/auth.go` 中新增 `Setup2FA()`、`Verify2FA()`、`Disable2FA()` 端点
+    - Setup2FA：生成密钥返回 otpauth URI
+    - Verify2FA：验证码确认后启用 2FA，返回 8 个恢复码明文
+    - Disable2FA：验证 TOTP 码后禁用 2FA
+    - 所有 2FA 状态变更记录审计日志
+    - _需求: 4.1, 4.2, 4.3, 4.8, 4.9_
+  - [x] 5.5 在 `main.go` 中注册 2FA 路由
+    - `protected.POST("/auth/2fa/setup", authHandler.Setup2FA)`
+    - `protected.POST("/auth/2fa/verify", authHandler.Verify2FA)`
+    - `protected.POST("/auth/2fa/disable", authHandler.Disable2FA)`
+    - _需求: 4.1_
+  - [x] 5.6 编写 TOTP 属性测试
+    - **Property 4: TOTP 生成与验证 round-trip**
+    - **Property 5: 恢复码生成格式与数量**
+    - **Property 6: 登录流程依赖 2FA 状态**
+    - **Property 7: 恢复码一次性使用**
+    - **Property 8: 无效验证码拒绝登录**
+    - **Property 9: 2FA 禁用 round-trip**
+    - **验证: 需求 4.1, 4.3, 4.4, 4.5, 4.6, 4.7, 4.8, 4.10**
+
+- [x] 6. 站点分组与标签功能（后端）
+  - [x] 6.1 创建 `internal/service/group.go`，实现 Group CRUD + 批量操作
+    - Create / List / Update / Delete
+    - 删除时将关联 Host 的 group_id 设为 NULL
+    - BatchEnable / BatchDisable：更新组内所有 Host 的 enabled 字段 + ApplyConfig
+    - 所有操作记录审计日志
+    - _需求: 5.1, 5.9, 5.10, 5.11, 5.12_
+  - [x] 6.2 创建 `internal/service/tag.go`，实现 Tag CRUD
+    - Create / List / Update / Delete
+    - 所有操作记录审计日志
+    - _需求: 5.2, 5.11_
+  - [x] 6.3 修改 `internal/service/host.go` 的 List 方法，支持 group_id 和 tag_id 筛选参数
+    - group_id 筛选：`WHERE group_id = ?`
+    - tag_id 筛选：`JOIN host_tags ON ... WHERE tag_id = ?`
+    - 同时筛选取交集
+    - Host 列表 Preload Group 和 Tags
+    - _需求: 5.5, 5.6, 5.7, 5.8_
+  - [x] 6.4 修改 `internal/service/host.go` 的 Create/Update 方法，支持 GroupID 和 TagIDs
+    - 创建/更新时同步 host_tags 关联表
+    - _需求: 5.3, 5.4_
+  - [x] 6.5 创建 `internal/handler/group.go` 和 `internal/handler/tag.go`，实现 API 端点
+    - Group: List / Create / Update / Delete / BatchEnable / BatchDisable
+    - Tag: List / Create / Update / Delete
+    - 错误响应包含 error_key
+    - _需求: 5.1, 5.2, 5.9, 5.10, 7.5_
+  - [x] 6.6 在 `main.go` 中注册 Group 和 Tag 路由
+    - groups CRUD + batch-enable / batch-disable
+    - tags CRUD
+    - _需求: 5.1, 5.2_
+  - [x] 6.7 编写分组标签属性测试
+    - **Property 10: Group/Tag CRUD round-trip**
+    - **Property 11: Host 分组关联**
+    - **Property 12: Host 标签关联**
+    - **Property 13: Host 筛选正确性**
+    - **Property 14: 批量启用/禁用**
+    - **Property 15: 删除 Group 解除关联**
+    - **验证: 需求 5.1, 5.2, 5.3, 5.4, 5.5, 5.6, 5.7, 5.9, 5.10, 5.12**
+
+- [x] 7. 检查点 — 确保 2FA 和分组标签后端功能编译通过
+  - 确保所有测试通过，如有问题请向用户确认。
+
+- [x] 8. 站点模板功能（后端）
+  - [x] 8.1 创建 `internal/service/template.go`，实现 Template 核心逻辑
+    - CRUD 操作（preset 类型不可删除/修改）
+    - `SaveAsTemplate(hostID, name, desc)` — 从 Host 快照序列化为 JSON
+    - `CreateFromTemplate(templateID, domain)` — 反序列化创建新 Host + 子表
+    - `Export(templateID)` — 序列化为导出 JSON 格式（含 version、exported_at）
+    - `Import(jsonData)` — 解析验证导入 JSON，无效格式返回错误
+    - `SeedPresets()` — 创建 6 个预设模板（WordPress 反代、SPA 静态站、API 反向代理、PHP-FPM、静态文件下载站、WebSocket 应用）
+    - 所有操作记录审计日志
+    - _需求: 6.1, 6.2, 6.3, 6.4, 6.5, 6.6, 6.7, 6.8, 6.9, 6.10_
+  - [x] 8.2 在 `internal/database/database.go` 的初始化流程中调用 `SeedPresets()`
+    - 仅在 templates 表为空时创建预设模板
+    - _需求: 6.9_
+  - [x] 8.3 创建 `internal/handler/template.go`，实现 Template API 端点
+    - List / Create / Update / Delete / Import / Export / CreateHost
+    - 导入接受 JSON 文件上传，导出返回 JSON 文件下载
+    - 错误响应包含 error_key
+    - _需求: 6.1, 6.3, 6.5, 6.6, 6.7, 7.5_
+  - [x] 8.4 在 `main.go` 中注册 Template 路由
+    - templates CRUD + import / export / create-host
+    - _需求: 6.1_
+  - [x] 8.5 编写模板属性测试
+    - **Property 16: Host-Template-Host round-trip**
+    - **Property 17: 模板导出导入 round-trip**
+    - **Property 18: 预设模板不可变**
+    - **Property 19: 无效模板 JSON 拒绝导入**
+    - **验证: 需求 6.2, 6.4, 6.7, 6.9, 6.11**
+
+- [x] 9. 检查点 — 确保所有后端功能编译通过并测试通过
+  - 确保所有测试通过，如有问题请向用户确认。
+
+- [x] 10. 前端 — 响应式移动端适配
+  - [x] 10.1 改造 `web/src/pages/Layout.jsx`，实现汉堡菜单和响应式 Sidebar
+    - 新增 `isMobile` 状态（`window.matchMedia('(max-width: 767px)')`）
+    - 移动端：Sidebar 默认隐藏，顶部显示 Hamburger 按钮
+    - 点击 Hamburger → Sidebar 以 overlay 从左滑入（CSS transition）
+    - 点击导航链接 → 自动收起 Sidebar
+    - 桌面端（≥768px）：恢复固定 Sidebar
+    - _需求: 3.1, 3.2, 3.3, 3.7_
+  - [x] 10.2 在 `web/src/index.css` 添加移动端响应式样式
+    - `@media (max-width: 767px)` 断点样式
+    - Sidebar overlay 的 z-index、backdrop、transition 动画
+    - _需求: 3.1, 3.2_
+  - [x] 10.3 适配 `web/src/pages/Dashboard.jsx` 移动端布局
+    - 确认统计卡片 Grid 在移动端为单列（`initial: '1'`）
+    - _需求: 3.4_
+  - [x] 10.4 适配 `web/src/pages/HostList.jsx` 移动端卡片视图
+    - 移动端切换为 Card 列表替代 Table
+    - 每张卡片显示域名、类型、状态、操作按钮
+    - _需求: 3.5_
+  - [x] 10.5 适配 `web/src/pages/Settings.jsx` 移动端全宽单列布局
+    - 表单布局在移动端切换为全宽单列
+    - _需求: 3.6_
+
+- [x] 11. 前端 — 站点克隆与 DNS 检查
+  - [x] 11.1 在 `web/src/api/index.js` 中新增克隆和 DNS 检查 API 方法
+    - `hostAPI.clone(id, { domain })` — POST /api/hosts/:id/clone
+    - `dnsCheckAPI.check(domain)` — GET /api/dns-check?domain=xxx
+    - _需求: 1.1, 2.1_
+  - [x] 11.2 在 `web/src/pages/HostList.jsx` 中实现克隆弹窗（CloneDialog）
+    - 每行新增克隆按钮（Copy 图标）
+    - 弹窗显示源域名（只读）+ 新域名输入框
+    - 调用克隆 API → 成功后刷新列表
+    - _需求: 1.1, 1.2_
+  - [x] 11.3 在 `web/src/pages/HostList.jsx` 中实现 DNS 状态图标
+    - 每行域名旁显示 DNS 状态图标（绿色=matched，黄色=mismatched，灰色=no_record）
+    - 鼠标悬停 Tooltip 显示详细 IP 信息
+    - _需求: 2.6_
+  - [x] 11.4 在 Host 编辑弹窗中实现域名输入自动 DNS 检查
+    - 域名输入框 onChange 防抖 800ms 自动触发 DNS 检查并展示结果
+    - _需求: 2.7_
+
+- [x] 12. 前端 — 2FA TOTP 认证
+  - [x] 12.1 在 `web/src/api/index.js` 中新增 2FA API 方法
+    - `authAPI.setup2FA()` / `authAPI.verify2FA(code)` / `authAPI.disable2FA(code)`
+    - _需求: 4.1_
+  - [x] 12.2 添加前端依赖 `qrcode.react`
+    - 运行 `npm install qrcode.react`（在 web 目录下）
+    - _需求: 4.2_
+  - [x] 12.3 修改 `web/src/pages/Login.jsx`，支持 2FA 验证码输入
+    - 登录返回 `requires_2fa` 时显示 TOTP 验证码输入界面
+    - 6 位数字输入框 + "使用恢复码" 链接
+    - 恢复码输入：8 位字母数字输入框
+    - 验证失败后清空输入框允许重试
+    - _需求: 4.5, 4.6, 4.7_
+  - [x] 12.4 在 `web/src/pages/Settings.jsx` 中新增 2FA 设置区域
+    - "启用 2FA" 按钮 → 调用 setup API → 显示 QR 码（qrcode.react）
+    - 用户扫码后输入验证码确认 → 显示 8 个恢复码（提示保存）
+    - "禁用 2FA" 按钮 → 输入当前 TOTP 码确认
+    - _需求: 4.2, 4.3, 4.8_
+
+- [x] 13. 前端 — 站点分组与标签
+  - [x] 13.1 在 `web/src/api/index.js` 中新增 Group 和 Tag API 方法
+    - groupAPI: list / create / update / delete / batchEnable / batchDisable
+    - tagAPI: list / create / update / delete
+    - _需求: 5.1, 5.2_
+  - [x] 13.2 在 `web/src/pages/HostList.jsx` 中实现分组/标签筛选和展示
+    - 表格上方新增 Group 下拉筛选 + Tag 多选筛选
+    - 每行显示 Group 名称（Badge）和 Tag 列表（小 Badge）
+    - Host 编辑弹窗新增 Group 选择器和 Tag 多选器
+    - _需求: 5.5, 5.6, 5.7, 5.8_
+  - [x] 13.3 实现 Group/Tag 管理界面（在 Settings 页面或独立弹窗）
+    - Group 和 Tag 的列表 + 新增/编辑/删除
+    - 颜色选择器（预设颜色列表）
+    - Group 批量启用/禁用按钮
+    - _需求: 5.1, 5.2, 5.9, 5.10_
+
+- [x] 14. 检查点 — 确保前端响应式、克隆、DNS、2FA、分组标签功能正常
+  - 确保所有测试通过，如有问题请向用户确认。
+
+- [x] 15. 前端 — 站点模板
+  - [x] 15.1 在 `web/src/api/index.js` 中新增 Template API 方法
+    - templateAPI: list / create / update / delete / import / export / createHost
+    - _需求: 6.1_
+  - [x] 15.2 创建 `web/src/pages/Templates.jsx` 模板管理页面
+    - 模板列表（卡片视图），区分 preset 和 custom
+    - 创建/编辑/删除 custom 模板
+    - 导入（文件上传）/ 导出（JSON 下载）
+    - "从模板创建 Host" 按钮 → 弹窗输入域名
+    - preset 模板名称和描述使用翻译键动态展示
+    - _需求: 6.1, 6.3, 6.5, 6.6, 6.8, 6.9_
+  - [x] 15.3 在 `web/src/pages/App.jsx` 中添加 `/templates` 路由
+    - _需求: 6.1_
+  - [x] 15.4 在 `web/src/pages/Layout.jsx` 侧边栏中添加 "模板" 导航项
+    - _需求: 6.1_
+  - [x] 15.5 在 `web/src/pages/HostList.jsx` 的 Host 编辑弹窗中添加 "保存为模板" 按钮
+    - 点击后弹窗输入模板名称和描述 → 调用 saveAsTemplate API
+    - _需求: 6.2_
+
+- [x] 16. i18n 多语言翻译
+  - [x] 16.1 在 `web/src/locales/en.json` 中添加 Phase 6 所有新增功能的英文翻译键值对
+    - 命名空间：clone.*、dns_check.*、twofa.*、group.*、tag.*、template.*、mobile.*、error.*
+    - 包含按钮、标签、提示、错误信息、占位符
+    - 预设模板名称和描述：template.preset.wordpress.name 等
+    - _需求: 7.1, 7.4_
+  - [x] 16.2 在 `web/src/locales/zh.json` 中添加 Phase 6 所有新增功能的中文翻译键值对
+    - 与 en.json 保持完全相同的键结构
+    - _需求: 7.1, 7.4_
+  - [x] 16.3 确保所有 Phase 6 新增前端组件使用 `useTranslation()` hook 和 `t()` 函数
+    - 检查并替换所有硬编码文本为 `t('key')` 调用
+    - _需求: 7.2, 7.3_
+  - [x] 16.4 确保后端 Phase 6 新增 API 错误响应包含 `error_key` 字段
+    - 检查所有新增 handler 的错误响应格式
+    - _需求: 7.5_
+  - [x] 16.5 编写审计日志和错误响应属性测试
+    - **Property 20: 变更操作产生审计日志**
+    - **Property 21: 后端错误响应包含翻译键**
+    - **验证: 需求 1.6, 4.9, 5.11, 6.10, 7.5**
+
+- [x] 17. 最终检查点 — 全面验证
+  - 确保所有测试通过，如有问题请向用户确认。
+
+## 备注
+
+- 标记 `*` 的子任务为可选任务，可跳过以加速 MVP 交付
+- 每个任务引用了具体的需求编号，确保可追溯性
+- 检查点任务确保增量验证，及时发现问题
+- 属性测试验证设计文档中定义的通用正确性属性
+- 单元测试验证具体示例和边界情况
+- 后端使用 `github.com/leanovate/gopter` 进行属性测试
+- 前端使用 `qrcode.react` 生成 2FA QR 码

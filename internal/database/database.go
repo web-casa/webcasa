@@ -36,6 +36,10 @@ func Init(dbPath string) *gorm.DB {
 		&model.DnsProvider{},
 		&model.Setting{},
 		&model.Certificate{},
+		&model.Group{},
+		&model.Tag{},
+		&model.HostTag{},
+		&model.Template{},
 	)
 	if err != nil {
 		log.Fatalf("Failed to migrate database: %v", err)
@@ -48,4 +52,14 @@ func Init(dbPath string) *gorm.DB {
 
 	log.Println("Database initialized successfully")
 	return db
+}
+
+// SeedTemplatePresets seeds preset templates if the templates table is empty.
+// This is called from main.go after TemplateService is initialized.
+func SeedTemplatePresets(db *gorm.DB, seedFunc func()) {
+	var count int64
+	db.Model(&model.Template{}).Count(&count)
+	if count == 0 {
+		seedFunc()
+	}
 }

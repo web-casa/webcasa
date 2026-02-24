@@ -83,7 +83,8 @@ func main() {
 
 	// Public routes (no auth required)
 	loginLimiter := auth.NewRateLimiter(5, 900) // 5 attempts per 15 minutes
-	authH := handler.NewAuthHandler(db, cfg, loginLimiter)
+	totpSvc := service.NewTOTPService(db, cfg)
+	authH := handler.NewAuthHandler(db, cfg, loginLimiter, totpSvc)
 	api.POST("/auth/login", authH.Login)
 	api.POST("/auth/setup", authH.Setup)
 	api.GET("/auth/need-setup", authH.NeedSetup)
@@ -95,6 +96,11 @@ func main() {
 
 	// User info
 	protected.GET("/auth/me", authH.Me)
+
+	// 2FA TOTP endpoints
+	protected.POST("/auth/2fa/setup", authH.Setup2FA)
+	protected.POST("/auth/2fa/verify", authH.Verify2FA)
+	protected.POST("/auth/2fa/disable", authH.Disable2FA)
 
 	// Dashboard stats
 	dashH := handler.NewDashboardHandler(hostSvc, caddyMgr, Version)
@@ -108,6 +114,7 @@ func main() {
 	protected.PUT("/hosts/:id", hostH.Update)
 	protected.DELETE("/hosts/:id", hostH.Delete)
 	protected.PATCH("/hosts/:id/toggle", hostH.Toggle)
+	protected.POST("/hosts/:id/clone", hostH.Clone)
 
 	// SSL Certificate management
 	certH := handler.NewCertHandler(hostSvc, cfg)
@@ -154,6 +161,42 @@ func main() {
 	protected.POST("/dns-providers", dnsH.Create)
 	protected.PUT("/dns-providers/:id", dnsH.Update)
 	protected.DELETE("/dns-providers/:id", dnsH.Delete)
+
+	// DNS Check
+	dnsCheckSvc := service.NewDnsCheckService(db)
+	dnsCheckH := handler.NewDnsCheckHandler(dnsCheckSvc, db)
+	protected.GET("/dns-check", dnsCheckH.Check)
+
+	// Groups
+	groupSvc := service.NewGroupService(db, caddyMgr, cfg, hostSvc)
+	groupH := handler.NewGroupHandler(groupSvc, db)
+	protected.GET("/groups", groupH.List)
+	protected.POST("/groups", groupH.Create)
+	protected.PUT("/groups/:id", groupH.Update)
+	protected.DELETE("/groups/:id", groupH.Delete)
+	protected.POST("/groups/:id/batch-enable", groupH.BatchEnable)
+	protected.POST("/groups/:id/batch-disable", groupH.BatchDisable)
+
+	// Tags
+	tagSvc := service.NewTagService(db)
+	tagH := handler.NewTagHandler(tagSvc, db)
+	protected.GET("/tags", tagH.List)
+	protected.POST("/tags", tagH.Create)
+	protected.PUT("/tags/:id", tagH.Update)
+	protected.DELETE("/tags/:id", tagH.Delete)
+
+	// Templates
+	tplSvc := service.NewTemplateService(db, hostSvc)
+	tplSvc.SeedPresets() // Seed preset templates if table is empty
+	tplH := handler.NewTemplateHandler(tplSvc, db)
+	protected.GET("/templates", tplH.List)
+	protected.POST("/templates", tplH.Create)
+	protected.PUT("/templates/:id", tplH.Update)
+	protected.DELETE("/templates/:id", tplH.Delete)
+	protected.POST("/templates/import", tplH.Import)
+	protected.GET("/templates/:id/export", tplH.Export)
+	protected.POST("/templates/:id/create-host", tplH.CreateHost)
+	protected.POST("/hosts/:id/save-as-template", tplH.SaveAsTemplate)
 
 	// Settings
 	settingH := handler.NewSettingHandler(db)

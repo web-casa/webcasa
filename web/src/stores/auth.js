@@ -27,16 +27,19 @@ export const useAuthStore = create((set) => ({
         }
     },
 
-    login: async (username, password, altcha) => {
-        const res = await authAPI.login({
-            username,
-            password,
-            altcha,
-        })
-        const { token, user } = res.data
+    login: async (username, password, altcha, totpCode, tempToken) => {
+        const payload = { username, password, altcha }
+        if (totpCode) payload.totp_code = totpCode
+        if (tempToken) payload.temp_token = tempToken
+        const res = await authAPI.login(payload)
+        const data = res.data
+        if (data.requires_2fa) {
+            return data // { requires_2fa: true, temp_token: "..." }
+        }
+        const { token, user } = data
         localStorage.setItem('token', token)
         set({ token, user })
-        return res.data
+        return data
     },
 
     setup: async (username, password) => {

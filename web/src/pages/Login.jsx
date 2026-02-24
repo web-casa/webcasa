@@ -147,6 +147,12 @@ export default function Login() {
     const [altchaPayload, setAltchaPayload] = useState('')
     const [captchaKey, setCaptchaKey] = useState(0)
 
+    // 2FA state
+    const [requires2FA, setRequires2FA] = useState(false)
+    const [tempToken, setTempToken] = useState('')
+    const [totpCode, setTotpCode] = useState('')
+    const [useRecovery, setUseRecovery] = useState(false)
+
     const handleVerified = (payload) => {
         setAltchaPayload(payload)
     }
@@ -163,24 +169,51 @@ export default function Login() {
         try {
             if (needSetup) {
                 await setup(username, password)
+                navigate('/', { replace: true })
+            } else if (requires2FA) {
+                // 2FA verification step
+                const result = await login(username, password, altchaPayload, totpCode, tempToken)
+                if (!result.requires_2fa) {
+                    navigate('/', { replace: true })
+                }
             } else {
                 if (!altchaPayload) {
                     setError(t('login.verify_first'))
                     setSubmitting(false)
                     return
                 }
-                await login(username, password, altchaPayload)
+                const result = await login(username, password, altchaPayload)
+                if (result.requires_2fa) {
+                    setRequires2FA(true)
+                    setTempToken(result.temp_token)
+                } else {
+                    navigate('/', { replace: true })
+                }
             }
-            navigate('/', { replace: true })
         } catch (err) {
-            const msg = err.response?.data?.error || 'Connection failed'
+            const msg = err.response?.data?.error || t('error.connection_failed')
             setError(msg)
-            // Reset captcha on error
-            setAltchaPayload('')
-            setCaptchaKey(k => k + 1)
+            if (requires2FA) {
+                // Clear TOTP input on failure, allow retry
+                setTotpCode('')
+            } else {
+                // Reset captcha on login error
+                setAltchaPayload('')
+                setCaptchaKey(k => k + 1)
+            }
         } finally {
             setSubmitting(false)
         }
+    }
+
+    const handleBack = () => {
+        setRequires2FA(false)
+        setTempToken('')
+        setTotpCode('')
+        setUseRecovery(false)
+        setError('')
+        setAltchaPayload('')
+        setCaptchaKey(k => k + 1)
     }
 
     if (loading) {
@@ -235,81 +268,163 @@ export default function Login() {
                 >
                     <form onSubmit={handleSubmit}>
                         <Flex direction="column" gap="4">
-                            <Heading size="4" align="center">
-                                {needSetup ? t('login.setup_title') : t('login.title')}
-                            </Heading>
+                            {requires2FA ? (
+                                <>
+                                    {/* 2FA Verification UI */}
+                                    <Flex align="center" gap="2" justify="center">
+                                        <ShieldCheck size={20} color="var(--accent-9)" />
+                                        <Heading size="4">{t('twofa.verify_title')}</Heading>
+                                    </Flex>
 
-                            {needSetup && (
-                                <Callout.Root color="blue" size="1">
-                                    <Callout.Icon>
-                                        <AlertCircle size={16} />
-                                    </Callout.Icon>
-                                    <Callout.Text>
-                                        {t('login.setup_hint')}
-                                    </Callout.Text>
-                                </Callout.Root>
+                                    <Text size="2" color="gray" align="center">
+                                        {useRecovery ? t('twofa.recovery_hint') : t('twofa.verify_hint')}
+                                    </Text>
+
+                                    {error && (
+                                        <Callout.Root color="red" size="1">
+                                            <Callout.Icon><AlertCircle size={16} /></Callout.Icon>
+                                            <Callout.Text>{error}</Callout.Text>
+                                        </Callout.Root>
+                                    )}
+
+                                    <Flex direction="column" gap="1">
+                                        <Text as="label" size="2" weight="medium" htmlFor="totp-code">
+                                            {useRecovery ? t('twofa.recovery_code') : t('twofa.totp_code')}
+                                        </Text>
+                                        <TextField.Root
+                                            id="totp-code"
+                                            placeholder={useRecovery ? t('twofa.recovery_placeholder') : t('twofa.totp_placeholder')}
+                                            value={totpCode}
+                                            onChange={(e) => {
+                                                const val = e.target.value
+                                                if (useRecovery) {
+                                                    // 8-char alphanumeric
+                                                    setTotpCode(val.replace(/[^a-zA-Z0-9]/g, '').slice(0, 8))
+                                                } else {
+                                                    // 6-digit numeric
+                                                    setTotpCode(val.replace(/\D/g, '').slice(0, 6))
+                                                }
+                                            }}
+                                            required
+                                            autoFocus
+                                            size="3"
+                                            maxLength={useRecovery ? 8 : 6}
+                                            style={{ textAlign: 'center', letterSpacing: '0.2em', fontFamily: 'monospace' }}
+                                        />
+                                    </Flex>
+
+                                    <Button
+                                        type="submit"
+                                        size="3"
+                                        disabled={submitting || !totpCode || (!useRecovery && totpCode.length < 6) || (useRecovery && totpCode.length < 8)}
+                                        style={{ cursor: 'pointer' }}
+                                    >
+                                        {submitting ? t('twofa.verifying') : t('twofa.verify_button')}
+                                    </Button>
+
+                                    <Flex justify="between" align="center">
+                                        <Text
+                                            size="1"
+                                            color="gray"
+                                            style={{ cursor: 'pointer', textDecoration: 'underline' }}
+                                            onClick={handleBack}
+                                        >
+                                            {t('common.back')}
+                                        </Text>
+                                        <Text
+                                            size="1"
+                                            color="gray"
+                                            style={{ cursor: 'pointer', textDecoration: 'underline' }}
+                                            onClick={() => {
+                                                setUseRecovery(!useRecovery)
+                                                setTotpCode('')
+                                                setError('')
+                                            }}
+                                        >
+                                            {useRecovery ? t('twofa.use_totp') : t('twofa.use_recovery')}
+                                        </Text>
+                                    </Flex>
+                                </>
+                            ) : (
+                                <>
+                                    {/* Normal Login UI */}
+                                    <Heading size="4" align="center">
+                                        {needSetup ? t('login.setup_title') : t('login.title')}
+                                    </Heading>
+
+                                    {needSetup && (
+                                        <Callout.Root color="blue" size="1">
+                                            <Callout.Icon>
+                                                <AlertCircle size={16} />
+                                            </Callout.Icon>
+                                            <Callout.Text>
+                                                {t('login.setup_hint')}
+                                            </Callout.Text>
+                                        </Callout.Root>
+                                    )}
+
+                                    {error && (
+                                        <Callout.Root color="red" size="1">
+                                            <Callout.Icon>
+                                                <AlertCircle size={16} />
+                                            </Callout.Icon>
+                                            <Callout.Text>{error}</Callout.Text>
+                                        </Callout.Root>
+                                    )}
+
+                                    <Flex direction="column" gap="1">
+                                        <Text as="label" size="2" weight="medium" htmlFor="username">
+                                            {t('login.username')}
+                                        </Text>
+                                        <TextField.Root
+                                            id="username"
+                                            placeholder="admin"
+                                            value={username}
+                                            onChange={(e) => setUsername(e.target.value)}
+                                            required
+                                            autoFocus
+                                            size="3"
+                                        />
+                                    </Flex>
+
+                                    <Flex direction="column" gap="1">
+                                        <Text as="label" size="2" weight="medium" htmlFor="password">
+                                            {t('login.password')}
+                                        </Text>
+                                        <TextField.Root
+                                            id="password"
+                                            type="password"
+                                            placeholder="••••••••"
+                                            value={password}
+                                            onChange={(e) => setPassword(e.target.value)}
+                                            required
+                                            size="3"
+                                        />
+                                    </Flex>
+
+                                    {/* PoW verification (not shown during initial setup) */}
+                                    {!needSetup && (
+                                        <PowCaptcha
+                                            key={captchaKey}
+                                            onVerified={handleVerified}
+                                            onReset={handleCaptchaReset}
+                                        />
+                                    )}
+
+                                    <Button
+                                        type="submit"
+                                        size="3"
+                                        disabled={submitting || !username || !password || (!needSetup && !altchaPayload)}
+                                        style={{ cursor: 'pointer' }}
+                                    >
+                                        {submitting
+                                            ? t('login.please_wait')
+                                            : needSetup
+                                                ? t('login.create_account')
+                                                : t('login.sign_in')}
+                                    </Button>
+                                </>
                             )}
-
-                            {error && (
-                                <Callout.Root color="red" size="1">
-                                    <Callout.Icon>
-                                        <AlertCircle size={16} />
-                                    </Callout.Icon>
-                                    <Callout.Text>{error}</Callout.Text>
-                                </Callout.Root>
-                            )}
-
-                            <Flex direction="column" gap="1">
-                                <Text as="label" size="2" weight="medium" htmlFor="username">
-                                    {t('login.username')}
-                                </Text>
-                                <TextField.Root
-                                    id="username"
-                                    placeholder="admin"
-                                    value={username}
-                                    onChange={(e) => setUsername(e.target.value)}
-                                    required
-                                    autoFocus
-                                    size="3"
-                                />
-                            </Flex>
-
-                            <Flex direction="column" gap="1">
-                                <Text as="label" size="2" weight="medium" htmlFor="password">
-                                    {t('login.password')}
-                                </Text>
-                                <TextField.Root
-                                    id="password"
-                                    type="password"
-                                    placeholder="••••••••"
-                                    value={password}
-                                    onChange={(e) => setPassword(e.target.value)}
-                                    required
-                                    size="3"
-                                />
-                            </Flex>
-
-                            {/* PoW verification (not shown during initial setup) */}
-                            {!needSetup && (
-                                <PowCaptcha
-                                    key={captchaKey}
-                                    onVerified={handleVerified}
-                                    onReset={handleCaptchaReset}
-                                />
-                            )}
-
-                            <Button
-                                type="submit"
-                                size="3"
-                                disabled={submitting || !username || !password || (!needSetup && !altchaPayload)}
-                                style={{ cursor: 'pointer' }}
-                            >
-                                {submitting
-                                    ? t('login.please_wait')
-                                    : needSetup
-                                        ? t('login.create_account')
-                                        : t('login.sign_in')}
-                            </Button>
                         </Flex>
                     </form>
                 </Card>

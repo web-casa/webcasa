@@ -12,6 +12,7 @@ import AuditLogs from './pages/AuditLogs.jsx'
 import CaddyfileEditor from './pages/CaddyfileEditor.jsx'
 import DnsProviders from './pages/DnsProviders.jsx'
 import Certificates from './pages/Certificates.jsx'
+import Templates from './pages/Templates.jsx'
 
 function ProtectedRoute({ children }) {
     const token = useAuthStore((s) => s.token)
@@ -47,6 +48,7 @@ export default function App() {
                     <Route path="editor" element={<CaddyfileEditor />} />
                     <Route path="dns" element={<DnsProviders />} />
                     <Route path="certificates" element={<Certificates />} />
+                    <Route path="templates" element={<Templates />} />
                     <Route path="settings" element={<Settings />} />
                 </Route>
                 <Route path="*" element={<Navigate to="/" replace />} />

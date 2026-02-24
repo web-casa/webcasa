@@ -33,20 +33,47 @@ export const authAPI = {
     setup: (data) => api.post('/auth/setup', data),
     login: (data) => api.post('/auth/login', data),
     me: () => api.get('/auth/me'),
+    setup2FA: () => api.post('/auth/2fa/setup'),
+    verify2FA: (code) => api.post('/auth/2fa/verify', { code }),
+    disable2FA: (code) => api.post('/auth/2fa/disable', { code }),
 }
 
 // ============ Hosts ============
 export const hostAPI = {
-    list: () => api.get('/hosts'),
+    list: (params) => api.get('/hosts', { params }),
     get: (id) => api.get(`/hosts/${id}`),
     create: (data) => api.post('/hosts', data),
     update: (id, data) => api.put(`/hosts/${id}`, data),
     delete: (id) => api.delete(`/hosts/${id}`),
     toggle: (id) => api.patch(`/hosts/${id}/toggle`),
+    clone: (id, data) => api.post(`/hosts/${id}/clone`, data),
     uploadCert: (id, formData) => api.post(`/hosts/${id}/cert`, formData, {
         headers: { 'Content-Type': 'multipart/form-data' },
     }),
     deleteCert: (id) => api.delete(`/hosts/${id}/cert`),
+}
+
+// ============ DNS Check ============
+export const dnsCheckAPI = {
+    check: (domain) => api.get('/dns-check', { params: { domain } }),
+}
+
+// ============ Groups ============
+export const groupAPI = {
+    list: () => api.get('/groups'),
+    create: (data) => api.post('/groups', data),
+    update: (id, data) => api.put(`/groups/${id}`, data),
+    delete: (id) => api.delete(`/groups/${id}`),
+    batchEnable: (id) => api.post(`/groups/${id}/batch-enable`),
+    batchDisable: (id) => api.post(`/groups/${id}/batch-disable`),
+}
+
+// ============ Tags ============
+export const tagAPI = {
+    list: () => api.get('/tags'),
+    create: (data) => api.post('/tags', data),
+    update: (id, data) => api.put(`/tags/${id}`, data),
+    delete: (id) => api.delete(`/tags/${id}`),
 }
 
 // ============ Caddy ============
@@ -90,6 +117,20 @@ export const userAPI = {
 // ============ Audit ============
 export const auditAPI = {
     list: (params) => api.get('/audit/logs', { params }),
+}
+
+// ============ Templates ============
+export const templateAPI = {
+    list: () => api.get('/templates'),
+    create: (data) => api.post('/templates', data),
+    update: (id, data) => api.put(`/templates/${id}`, data),
+    delete: (id) => api.delete(`/templates/${id}`),
+    import: (formData) => api.post('/templates/import', formData, {
+        headers: { 'Content-Type': 'multipart/form-data' },
+    }),
+    export: (id) => api.get(`/templates/${id}/export`, { responseType: 'blob' }),
+    createHost: (id, data) => api.post(`/templates/${id}/create-host`, data),
+    saveAsTemplate: (hostId, data) => api.post(`/hosts/${hostId}/save-as-template`, data),
 }
 
 // ============ Settings ============

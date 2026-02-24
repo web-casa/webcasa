@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback } from 'react'
+import { useState, useEffect, useCallback, useRef as useReactRef } from 'react'
 import {
     Box, Flex, Heading, Text, Button, Badge, Switch, Table, Dialog,
     TextField, Callout, IconButton, Card, Tooltip, Spinner, AlertDialog,
@@ -6,10 +6,10 @@ import {
 } from '@radix-ui/themes'
 import {
     Plus, Pencil, Trash2, Globe, AlertCircle, X, ChevronRight,
-    ArrowRightLeft, Shield, Lock,
+    ArrowRightLeft, Shield, Lock, Copy, CheckCircle, AlertTriangle, Circle,
+    FolderOpen, Tags, Layers,
 } from 'lucide-react'
-import { hostAPI, dnsProviderAPI, settingAPI, certificateAPI } from '../api/index.js'
-import { useRef as useReactRef } from 'react'
+import { hostAPI, dnsProviderAPI, settingAPI, certificateAPI, dnsCheckAPI, groupAPI, tagAPI, templateAPI } from '../api/index.js'
 import { useTranslation } from 'react-i18next'
 
 const DEFAULT_FORM = {
@@ -37,6 +37,8 @@ const DEFAULT_FORM = {
     cache_ttl: 300,
     tls_mode: 'auto',
     dns_provider_id: null,
+    group_id: null,
+    tag_ids: [],
 }
 
 // ============ Host Form Dialog ============
@@ -53,7 +55,12 @@ function HostFormDialog({ open, onClose, onSaved, host }) {
     const [uploadingCert, setUploadingCert] = useState(false)
     const certFileRef = useReactRef(null)
     const keyFileRef = useReactRef(null)
+    const dnsTimerRef = useReactRef(null)
     const isEdit = !!host
+    const [dnsResult, setDnsResult] = useState(null)
+    const [dnsChecking, setDnsChecking] = useState(false)
+    const [groups, setGroups] = useState([])
+    const [allTags, setAllTags] = useState([])
 
     useEffect(() => {
         dnsProviderAPI.list().then(res => setDnsProviders(res.data.providers || [])).catch(() => { })
@@ -62,6 +69,8 @@ function HostFormDialog({ open, onClose, onSaved, host }) {
             setServerIPs({ ipv4: s.server_ipv4 || '', ipv6: s.server_ipv6 || '' })
         }).catch(() => { })
         certificateAPI.list().then(res => setCertificates(res.data.certificates || [])).catch(() => { })
+        groupAPI.list().then(res => setGroups(res.data.groups || [])).catch(() => { })
+        tagAPI.list().then(res => setAllTags(res.data.tags || [])).catch(() => { })
     }, [])
 
     useEffect(() => {
@@ -93,12 +102,33 @@ function HostFormDialog({ open, onClose, onSaved, host }) {
                 cache_ttl: host.cache_ttl || 300,
                 tls_mode: host.tls_mode || 'auto',
                 dns_provider_id: host.dns_provider_id || null,
+                group_id: host.group_id || null,
+                tag_ids: host.tags?.map(t => t.id) || [],
             })
         } else {
             setForm({ ...DEFAULT_FORM })
         }
         setError('')
+        setDnsResult(null)
+        setDnsChecking(false)
     }, [host, open])
+
+    // Debounced DNS check on domain change
+    useEffect(() => {
+        if (dnsTimerRef.current) clearTimeout(dnsTimerRef.current)
+        setDnsResult(null)
+        if (!form.domain || form.domain.trim().length < 3) return
+        setDnsChecking(true)
+        dnsTimerRef.current = setTimeout(() => {
+            dnsCheckAPI.check(form.domain.trim())
+                .then((res) => setDnsResult(res.data))
+                .catch(() => setDnsResult(null))
+                .finally(() => setDnsChecking(false))
+        }, 800)
+        return () => {
+            if (dnsTimerRef.current) clearTimeout(dnsTimerRef.current)
+        }
+    }, [form.domain])
 
     const handleUploadCert = async () => {
         setUploadingCert(true)
@@ -129,6 +159,8 @@ function HostFormDialog({ open, onClose, onSaved, host }) {
                     ? form.upstreams.filter((u) => u.address.trim())
                     : [],
                 basic_auths: form.basic_auths.filter((a) => a.username && a.password),
+                group_id: form.group_id || 0,
+                tag_ids: form.tag_ids || [],
             }
             if (isEdit) {
                 await hostAPI.update(host.id, payload)
@@ -217,6 +249,76 @@ function HostFormDialog({ open, onClose, onSaved, host }) {
                                 onChange={(e) => setForm({ ...form, domain: e.target.value })}
                                 size="2"
                             />
+                            {dnsChecking && (
+                                <Flex align="center" gap="1">
+                                    <Spinner size="1" />
+                                    <Text size="1" color="gray">{t('dns_check.checking')}</Text>
+                                </Flex>
+                            )}
+                            {!dnsChecking && dnsResult && (
+                                <Flex align="center" gap="1">
+                                    <DnsStatusIcon status={dnsResult.status} dnsResult={dnsResult} t={t} />
+                                    <Text size="1" color={
+                                        dnsResult.status === 'matched' ? 'green' :
+                                        dnsResult.status === 'mismatched' ? 'yellow' : 'gray'
+                                    }>
+                                        {t(`dns_check.${dnsResult.status}`)}
+                                    </Text>
+                                </Flex>
+                            )}
+                        </Flex>
+                    </Flex>
+
+                    {/* Group & Tags */}
+                    <Flex gap="3" align="end">
+                        <Flex direction="column" gap="1" style={{ flex: 1 }}>
+                            <Text size="2" weight="medium">{t('group.label')}</Text>
+                            <Select.Root
+                                value={form.group_id ? String(form.group_id) : ''}
+                                onValueChange={(v) => setForm({ ...form, group_id: v ? Number(v) : null })}
+                                size="2"
+                            >
+                                <Select.Trigger placeholder={t('group.select_placeholder')} />
+                                <Select.Content>
+                                    <Select.Item value="">{t('group.none')}</Select.Item>
+                                    {groups.map(g => (
+                                        <Select.Item key={g.id} value={String(g.id)}>
+                                            <Flex align="center" gap="2">
+                                                <Box style={{ width: 8, height: 8, borderRadius: '50%', background: g.color || '#9ca3af' }} />
+                                                {g.name}
+                                            </Flex>
+                                        </Select.Item>
+                                    ))}
+                                </Select.Content>
+                            </Select.Root>
+                        </Flex>
+                        <Flex direction="column" gap="1" style={{ flex: 1 }}>
+                            <Text size="2" weight="medium">{t('tag.label')}</Text>
+                            <Flex gap="1" wrap="wrap" style={{ minHeight: 32, padding: '4px 0' }}>
+                                {allTags.map(tag => {
+                                    const selected = form.tag_ids.includes(tag.id)
+                                    return (
+                                        <Badge
+                                            key={tag.id}
+                                            size="1"
+                                            variant={selected ? 'solid' : 'outline'}
+                                            color={tag.color || 'gray'}
+                                            style={{ cursor: 'pointer', userSelect: 'none' }}
+                                            onClick={() => {
+                                                const ids = selected
+                                                    ? form.tag_ids.filter(id => id !== tag.id)
+                                                    : [...form.tag_ids, tag.id]
+                                                setForm({ ...form, tag_ids: ids })
+                                            }}
+                                        >
+                                            {tag.name}
+                                        </Badge>
+                                    )
+                                })}
+                                {allTags.length === 0 && (
+                                    <Text size="1" color="gray">{t('tag.no_tags')}</Text>
+                                )}
+                            </Flex>
                         </Flex>
                     </Flex>
 
@@ -549,7 +651,7 @@ function HostFormDialog({ open, onClose, onSaved, host }) {
                                                 <TextField.Root
                                                     value={form.cors_origins}
                                                     onChange={(e) => setForm({ ...form, cors_origins: e.target.value })}
-                                                    placeholder="* 或 https://example.com"
+                                                    placeholder="* or https://example.com"
                                                 />
                                             </Box>
                                             <Box>
@@ -673,17 +775,211 @@ function HostFormDialog({ open, onClose, onSaved, host }) {
                     </Tabs.Root>
                 </Flex>
 
-                <Flex gap="3" mt="5" justify="end">
-                    <Dialog.Close>
-                        <Button variant="soft" color="gray">{t('common.cancel')}</Button>
-                    </Dialog.Close>
-                    <Button
-                        onClick={handleSave}
-                        disabled={saving || !form.domain || (isProxy && !form.upstreams.some(u => u.address)) || (!isProxy && !form.redirect_url)}
-                    >
-                        {saving ? <Spinner size="1" /> : null}
-                        {isEdit ? t('common.save') : t('common.create')}
-                    </Button>
+                <Flex gap="3" mt="5" justify="between">
+                    <Box>
+                        {isEdit && host?.id && (
+                            <SaveAsTemplateButton hostId={host.id} t={t} />
+                        )}
+                    </Box>
+                    <Flex gap="3">
+                        <Dialog.Close>
+                            <Button variant="soft" color="gray">{t('common.cancel')}</Button>
+                        </Dialog.Close>
+                        <Button
+                            onClick={handleSave}
+                            disabled={saving || !form.domain || (isProxy && !form.upstreams.some(u => u.address)) || (!isProxy && !form.redirect_url)}
+                        >
+                            {saving ? <Spinner size="1" /> : null}
+                            {isEdit ? t('common.save') : t('common.create')}
+                        </Button>
+                    </Flex>
+                </Flex>
+            </Dialog.Content>
+        </Dialog.Root>
+    )
+}
+
+// ============ Save As Template Button ============
+function SaveAsTemplateButton({ hostId, t }) {
+    const [open, setOpen] = useState(false)
+    const [name, setName] = useState('')
+    const [description, setDescription] = useState('')
+    const [saving, setSaving] = useState(false)
+    const [error, setError] = useState('')
+    const [success, setSuccess] = useState(false)
+
+    const handleOpen = () => {
+        setName('')
+        setDescription('')
+        setError('')
+        setSuccess(false)
+        setSaving(false)
+        setOpen(true)
+    }
+
+    const handleSave = async () => {
+        if (!name.trim()) return
+        setError('')
+        setSaving(true)
+        try {
+            await templateAPI.saveAsTemplate(hostId, { name: name.trim(), description: description.trim() })
+            setSuccess(true)
+            setTimeout(() => setOpen(false), 1000)
+        } catch (err) {
+            setError(err.response?.data?.error || t('template.save_template_failed'))
+        } finally {
+            setSaving(false)
+        }
+    }
+
+    return (
+        <>
+            <Button variant="soft" color="green" size="2" onClick={handleOpen}>
+                <Layers size={14} /> {t('template.save_as_template')}
+            </Button>
+            <Dialog.Root open={open} onOpenChange={(o) => !o && setOpen(false)}>
+                <Dialog.Content maxWidth="420px" style={{ background: 'var(--cp-card)' }}>
+                    <Dialog.Title>{t('template.save_as_template_title')}</Dialog.Title>
+                    <Flex direction="column" gap="4" mt="2">
+                        <Text size="2" color="gray">{t('template.save_as_template_hint')}</Text>
+                        {error && (
+                            <Callout.Root color="red" size="1">
+                                <Callout.Icon><AlertCircle size={14} /></Callout.Icon>
+                                <Callout.Text>{error}</Callout.Text>
+                            </Callout.Root>
+                        )}
+                        {success && (
+                            <Callout.Root color="green" size="1">
+                                <Callout.Icon><CheckCircle size={14} /></Callout.Icon>
+                                <Callout.Text>{t('template.save_template_success')}</Callout.Text>
+                            </Callout.Root>
+                        )}
+                        <Flex direction="column" gap="1">
+                            <Text size="2" weight="medium">{t('template.name')}</Text>
+                            <TextField.Root
+                                placeholder={t('template.name_placeholder')}
+                                value={name}
+                                onChange={(e) => setName(e.target.value)}
+                                size="2"
+                            />
+                        </Flex>
+                        <Flex direction="column" gap="1">
+                            <Text size="2" weight="medium">{t('template.description')}</Text>
+                            <TextField.Root
+                                placeholder={t('template.description_placeholder')}
+                                value={description}
+                                onChange={(e) => setDescription(e.target.value)}
+                                size="2"
+                            />
+                        </Flex>
+                        <Flex gap="3" justify="end">
+                            <Button variant="soft" color="gray" onClick={() => setOpen(false)}>
+                                {t('common.cancel')}
+                            </Button>
+                            <Button onClick={handleSave} disabled={saving || !name.trim() || success}>
+                                {saving ? <Spinner size="1" /> : <Layers size={14} />}
+                                {saving ? t('template.saving_template') : t('common.save')}
+                            </Button>
+                        </Flex>
+                    </Flex>
+                </Dialog.Content>
+            </Dialog.Root>
+        </>
+    )
+}
+
+// ============ DNS Status Icon ============
+function DnsStatusIcon({ status, dnsResult, t }) {
+    if (!status) return null
+    let color, icon, tooltipContent
+    if (status === 'matched') {
+        color = '#22c55e'
+        icon = <CheckCircle size={14} color={color} />
+        tooltipContent = t('dns_check.tooltip_matched')
+    } else if (status === 'mismatched') {
+        color = '#eab308'
+        icon = <AlertTriangle size={14} color={color} />
+        const details = []
+        if (dnsResult?.a_records?.length) details.push(`A: ${dnsResult.a_records.join(', ')}`)
+        if (dnsResult?.aaaa_records?.length) details.push(`AAAA: ${dnsResult.aaaa_records.join(', ')}`)
+        if (dnsResult?.expected_ipv4) details.push(`${t('dns_check.expected_ipv4')}: ${dnsResult.expected_ipv4}`)
+        if (dnsResult?.expected_ipv6) details.push(`${t('dns_check.expected_ipv6')}: ${dnsResult.expected_ipv6}`)
+        tooltipContent = `${t('dns_check.tooltip_mismatched')}\n${details.join('\n')}`
+    } else {
+        color = '#9ca3af'
+        icon = <Circle size={14} color={color} />
+        tooltipContent = t('dns_check.tooltip_no_record')
+    }
+    return (
+        <Tooltip content={<Text size="1" style={{ whiteSpace: 'pre-line' }}>{tooltipContent}</Text>}>
+            <span style={{ display: 'inline-flex', cursor: 'help' }}>{icon}</span>
+        </Tooltip>
+    )
+}
+
+// ============ Clone Dialog ============
+function CloneDialog({ open, onClose, host, onCloned, t }) {
+    const [newDomain, setNewDomain] = useState('')
+    const [cloning, setCloning] = useState(false)
+    const [error, setError] = useState('')
+
+    useEffect(() => {
+        if (open) {
+            setNewDomain('')
+            setError('')
+            setCloning(false)
+        }
+    }, [open])
+
+    const handleClone = async () => {
+        if (!newDomain.trim()) return
+        setError('')
+        setCloning(true)
+        try {
+            await hostAPI.clone(host.id, { domain: newDomain.trim() })
+            onCloned()
+            onClose()
+        } catch (err) {
+            setError(err.response?.data?.error || t('clone.failed'))
+        } finally {
+            setCloning(false)
+        }
+    }
+
+    return (
+        <Dialog.Root open={open} onOpenChange={(o) => !o && onClose()}>
+            <Dialog.Content maxWidth="420px" style={{ background: 'var(--cp-card)' }}>
+                <Dialog.Title>{t('clone.title')}</Dialog.Title>
+                <Flex direction="column" gap="4" mt="2">
+                    {error && (
+                        <Callout.Root color="red" size="1">
+                            <Callout.Icon><AlertCircle size={14} /></Callout.Icon>
+                            <Callout.Text>{error}</Callout.Text>
+                        </Callout.Root>
+                    )}
+                    <Flex direction="column" gap="1">
+                        <Text size="2" weight="medium">{t('clone.source_domain')}</Text>
+                        <TextField.Root value={host?.domain || ''} disabled size="2" />
+                    </Flex>
+                    <Flex direction="column" gap="1">
+                        <Text size="2" weight="medium">{t('clone.new_domain')}</Text>
+                        <TextField.Root
+                            placeholder={t('clone.new_domain_placeholder')}
+                            value={newDomain}
+                            onChange={(e) => setNewDomain(e.target.value)}
+                            size="2"
+                            onKeyDown={(e) => e.key === 'Enter' && handleClone()}
+                        />
+                    </Flex>
+                    <Flex gap="3" justify="end">
+                        <Dialog.Close>
+                            <Button variant="soft" color="gray">{t('common.cancel')}</Button>
+                        </Dialog.Close>
+                        <Button onClick={handleClone} disabled={cloning || !newDomain.trim()}>
+                            {cloning ? <Spinner size="1" /> : <Copy size={14} />}
+                            {cloning ? t('clone.cloning') : t('clone.submit')}
+                        </Button>
+                    </Flex>
                 </Flex>
             </Dialog.Content>
         </Dialog.Root>
@@ -722,6 +1018,85 @@ function DeleteDialog({ open, onClose, host, onConfirm }) {
     )
 }
 
+// ============ Mobile Host Card ============
+function HostCard({ host, t, onEdit, onDelete, onToggle, onClone, toggling, dnsStatus }) {
+    return (
+        <Box className="mobile-host-card" mb="3">
+            <Flex justify="between" align="start" mb="2">
+                <Flex align="center" gap="2">
+                    {host.host_type === 'redirect' ? (
+                        <ArrowRightLeft size={14} color="#f59e0b" />
+                    ) : host.host_type === 'static' ? (
+                        <Globe size={14} color="#3b82f6" />
+                    ) : host.host_type === 'php' ? (
+                        <Globe size={14} color="#8b5cf6" />
+                    ) : (
+                        <Globe size={14} color="#10b981" />
+                    )}
+                    <Text size="2" weight="bold" style={{ color: 'var(--cp-text)', wordBreak: 'break-all' }}>
+                        {host.domain}
+                    </Text>
+                    {dnsStatus && <DnsStatusIcon status={dnsStatus.status} dnsResult={dnsStatus} t={t} />}
+                </Flex>
+                <Badge
+                    color={host.host_type === 'redirect' ? 'orange' : host.host_type === 'static' ? 'blue' : host.host_type === 'php' ? 'violet' : 'green'}
+                    variant="soft"
+                    size="1"
+                >
+                    {t(`host.${host.host_type}`)}
+                </Badge>
+            </Flex>
+
+            <Flex align="center" gap="2" mb="3">
+                <Badge color={host.tls_enabled ? 'green' : 'gray'} variant="soft" size="1">
+                    {host.tls_enabled ? 'HTTPS' : 'HTTP'}
+                </Badge>
+                <Badge color={host.enabled ? 'green' : 'gray'} variant="soft" size="1">
+                    {host.enabled ? t('common.enabled') : t('common.disabled')}
+                </Badge>
+                {host.group && (
+                    <Badge color={host.group.color || 'gray'} variant="soft" size="1">
+                        <FolderOpen size={10} /> {host.group.name}
+                    </Badge>
+                )}
+                {host.tags?.map(tag => (
+                    <Badge key={tag.id} color={tag.color || 'gray'} variant="outline" size="1">
+                        {tag.name}
+                    </Badge>
+                ))}
+            </Flex>
+
+            <Flex justify="between" align="center">
+                <Tooltip content={host.enabled ? t('host.click_to_disable') : t('host.click_to_enable')}>
+                    <Switch
+                        checked={host.enabled}
+                        onCheckedChange={() => onToggle(host)}
+                        disabled={toggling === host.id}
+                        size="1"
+                    />
+                </Tooltip>
+                <Flex gap="2">
+                    <Tooltip content={t('clone.tooltip')}>
+                        <IconButton variant="soft" size="1" onClick={() => onClone(host)}>
+                            <Copy size={14} />
+                        </IconButton>
+                    </Tooltip>
+                    <Tooltip content={t('common.edit')}>
+                        <IconButton variant="soft" size="1" onClick={() => onEdit(host)}>
+                            <Pencil size={14} />
+                        </IconButton>
+                    </Tooltip>
+                    <Tooltip content={t('common.delete')}>
+                        <IconButton variant="soft" color="red" size="1" onClick={() => onDelete(host)}>
+                            <Trash2 size={14} />
+                        </IconButton>
+                    </Tooltip>
+                </Flex>
+            </Flex>
+        </Box>
+    )
+}
+
 // ============ Host List Page ============
 export default function HostList() {
     const { t } = useTranslation()
@@ -730,22 +1105,65 @@ export default function HostList() {
     const [editHost, setEditHost] = useState(null)
     const [showForm, setShowForm] = useState(false)
     const [deleteHost, setDeleteHost] = useState(null)
+    const [cloneHost, setCloneHost] = useState(null)
     const [toggling, setToggling] = useState(null)
+    const [dnsStatuses, setDnsStatuses] = useState({})
+    const [filterGroupId, setFilterGroupId] = useState('')
+    const [filterTagId, setFilterTagId] = useState('')
+    const [groups, setGroups] = useState([])
+    const [allTags, setAllTags] = useState([])
+    const [isMobile, setIsMobile] = useState(() =>
+        typeof window !== 'undefined' && window.matchMedia('(max-width: 767px)').matches
+    )
+
+    useEffect(() => {
+        const mql = window.matchMedia('(max-width: 767px)')
+        const handler = (e) => setIsMobile(e.matches)
+        mql.addEventListener('change', handler)
+        return () => mql.removeEventListener('change', handler)
+    }, [])
 
     const fetchHosts = useCallback(async () => {
         try {
-            const res = await hostAPI.list()
+            const params = {}
+            if (filterGroupId) params.group_id = filterGroupId
+            if (filterTagId) params.tag_id = filterTagId
+            const res = await hostAPI.list(params)
             setHosts(res.data.hosts || [])
         } catch (err) {
             console.error('Failed to fetch hosts:', err)
         } finally {
             setLoading(false)
         }
+    }, [filterGroupId, filterTagId])
+
+    const fetchGroupsAndTags = useCallback(async () => {
+        try {
+            const [gRes, tRes] = await Promise.all([groupAPI.list(), tagAPI.list()])
+            setGroups(gRes.data.groups || [])
+            setAllTags(tRes.data.tags || [])
+        } catch { /* ignore */ }
     }, [])
 
     useEffect(() => {
         fetchHosts()
     }, [fetchHosts])
+
+    useEffect(() => {
+        fetchGroupsAndTags()
+    }, [fetchGroupsAndTags])
+
+    // Fetch DNS status for all hosts
+    useEffect(() => {
+        if (!hosts.length) return
+        hosts.forEach((host) => {
+            if (host.domain && !dnsStatuses[host.domain]) {
+                dnsCheckAPI.check(host.domain).then((res) => {
+                    setDnsStatuses((prev) => ({ ...prev, [host.domain]: res.data }))
+                }).catch(() => {})
+            }
+        })
+    }, [hosts])
 
     const handleToggle = async (host) => {
         setToggling(host.id)
@@ -829,6 +1247,61 @@ export default function HostList() {
                 </Button>
             </Flex>
 
+            {/* Group & Tag Filters */}
+            {(groups.length > 0 || allTags.length > 0) && (
+                <Flex gap="3" mb="4" align="end" wrap="wrap" direction={isMobile ? 'column' : 'row'}>
+                    {groups.length > 0 && (
+                        <Flex direction="column" gap="1" style={isMobile ? { width: '100%' } : {}}>
+                            <Text size="1" color="gray">{t('group.filter')}</Text>
+                            <Select.Root
+                                value={filterGroupId}
+                                onValueChange={(v) => { setFilterGroupId(v); setLoading(true) }}
+                                size="2"
+                            >
+                                <Select.Trigger placeholder={t('group.all')} style={isMobile ? { width: '100%' } : { minWidth: 140 }} />
+                                <Select.Content>
+                                    <Select.Item value="">{t('group.all')}</Select.Item>
+                                    {groups.map(g => (
+                                        <Select.Item key={g.id} value={String(g.id)}>
+                                            <Flex align="center" gap="2">
+                                                <Box style={{ width: 8, height: 8, borderRadius: '50%', background: g.color || '#9ca3af' }} />
+                                                {g.name}
+                                            </Flex>
+                                        </Select.Item>
+                                    ))}
+                                </Select.Content>
+                            </Select.Root>
+                        </Flex>
+                    )}
+                    {allTags.length > 0 && (
+                        <Flex direction="column" gap="1" style={isMobile ? { width: '100%' } : {}}>
+                            <Text size="1" color="gray">{t('tag.filter')}</Text>
+                            <Flex gap="1" wrap="wrap">
+                                {allTags.map(tag => {
+                                    const active = filterTagId === String(tag.id)
+                                    return (
+                                        <Badge
+                                            key={tag.id}
+                                            size="1"
+                                            variant={active ? 'solid' : 'outline'}
+                                            color={tag.color || 'gray'}
+                                            style={{ cursor: 'pointer', userSelect: 'none' }}
+                                            onClick={() => {
+                                                const newVal = active ? '' : String(tag.id)
+                                                setFilterTagId(newVal)
+                                                setLoading(true)
+                                            }}
+                                        >
+                                            <Tags size={10} /> {tag.name}
+                                        </Badge>
+                                    )
+                                })}
+                            </Flex>
+                        </Flex>
+                    )}
+                </Flex>
+            )}
+
             {loading ? (
                 <Flex justify="center" p="9">
                     <Spinner size="3" />
@@ -843,6 +1316,23 @@ export default function HostList() {
                         </Button>
                     </Flex>
                 </Card>
+            ) : isMobile ? (
+                /* Mobile: Card list view */
+                <Box>
+                    {hosts.map((host) => (
+                        <HostCard
+                            key={host.id}
+                            host={host}
+                            t={t}
+                            onEdit={openEdit}
+                            onDelete={setDeleteHost}
+                            onToggle={handleToggle}
+                            onClone={setCloneHost}
+                            toggling={toggling}
+                            dnsStatus={dnsStatuses[host.domain]}
+                        />
+                    ))}
+                </Box>
             ) : (
                 <Card style={{ background: 'var(--cp-card)', border: '1px solid var(--cp-border)', padding: 0 }}>
                     <Table.Root>
@@ -852,7 +1342,7 @@ export default function HostList() {
                                 <Table.ColumnHeaderCell>{t('host.target')}</Table.ColumnHeaderCell>
                                 <Table.ColumnHeaderCell>{t('host.tls')}</Table.ColumnHeaderCell>
                                 <Table.ColumnHeaderCell>{t('common.status')}</Table.ColumnHeaderCell>
-                                <Table.ColumnHeaderCell style={{ width: 120 }}>{t('common.actions')}</Table.ColumnHeaderCell>
+                                <Table.ColumnHeaderCell style={{ width: 140 }}>{t('common.actions')}</Table.ColumnHeaderCell>
                             </Table.Row>
                         </Table.Header>
                         <Table.Body>
@@ -873,11 +1363,28 @@ export default function HostList() {
                                                 <Globe size={14} color="#10b981" />
                                             )}
                                             <Text weight="medium">{host.domain}</Text>
+                                            {dnsStatuses[host.domain] && (
+                                                <DnsStatusIcon
+                                                    status={dnsStatuses[host.domain].status}
+                                                    dnsResult={dnsStatuses[host.domain]}
+                                                    t={t}
+                                                />
+                                            )}
                                             {host.basic_auths?.length > 0 && (
                                                 <Tooltip content={t('host.auth_protected_tooltip')}>
                                                     <Lock size={12} color="#8b5cf6" />
                                                 </Tooltip>
                                             )}
+                                            {host.group && (
+                                                <Badge color={host.group.color || 'gray'} variant="soft" size="1">
+                                                    <FolderOpen size={10} /> {host.group.name}
+                                                </Badge>
+                                            )}
+                                            {host.tags?.map(tag => (
+                                                <Badge key={tag.id} color={tag.color || 'gray'} variant="outline" size="1">
+                                                    {tag.name}
+                                                </Badge>
+                                            ))}
                                         </Flex>
                                     </Table.Cell>
                                     <Table.Cell>
@@ -909,6 +1416,15 @@ export default function HostList() {
                                     </Table.Cell>
                                     <Table.Cell>
                                         <Flex gap="2">
+                                            <Tooltip content={t('clone.tooltip')}>
+                                                <IconButton
+                                                    variant="ghost"
+                                                    size="1"
+                                                    onClick={() => setCloneHost(host)}
+                                                >
+                                                    <Copy size={14} />
+                                                </IconButton>
+                                            </Tooltip>
                                             <Tooltip content={t('common.edit')}>
                                                 <IconButton
                                                     variant="ghost"
@@ -951,6 +1467,15 @@ export default function HostList() {
                 onClose={() => setDeleteHost(null)}
                 host={deleteHost}
                 onConfirm={handleDelete}
+            />
+
+            {/* Clone Dialog */}
+            <CloneDialog
+                open={!!cloneHost}
+                onClose={() => setCloneHost(null)}
+                host={cloneHost}
+                onCloned={() => { setDnsStatuses({}); fetchHosts() }}
+                t={t}
             />
         </Box>
     )

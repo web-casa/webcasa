@@ -24,11 +24,33 @@ func NewHostService(db *gorm.DB, caddyMgr *caddy.Manager, cfg *config.Config) *H
 	return &HostService{db: db, caddyMgr: caddyMgr, cfg: cfg}
 }
 
-// List returns all hosts with their associations
-func (s *HostService) List() ([]model.Host, error) {
+// HostListFilter holds optional filter parameters for listing hosts
+type HostListFilter struct {
+	GroupID *uint
+	TagID   *uint
+}
+
+// List returns all hosts with their associations, optionally filtered by group_id and/or tag_id
+func (s *HostService) List(filters ...HostListFilter) ([]model.Host, error) {
 	var hosts []model.Host
-	err := s.db.Preload("Upstreams").Preload("CustomHeaders").Preload("AccessRules").Preload("Routes").Preload("BasicAuths").
-		Order("id ASC").Find(&hosts).Error
+	query := s.db.Preload("Upstreams").Preload("CustomHeaders").Preload("AccessRules").Preload("Routes").Preload("BasicAuths").
+		Preload("Group").Preload("Tags")
+
+	var filter HostListFilter
+	if len(filters) > 0 {
+		filter = filters[0]
+	}
+
+	if filter.GroupID != nil {
+		query = query.Where("hosts.group_id = ?", *filter.GroupID)
+	}
+
+	if filter.TagID != nil {
+		query = query.Joins("JOIN host_tags ON host_tags.host_id = hosts.id").
+			Where("host_tags.tag_id = ?", *filter.TagID)
+	}
+
+	err := query.Order("hosts.id ASC").Find(&hosts).Error
 	return hosts, err
 }
 
@@ -36,6 +58,7 @@ func (s *HostService) List() ([]model.Host, error) {
 func (s *HostService) Get(id uint) (*model.Host, error) {
 	var host model.Host
 	err := s.db.Preload("Upstreams").Preload("CustomHeaders").Preload("AccessRules").Preload("Routes").Preload("BasicAuths").
+		Preload("Group").Preload("Tags").
 		First(&host, id).Error
 	if err != nil {
 		return nil, err
@@ -101,6 +124,7 @@ func (s *HostService) Create(req *model.HostCreateRequest) (*model.Host, error) 
 		TLSMode:          stringOrDefault(req.TLSMode, "auto"),
 		DnsProviderID:    req.DnsProviderID,
 		CustomDirectives: req.CustomDirectives,
+		GroupID:          req.GroupID,
 	}
 
 	for i, u := range req.Upstreams {
@@ -149,11 +173,18 @@ func (s *HostService) Create(req *model.HostCreateRequest) (*model.Host, error) 
 		return nil, fmt.Errorf("failed to create host: %w", err)
 	}
 
+	// Sync tag associations
+	if len(req.TagIDs) > 0 {
+		for _, tagID := range req.TagIDs {
+			s.db.Create(&model.HostTag{HostID: host.ID, TagID: tagID})
+		}
+	}
+
 	if err := s.ApplyConfig(); err != nil {
 		log.Printf("Warning: failed to apply config after create: %v", err)
 	}
 
-	return host, nil
+	return s.Get(host.ID)
 }
 
 // Update modifies an existing host
@@ -206,6 +237,7 @@ func (s *HostService) Update(id uint, req *model.HostCreateRequest) (*model.Host
 		host.TLSMode = req.TLSMode
 	}
 	host.DnsProviderID = req.DnsProviderID
+	host.GroupID = req.GroupID
 
 	// Replace associations
 	s.db.Where("host_id = ?", id).Delete(&model.Upstream{})
@@ -268,6 +300,11 @@ func (s *HostService) Update(id uint, req *model.HostCreateRequest) (*model.Host
 		return nil, fmt.Errorf("failed to update host: %w", err)
 	}
 
+	// Explicitly clear group_id if nil (GORM Save ignores nil pointer fields)
+	if req.GroupID == nil {
+		s.db.Model(&model.Host{}).Where("id = ?", id).Update("group_id", nil)
+	}
+
 	for i := range host.Upstreams {
 		s.db.Create(&host.Upstreams[i])
 	}
@@ -279,6 +316,12 @@ func (s *HostService) Update(id uint, req *model.HostCreateRequest) (*model.Host
 	}
 	for i := range host.BasicAuths {
 		s.db.Create(&host.BasicAuths[i])
+	}
+
+	// Sync tag associations: replace all
+	s.db.Where("host_id = ?", id).Delete(&model.HostTag{})
+	for _, tagID := range req.TagIDs {
+		s.db.Create(&model.HostTag{HostID: id, TagID: tagID})
 	}
 
 	if err := s.ApplyConfig(); err != nil {
@@ -451,6 +494,119 @@ func (s *HostService) ImportAll(data *model.ExportData) error {
 
 	return s.ApplyConfig()
 }
+// CloneHost creates a deep copy of an existing host with a new domain.
+// It copies all main table fields (except ID, Domain, CreatedAt, UpdatedAt)
+// and all sub-table records (upstreams, custom_headers, access_rules, basic_auths, routes).
+func (s *HostService) CloneHost(sourceID uint, newDomain string) (*model.Host, error) {
+	// Domain uniqueness check
+	var count int64
+	s.db.Model(&model.Host{}).Where("domain = ?", newDomain).Count(&count)
+	if count > 0 {
+		return nil, fmt.Errorf("error.domain_exists")
+	}
+
+	// Fetch source host with all associations
+	source, err := s.Get(sourceID)
+	if err != nil {
+		return nil, fmt.Errorf("error.host_not_found")
+	}
+
+	var newHost *model.Host
+
+	txErr := s.db.Transaction(func(tx *gorm.DB) error {
+		// Deep copy main table fields
+		newHost = &model.Host{
+			Domain:           newDomain,
+			HostType:         source.HostType,
+			Enabled:          copyBoolPtr(source.Enabled),
+			TLSEnabled:       copyBoolPtr(source.TLSEnabled),
+			HTTPRedirect:     copyBoolPtr(source.HTTPRedirect),
+			WebSocket:        copyBoolPtr(source.WebSocket),
+			RedirectURL:      source.RedirectURL,
+			RedirectCode:     source.RedirectCode,
+			CustomCertPath:   source.CustomCertPath,
+			CustomKeyPath:    source.CustomKeyPath,
+			TLSMode:          source.TLSMode,
+			DnsProviderID:    source.DnsProviderID,
+			CertificateID:    source.CertificateID,
+			Compression:      copyBoolPtr(source.Compression),
+			CacheEnabled:     copyBoolPtr(source.CacheEnabled),
+			CacheTTL:         source.CacheTTL,
+			CorsEnabled:      copyBoolPtr(source.CorsEnabled),
+			CorsOrigins:      source.CorsOrigins,
+			CorsMethods:      source.CorsMethods,
+			CorsHeaders:      source.CorsHeaders,
+			SecurityHeaders:  copyBoolPtr(source.SecurityHeaders),
+			ErrorPagePath:    source.ErrorPagePath,
+			CustomDirectives: source.CustomDirectives,
+			RootPath:         source.RootPath,
+			DirectoryBrowse:  copyBoolPtr(source.DirectoryBrowse),
+			PHPFastCGI:       source.PHPFastCGI,
+			IndexFiles:       source.IndexFiles,
+			GroupID:          source.GroupID,
+		}
+
+		// Deep copy sub-tables with zeroed ID and HostID
+		for _, u := range source.Upstreams {
+			newHost.Upstreams = append(newHost.Upstreams, model.Upstream{
+				Address:   u.Address,
+				Weight:    u.Weight,
+				SortOrder: u.SortOrder,
+			})
+		}
+
+		for _, h := range source.CustomHeaders {
+			newHost.CustomHeaders = append(newHost.CustomHeaders, model.CustomHeader{
+				Direction: h.Direction,
+				Operation: h.Operation,
+				Name:      h.Name,
+				Value:     h.Value,
+				SortOrder: h.SortOrder,
+			})
+		}
+
+		for _, a := range source.AccessRules {
+			newHost.AccessRules = append(newHost.AccessRules, model.AccessRule{
+				RuleType:  a.RuleType,
+				IPRange:   a.IPRange,
+				SortOrder: a.SortOrder,
+			})
+		}
+
+		for _, ba := range source.BasicAuths {
+			newHost.BasicAuths = append(newHost.BasicAuths, model.BasicAuth{
+				Username:     ba.Username,
+				PasswordHash: ba.PasswordHash,
+			})
+		}
+
+		for _, r := range source.Routes {
+			newHost.Routes = append(newHost.Routes, model.Route{
+				Path:       r.Path,
+				UpstreamID: r.UpstreamID,
+				SortOrder:  r.SortOrder,
+			})
+		}
+
+		if err := tx.Create(newHost).Error; err != nil {
+			return fmt.Errorf("failed to create cloned host: %w", err)
+		}
+
+		return nil
+	})
+
+	if txErr != nil {
+		return nil, txErr
+	}
+
+	// Apply config after successful clone
+	if err := s.ApplyConfig(); err != nil {
+		log.Printf("Warning: failed to apply config after clone: %v", err)
+	}
+
+	// Return the full host with associations
+	return s.Get(newHost.ID)
+}
 
 func boolOrDefault(ptr *bool, defaultVal bool) bool {
 	if ptr != nil {
@@ -482,4 +638,11 @@ func stringOrDefault(s, defaultVal string) string {
 		return s
 	}
 	return defaultVal
+}
+func copyBoolPtr(ptr *bool) *bool {
+	if ptr == nil {
+		return nil
+	}
+	v := *ptr
+	return &v
 }
