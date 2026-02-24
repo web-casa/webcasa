@@ -5,8 +5,10 @@ import { caddyAPI } from '../api/index.js'
 import { EditorView, basicSetup } from 'codemirror'
 import { EditorState } from '@codemirror/state'
 import { oneDark } from '@codemirror/theme-one-dark'
+import { useTranslation } from 'react-i18next'
 
 export default function CaddyfileEditor() {
+    const { t } = useTranslation()
     const [content, setContent] = useState('')
     const [originalContent, setOriginalContent] = useState('')
     const [saving, setSaving] = useState(false)
@@ -38,7 +40,7 @@ export default function CaddyfileEditor() {
             }
             initEditor(text)
         } catch (e) {
-            setMessage({ type: 'error', text: '加载 Caddyfile 失败' })
+            setMessage({ type: 'error', text: t('editor.load_failed') })
         }
     }
 
@@ -85,9 +87,9 @@ export default function CaddyfileEditor() {
                     changes: { from: 0, to: viewRef.current.state.doc.length, insert: formatted },
                 })
             }
-            setMessage({ type: 'success', text: '格式化完成' })
+            setMessage({ type: 'success', text: t('editor.format_success') })
         } catch (e) {
-            setMessage({ type: 'error', text: '格式化失败' })
+            setMessage({ type: 'error', text: t('editor.format_failed') })
         }
         setFormatting(false)
     }
@@ -98,12 +100,12 @@ export default function CaddyfileEditor() {
             const res = await caddyAPI.validate(content)
             setValidationResult(res.data)
             if (res.data.valid) {
-                setMessage({ type: 'success', text: '✅ 语法验证通过' })
+                setMessage({ type: 'success', text: `✅ ${t('editor.valid')}` })
             } else {
                 setMessage({ type: 'error', text: res.data.error })
             }
         } catch (e) {
-            setMessage({ type: 'error', text: '验证失败' })
+            setMessage({ type: 'error', text: t('editor.invalid') })
         }
         setValidating(false)
     }
@@ -117,11 +119,11 @@ export default function CaddyfileEditor() {
             setMessage({
                 type: 'success',
                 text: reload
-                    ? (res.data.reload_error ? `已保存，但重载失败：${res.data.reload_error}` : '保存并重载成功')
-                    : '保存成功',
+                    ? (res.data.reload_error ? t('editor.save_reload_failed', { error: res.data.reload_error }) : t('editor.saved_reloaded'))
+                    : t('editor.saved'),
             })
         } catch (e) {
-            setMessage({ type: 'error', text: e.response?.data?.error || '保存失败' })
+            setMessage({ type: 'error', text: e.response?.data?.error || t('common.save_failed') })
         }
         setSaving(false)
     }
@@ -144,22 +146,22 @@ export default function CaddyfileEditor() {
                     <FileCode size={20} style={{ color: '#10b981' }} />
                     <Box>
                         <Text size="5" weight="bold" style={{ color: 'var(--cp-text)' }}>
-                            Caddyfile 编辑器
+                            {t('editor.title')}
                         </Text>
                         <Text size="2" color="gray" as="p">
-                            直接编辑 Caddy 配置文件
+                            {t('editor.subtitle')}
                         </Text>
                     </Box>
                 </Flex>
                 <Flex gap="2" align="center">
                     {hasChanges && (
                         <Badge color="yellow" variant="soft" size="1">
-                            未保存
+                            {t('editor.unsaved')}
                         </Badge>
                     )}
                     <Button variant="soft" size="2" onClick={handleFormat} disabled={formatting}>
                         <AlignLeft size={14} />
-                        {formatting ? '格式化中...' : '格式化'}
+                        {formatting ? t('editor.formatting') : t('editor.format')}
                     </Button>
                     <Button
                         variant="soft"
@@ -169,11 +171,11 @@ export default function CaddyfileEditor() {
                         disabled={validating}
                     >
                         {validationResult?.valid ? <Check size={14} /> : <X size={14} />}
-                        {validating ? '验证中...' : '验证'}
+                        {validating ? t('editor.validating') : t('editor.validate')}
                     </Button>
                     <Button variant="soft" size="2" onClick={handleReset} disabled={!hasChanges}>
                         <RefreshCw size={14} />
-                        重置
+                        {t('editor.reset')}
                     </Button>
                     <Button
                         size="2"
@@ -185,7 +187,7 @@ export default function CaddyfileEditor() {
                         }}
                     >
                         <Save size={14} />
-                        {saving ? '保存中...' : '保存'}
+                        {saving ? t('common.saving') : t('editor.save')}
                     </Button>
                     <Button
                         size="2"
@@ -194,7 +196,7 @@ export default function CaddyfileEditor() {
                         disabled={saving || !hasChanges}
                     >
                         <RefreshCw size={14} />
-                        保存并重载
+                        {t('editor.save_reload')}
                     </Button>
                 </Flex>
             </Flex>

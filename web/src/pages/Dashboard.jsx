@@ -5,6 +5,7 @@ import {
     ShieldCheck, ShieldOff, KeyRound, Monitor, Cpu,
 } from 'lucide-react'
 import { dashboardAPI } from '../api/index.js'
+import { useTranslation } from 'react-i18next'
 
 function StatCard({ icon: Icon, label, value, color = 'green', loading, tooltip }) {
     const card = (
@@ -64,6 +65,7 @@ function InfoRow({ label, value, color }) {
 }
 
 export default function Dashboard() {
+    const { t } = useTranslation()
     const [stats, setStats] = useState(null)
     const [loading, setLoading] = useState(true)
 
@@ -90,46 +92,46 @@ export default function Dashboard() {
     return (
         <Box>
             <Heading size="6" mb="1" style={{ color: 'var(--cp-text)' }}>
-                Dashboard
+                {t('dashboard.title')}
             </Heading>
             <Text size="2" color="gray" mb="5" as="p">
-                CaddyPanel 实例概览
+                {t('dashboard.subtitle')}
             </Text>
 
             {/* Primary Stats Row */}
             <Grid columns={{ initial: '1', sm: '2', md: '4' }} gap="4" mb="5">
                 <StatCard
                     icon={Globe}
-                    label="站点总数"
+                    label={t('dashboard.total_hosts')}
                     value={hosts.total ?? '-'}
                     color="green"
                     loading={loading}
-                    tooltip={`代理: ${hosts.proxy ?? 0} / 跳转: ${hosts.redirect ?? 0}`}
+                    tooltip={`${t('dashboard.proxy_count', { count: hosts.proxy ?? 0 })} / ${t('dashboard.redirect_count', { count: hosts.redirect ?? 0 })}`}
                 />
                 <StatCard
                     icon={Activity}
-                    label="已启用"
+                    label={t('dashboard.active')}
                     value={hosts.active ?? '-'}
                     color="blue"
                     loading={loading}
-                    tooltip={`停用: ${hosts.disabled ?? 0}`}
+                    tooltip={t('dashboard.disabled_count', { count: hosts.disabled ?? 0 })}
                 />
                 <StatCard
                     icon={Shield}
-                    label="HTTPS 保护"
+                    label={t('dashboard.https_protected')}
                     value={loading ? '-' : (tls.auto + tls.custom)}
                     color="violet"
                     loading={loading}
-                    tooltip={`Let's Encrypt: ${tls.auto ?? 0} / 自定义证书: ${tls.custom ?? 0} / 无 TLS: ${tls.none ?? 0}`}
+                    tooltip={`${t('dashboard.le_count', { count: tls.auto ?? 0 })} / ${t('dashboard.custom_cert_count', { count: tls.custom ?? 0 })} / ${t('dashboard.no_tls_count', { count: tls.none ?? 0 })}`}
                 />
                 <StatCard
                     icon={Server}
-                    label="Caddy 状态"
+                    label={t('dashboard.caddy_status')}
                     value={
                         caddy?.running ? (
-                            <Badge color="green" size="2">运行中</Badge>
+                            <Badge color="green" size="2">{t('dashboard.running')}</Badge>
                         ) : (
-                            <Badge color="red" size="2">已停止</Badge>
+                            <Badge color="red" size="2">{t('dashboard.stopped')}</Badge>
                         )
                     }
                     color="orange"
@@ -143,37 +145,37 @@ export default function Dashboard() {
                 <Card style={{ background: 'var(--cp-card)', border: '1px solid var(--cp-border)' }}>
                     <Flex align="center" gap="2" mb="3">
                         <Globe size={16} style={{ color: 'var(--green-9)' }} />
-                        <Heading size="3">站点分布</Heading>
+                        <Heading size="3">{t('dashboard.host_distribution')}</Heading>
                     </Flex>
-                    <InfoRow label="反向代理" value={hosts.proxy ?? 0} />
-                    <InfoRow label="域名跳转" value={hosts.redirect ?? 0} />
-                    <InfoRow label="已启用" value={hosts.active ?? 0} color="green" />
-                    <InfoRow label="已停用" value={hosts.disabled ?? 0} color="gray" />
+                    <InfoRow label={t('dashboard.reverse_proxy')} value={hosts.proxy ?? 0} />
+                    <InfoRow label={t('dashboard.redirect')} value={hosts.redirect ?? 0} />
+                    <InfoRow label={t('dashboard.enabled')} value={hosts.active ?? 0} color="green" />
+                    <InfoRow label={t('dashboard.disabled')} value={hosts.disabled ?? 0} color="gray" />
                 </Card>
 
                 {/* TLS Breakdown */}
                 <Card style={{ background: 'var(--cp-card)', border: '1px solid var(--cp-border)' }}>
                     <Flex align="center" gap="2" mb="3">
                         <ShieldCheck size={16} style={{ color: 'var(--violet-9)' }} />
-                        <Heading size="3">TLS 状态</Heading>
+                        <Heading size="3">{t('dashboard.tls_status')}</Heading>
                     </Flex>
                     <InfoRow
-                        label="Let's Encrypt (自动)"
+                        label={t('dashboard.lets_encrypt_auto')}
                         value={tls.auto ?? 0}
                         color="green"
                     />
                     <InfoRow
-                        label="自定义证书"
+                        label={t('dashboard.custom_cert')}
                         value={tls.custom ?? 0}
                         color="blue"
                     />
                     <InfoRow
-                        label="未启用 TLS"
+                        label={t('dashboard.no_tls')}
                         value={tls.none ?? 0}
                         color={tls.none > 0 ? 'orange' : 'gray'}
                     />
                     <InfoRow
-                        label="Basic Auth 保护"
+                        label={t('dashboard.basic_auth_protected')}
                         value={security.with_auth ?? 0}
                         color="violet"
                     />
@@ -183,20 +185,20 @@ export default function Dashboard() {
                 <Card style={{ background: 'var(--cp-card)', border: '1px solid var(--cp-border)' }}>
                     <Flex align="center" gap="2" mb="3">
                         <Monitor size={16} style={{ color: 'var(--orange-9)' }} />
-                        <Heading size="3">系统信息</Heading>
+                        <Heading size="3">{t('dashboard.system_info')}</Heading>
                     </Flex>
                     <InfoRow label="CaddyPanel" value={`v${system.panel_version || '-'}`} />
                     <InfoRow
                         label="Caddy"
-                        value={caddy?.version || '未知'}
+                        value={caddy?.version || t('common.unknown')}
                     />
                     <InfoRow
-                        label="Caddy 状态"
-                        value={caddy?.running ? '运行中' : '已停止'}
+                        label={t('dashboard.caddy_status')}
+                        value={caddy?.running ? t('dashboard.running') : t('dashboard.stopped')}
                         color={caddy?.running ? 'green' : 'red'}
                     />
                     <InfoRow label="Go" value={system.go_version || '-'} />
-                    <InfoRow label="平台" value={`${system.go_os || '-'}/${system.go_arch || '-'}`} />
+                    <InfoRow label={t('dashboard.platform')} value={`${system.go_os || '-'}/${system.go_arch || '-'}`} />
                 </Card>
             </Grid>
         </Box>

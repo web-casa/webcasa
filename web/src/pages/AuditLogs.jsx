@@ -2,6 +2,7 @@ import { useState, useEffect } from 'react'
 import { Box, Flex, Heading, Text, Card, Table, Badge, Button, Spinner } from '@radix-ui/themes'
 import { ClipboardList, ChevronLeft, ChevronRight } from 'lucide-react'
 import { auditAPI } from '../api/index.js'
+import { useTranslation } from 'react-i18next'
 
 const actionColors = {
     CREATE: 'green',
@@ -16,6 +17,7 @@ const actionColors = {
 }
 
 export default function AuditLogs() {
+    const { t } = useTranslation()
     const [logs, setLogs] = useState([])
     const [total, setTotal] = useState(0)
     const [page, setPage] = useState(1)
@@ -44,10 +46,10 @@ export default function AuditLogs() {
         <Box>
             <Flex align="center" gap="2" mb="1">
                 <ClipboardList size={22} style={{ color: 'var(--violet-9)' }} />
-                <Heading size="6" style={{ color: 'var(--cp-text)' }}>审计日志</Heading>
+                <Heading size="6" style={{ color: 'var(--cp-text)' }}>{t('audit.title')}</Heading>
             </Flex>
             <Text size="2" color="gray" mb="5" as="p">
-                记录所有管理操作 · 共 {total} 条
+                {t('audit.subtitle_with_count', { count: total })}
             </Text>
 
             <Card style={{ background: 'var(--cp-card)', border: '1px solid var(--cp-border)' }}>
@@ -57,12 +59,12 @@ export default function AuditLogs() {
                     <Table.Root>
                         <Table.Header>
                             <Table.Row>
-                                <Table.ColumnHeaderCell>时间</Table.ColumnHeaderCell>
-                                <Table.ColumnHeaderCell>用户</Table.ColumnHeaderCell>
-                                <Table.ColumnHeaderCell>操作</Table.ColumnHeaderCell>
-                                <Table.ColumnHeaderCell>目标</Table.ColumnHeaderCell>
-                                <Table.ColumnHeaderCell>详情</Table.ColumnHeaderCell>
-                                <Table.ColumnHeaderCell>IP</Table.ColumnHeaderCell>
+                                <Table.ColumnHeaderCell>{t('audit.time')}</Table.ColumnHeaderCell>
+                                <Table.ColumnHeaderCell>{t('audit.user')}</Table.ColumnHeaderCell>
+                                <Table.ColumnHeaderCell>{t('audit.action')}</Table.ColumnHeaderCell>
+                                <Table.ColumnHeaderCell>{t('audit.target')}</Table.ColumnHeaderCell>
+                                <Table.ColumnHeaderCell>{t('audit.detail')}</Table.ColumnHeaderCell>
+                                <Table.ColumnHeaderCell>{t('audit.ip')}</Table.ColumnHeaderCell>
                             </Table.Row>
                         </Table.Header>
                         <Table.Body>
@@ -100,7 +102,7 @@ export default function AuditLogs() {
                             {logs.length === 0 && (
                                 <Table.Row>
                                     <Table.Cell colSpan={6}>
-                                        <Text color="gray" size="2">暂无审计日志</Text>
+                                        <Text color="gray" size="2">{t('audit.no_logs')}</Text>
                                     </Table.Cell>
                                 </Table.Row>
                             )}
@@ -116,7 +118,7 @@ export default function AuditLogs() {
                             disabled={page <= 1}
                             onClick={() => fetchLogs(page - 1)}
                         >
-                            <ChevronLeft size={14} /> 上一页
+                            <ChevronLeft size={14} /> {t('common.prev_page')}
                         </Button>
                         <Text size="2" color="gray">
                             {page} / {totalPages}
@@ -127,7 +129,7 @@ export default function AuditLogs() {
                             disabled={page >= totalPages}
                             onClick={() => fetchLogs(page + 1)}
                         >
-                            下一页 <ChevronRight size={14} />
+                            {t('common.next_page')} <ChevronRight size={14} />
                         </Button>
                     </Flex>
                 )}

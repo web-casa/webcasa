@@ -4,11 +4,13 @@ import {
     TextField, Callout, IconButton, AlertDialog,
 } from '@radix-ui/themes'
 import {
-    Plus, Trash2, Upload, ShieldCheck, AlertCircle, CheckCircle2, X,
+    Plus, Trash2, Upload, ShieldCheck, AlertCircle, CheckCircle2,
 } from 'lucide-react'
 import { certificateAPI } from '../api/index.js'
+import { useTranslation } from 'react-i18next'
 
 export default function Certificates() {
+    const { t } = useTranslation()
     const [certs, setCerts] = useState([])
     const [loading, setLoading] = useState(true)
     const [message, setMessage] = useState(null)
@@ -34,11 +36,11 @@ export default function Certificates() {
         if (!deleteTarget) return
         try {
             await certificateAPI.delete(deleteTarget.id)
-            showMsg('success', '证书已删除')
+            showMsg('success', t('cert.delete_success'))
             setDeleteTarget(null)
             fetchCerts()
         } catch (err) {
-            showMsg('error', err.response?.data?.error || '删除失败')
+            showMsg('error', err.response?.data?.error || t('common.delete_failed'))
             setDeleteTarget(null)
         }
     }
@@ -48,21 +50,21 @@ export default function Certificates() {
         const date = new Date(d)
         const now = new Date()
         const days = Math.floor((date - now) / 86400000)
-        const str = date.toLocaleDateString('zh-CN')
-        if (days < 0) return <Badge color="red" size="1">已过期 {str}</Badge>
-        if (days < 30) return <Badge color="orange" size="1">{str} ({days}天)</Badge>
-        return <Badge color="green" size="1" variant="soft">{str} ({days}天)</Badge>
+        const str = date.toLocaleDateString()
+        if (days < 0) return <Badge color="red" size="1">{t('cert.expired')} {str}</Badge>
+        if (days < 30) return <Badge color="orange" size="1">{str} ({days} {t('common.days')})</Badge>
+        return <Badge color="green" size="1" variant="soft">{str} ({days} {t('common.days')})</Badge>
     }
 
     return (
         <Box>
             <Flex justify="between" align="center" mb="4">
                 <Box>
-                    <Heading size="6" mb="1" style={{ color: 'var(--cp-text)' }}>证书管理</Heading>
-                    <Text size="2" color="gray">管理 SSL/TLS 证书，可在站点配置中引用</Text>
+                    <Heading size="6" mb="1" style={{ color: 'var(--cp-text)' }}>{t('cert.title')}</Heading>
+                    <Text size="2" color="gray">{t('cert.subtitle')}</Text>
                 </Box>
                 <Button onClick={() => setUploadOpen(true)}>
-                    <Plus size={14} /> 上传证书
+                    <Plus size={14} /> {t('cert.upload')}
                 </Button>
             </Flex>
 
@@ -80,17 +82,17 @@ export default function Certificates() {
                     <Flex direction="column" align="center" justify="center" py="8">
                         <ShieldCheck size={40} style={{ color: 'var(--cp-text-muted)' }} />
                         <Text size="2" color="gray" mt="3">
-                            {loading ? '加载中...' : '暂无证书，点击上方"上传证书"按钮添加'}
+                            {loading ? t('common.loading') : t('cert.no_certs_hint')}
                         </Text>
                     </Flex>
                 ) : (
                     <Table.Root>
                         <Table.Header>
                             <Table.Row>
-                                <Table.ColumnHeaderCell>名称</Table.ColumnHeaderCell>
-                                <Table.ColumnHeaderCell>域名</Table.ColumnHeaderCell>
-                                <Table.ColumnHeaderCell>过期时间</Table.ColumnHeaderCell>
-                                <Table.ColumnHeaderCell>关联站点</Table.ColumnHeaderCell>
+                                <Table.ColumnHeaderCell>{t('common.name')}</Table.ColumnHeaderCell>
+                                <Table.ColumnHeaderCell>{t('cert.domain')}</Table.ColumnHeaderCell>
+                                <Table.ColumnHeaderCell>{t('cert.expires')}</Table.ColumnHeaderCell>
+                                <Table.ColumnHeaderCell>{t('cert.linked_hosts')}</Table.ColumnHeaderCell>
                                 <Table.ColumnHeaderCell width="60"></Table.ColumnHeaderCell>
                             </Table.Row>
                         </Table.Header>
@@ -110,7 +112,7 @@ export default function Certificates() {
                                     </Table.Cell>
                                     <Table.Cell>{formatDate(cert.expires_at)}</Table.Cell>
                                     <Table.Cell>
-                                        <Badge variant="soft" size="1">{cert.host_count || 0} 个站点</Badge>
+                                        <Badge variant="soft" size="1">{t('common.host_count', { count: cert.host_count || 0 })}</Badge>
                                     </Table.Cell>
                                     <Table.Cell>
                                         <IconButton
@@ -131,23 +133,21 @@ export default function Certificates() {
             <UploadDialog
                 open={uploadOpen}
                 onClose={() => setUploadOpen(false)}
-                onUploaded={() => { setUploadOpen(false); fetchCerts(); showMsg('success', '证书上传成功') }}
+                onUploaded={() => { setUploadOpen(false); fetchCerts(); showMsg('success', t('common.save_success')) }}
                 onError={(msg) => showMsg('error', msg)}
             />
 
             {/* Delete Confirmation */}
             <AlertDialog.Root open={!!deleteTarget} onOpenChange={(o) => !o && setDeleteTarget(null)}>
                 <AlertDialog.Content maxWidth="400px">
-                    <AlertDialog.Title>删除证书</AlertDialog.Title>
-                    <AlertDialog.Description>
-                        确定要删除证书 <strong>{deleteTarget?.name}</strong> 吗？此操作不可撤销。
-                    </AlertDialog.Description>
+                    <AlertDialog.Title>{t('cert.delete_title')}</AlertDialog.Title>
+                    <AlertDialog.Description dangerouslySetInnerHTML={{ __html: t('cert.confirm_delete_desc', { name: deleteTarget?.name }) }} />
                     <Flex gap="3" mt="4" justify="end">
                         <AlertDialog.Cancel>
-                            <Button variant="soft" color="gray">取消</Button>
+                            <Button variant="soft" color="gray">{t('common.cancel')}</Button>
                         </AlertDialog.Cancel>
                         <AlertDialog.Action>
-                            <Button color="red" onClick={handleDelete}>删除</Button>
+                            <Button color="red" onClick={handleDelete}>{t('common.delete')}</Button>
                         </AlertDialog.Action>
                     </Flex>
                 </AlertDialog.Content>
@@ -158,6 +158,7 @@ export default function Certificates() {
 
 // ============ Upload Dialog ============
 function UploadDialog({ open, onClose, onUploaded, onError }) {
+    const { t } = useTranslation()
     const [name, setName] = useState('')
     const [certFile, setCertFile] = useState(null)
     const [keyFile, setKeyFile] = useState(null)
@@ -166,9 +167,9 @@ function UploadDialog({ open, onClose, onUploaded, onError }) {
     const keyInputRef = useRef(null)
 
     const handleUpload = async () => {
-        if (!name.trim()) { onError('请输入证书名称'); return }
-        if (!certFile) { onError('请选择证书文件'); return }
-        if (!keyFile) { onError('请选择密钥文件'); return }
+        if (!name.trim()) { onError(t('cert.error_no_name')); return }
+        if (!certFile) { onError(t('cert.error_no_cert')); return }
+        if (!keyFile) { onError(t('cert.error_no_key')); return }
 
         setUploading(true)
         try {
@@ -182,7 +183,7 @@ function UploadDialog({ open, onClose, onUploaded, onError }) {
             setKeyFile(null)
             onUploaded()
         } catch (err) {
-            onError(err.response?.data?.error || '上传失败')
+            onError(err.response?.data?.error || t('common.operation_failed'))
         }
         setUploading(false)
     }
@@ -190,29 +191,29 @@ function UploadDialog({ open, onClose, onUploaded, onError }) {
     return (
         <Dialog.Root open={open} onOpenChange={(o) => !o && onClose()}>
             <Dialog.Content maxWidth="480px">
-                <Dialog.Title>上传证书</Dialog.Title>
+                <Dialog.Title>{t('cert.upload')}</Dialog.Title>
                 <Dialog.Description size="2" color="gray">
-                    上传 PEM 格式的 SSL 证书和私钥文件。系统会自动解析域名和过期时间。
+                    {t('cert.upload_description')}
                 </Dialog.Description>
 
                 <Flex direction="column" gap="3" mt="4">
                     <Flex direction="column" gap="1">
-                        <Text size="2" weight="medium">证书名称</Text>
+                        <Text size="2" weight="medium">{t('cert.name')}</Text>
                         <TextField.Root
-                            placeholder="如: example.com 通配符"
+                            placeholder={t('cert.name_placeholder')}
                             value={name}
                             onChange={(e) => setName(e.target.value)}
                         />
                     </Flex>
 
                     <Flex direction="column" gap="1">
-                        <Text size="2" weight="medium">证书文件 (.pem / .crt)</Text>
+                        <Text size="2" weight="medium">{t('cert.cert_file')}</Text>
                         <Button
                             variant="soft" color="gray" size="2"
                             onClick={() => certInputRef.current?.click()}
                         >
                             <Upload size={14} />
-                            {certFile ? certFile.name : '选择证书文件'}
+                            {certFile ? certFile.name : t('cert.choose_cert')}
                         </Button>
                         <input
                             ref={certInputRef}
@@ -224,13 +225,13 @@ function UploadDialog({ open, onClose, onUploaded, onError }) {
                     </Flex>
 
                     <Flex direction="column" gap="1">
-                        <Text size="2" weight="medium">私钥文件 (.pem / .key)</Text>
+                        <Text size="2" weight="medium">{t('cert.key_file')}</Text>
                         <Button
                             variant="soft" color="gray" size="2"
                             onClick={() => keyInputRef.current?.click()}
                         >
                             <Upload size={14} />
-                            {keyFile ? keyFile.name : '选择私钥文件'}
+                            {keyFile ? keyFile.name : t('cert.choose_key')}
                         </Button>
                         <input
                             ref={keyInputRef}
@@ -244,10 +245,10 @@ function UploadDialog({ open, onClose, onUploaded, onError }) {
 
                 <Flex gap="3" mt="4" justify="end">
                     <Dialog.Close>
-                        <Button variant="soft" color="gray">取消</Button>
+                        <Button variant="soft" color="gray">{t('common.cancel')}</Button>
                     </Dialog.Close>
                     <Button onClick={handleUpload} disabled={uploading}>
-                        {uploading ? '上传中...' : '上传'}
+                        {uploading ? t('common.uploading') : t('common.upload')}
                     </Button>
                 </Flex>
             </Dialog.Content>

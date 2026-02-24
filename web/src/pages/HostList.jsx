@@ -10,6 +10,7 @@ import {
 } from 'lucide-react'
 import { hostAPI, dnsProviderAPI, settingAPI, certificateAPI } from '../api/index.js'
 import { useRef as useReactRef } from 'react'
+import { useTranslation } from 'react-i18next'
 
 const DEFAULT_FORM = {
     domain: '',
@@ -40,6 +41,7 @@ const DEFAULT_FORM = {
 
 // ============ Host Form Dialog ============
 function HostFormDialog({ open, onClose, onSaved, host }) {
+    const { t } = useTranslation()
     const [form, setForm] = useState({ ...DEFAULT_FORM })
     const [saving, setSaving] = useState(false)
     const [error, setError] = useState('')
@@ -112,7 +114,7 @@ function HostFormDialog({ open, onClose, onSaved, host }) {
             setKeyFile(null)
             certificateAPI.list().then(r => setCertificates(r.data.certificates || []))
         } catch (err) {
-            setError(err.response?.data?.error || '证书上传失败')
+            setError(err.response?.data?.error || t('cert.upload_failed'))
         }
         setUploadingCert(false)
     }
@@ -136,7 +138,7 @@ function HostFormDialog({ open, onClose, onSaved, host }) {
             onSaved()
             onClose()
         } catch (err) {
-            setError(err.response?.data?.error || 'Failed to save host')
+            setError(err.response?.data?.error || t('host.save_failed'))
         } finally {
             setSaving(false)
         }
@@ -175,10 +177,10 @@ function HostFormDialog({ open, onClose, onSaved, host }) {
         <Dialog.Root open={open} onOpenChange={(o) => !o && onClose()}>
             <Dialog.Content maxWidth="560px" style={{ background: 'var(--cp-card)' }}>
                 <Dialog.Title>
-                    {isEdit ? 'Edit Host' : 'New Host'}
+                    {isEdit ? t('host.edit_host') : t('host.add_host')}
                 </Dialog.Title>
                 <Dialog.Description size="2" color="gray" mb="4">
-                    {isProxy ? '配置反向代理' : isRedirect ? '配置域名跳转' : isStatic ? '配置静态网站托管' : '配置 PHP 站点'}
+                    {isProxy ? t('host.proxy') : isRedirect ? t('host.redirect') : isStatic ? t('host.static') : t('host.php')}
                 </Dialog.Description>
 
                 <Flex direction="column" gap="4">
@@ -192,7 +194,7 @@ function HostFormDialog({ open, onClose, onSaved, host }) {
                     {/* Host Type + Domain */}
                     <Flex gap="3" align="end">
                         <Flex direction="column" gap="1" style={{ width: 140 }}>
-                            <Text size="2" weight="medium">Type</Text>
+                            <Text size="2" weight="medium">{t('host.type')}</Text>
                             <Select.Root
                                 value={form.host_type}
                                 onValueChange={(v) => setForm({ ...form, host_type: v })}
@@ -200,15 +202,15 @@ function HostFormDialog({ open, onClose, onSaved, host }) {
                             >
                                 <Select.Trigger />
                                 <Select.Content>
-                                    <Select.Item value="proxy">反向代理</Select.Item>
-                                    <Select.Item value="redirect">域名跳转</Select.Item>
-                                    <Select.Item value="static">静态网站</Select.Item>
-                                    <Select.Item value="php">PHP 站点</Select.Item>
+                                    <Select.Item value="proxy">{t('host.proxy')}</Select.Item>
+                                    <Select.Item value="redirect">{t('host.redirect')}</Select.Item>
+                                    <Select.Item value="static">{t('host.static')}</Select.Item>
+                                    <Select.Item value="php">{t('host.php')}</Select.Item>
                                 </Select.Content>
                             </Select.Root>
                         </Flex>
                         <Flex direction="column" gap="1" style={{ flex: 1 }}>
-                            <Text size="2" weight="medium">Domain</Text>
+                            <Text size="2" weight="medium">{t('host.domain')}</Text>
                             <TextField.Root
                                 placeholder="example.com"
                                 value={form.domain}
@@ -221,12 +223,12 @@ function HostFormDialog({ open, onClose, onSaved, host }) {
                     <Tabs.Root defaultValue="main">
                         <Tabs.List>
                             <Tabs.Trigger value="main">
-                                {isProxy ? 'Upstream' : isRedirect ? 'Redirect' : '配置'}
+                                {isProxy ? t('host.upstream') : isRedirect ? t('host.redirect') : t('host.options')}
                             </Tabs.Trigger>
-                            <Tabs.Trigger value="options">Options</Tabs.Trigger>
+                            <Tabs.Trigger value="options">{t('host.options')}</Tabs.Trigger>
                             <Tabs.Trigger value="auth">
                                 <Lock size={12} style={{ marginRight: 4 }} />
-                                Auth
+                                {t('common.auth')}
                             </Tabs.Trigger>
                         </Tabs.List>
 
@@ -237,9 +239,9 @@ function HostFormDialog({ open, onClose, onSaved, host }) {
                                     /* Proxy: Upstreams */
                                     <Flex direction="column" gap="2">
                                         <Flex justify="between" align="center">
-                                            <Text size="2" weight="medium">Upstream Servers</Text>
+                                            <Text size="2" weight="medium">{t('host.upstreams')}</Text>
                                             <Button variant="ghost" size="1" onClick={addUpstream}>
-                                                <Plus size={14} /> Add
+                                                <Plus size={14} /> {t('common.add')}
                                             </Button>
                                         </Flex>
                                         {form.upstreams.map((u, i) => (
@@ -268,7 +270,7 @@ function HostFormDialog({ open, onClose, onSaved, host }) {
                                     /* Redirect: Target URL + Code */
                                     <Flex direction="column" gap="3">
                                         <Flex direction="column" gap="1">
-                                            <Text size="2" weight="medium">Redirect Target</Text>
+                                            <Text size="2" weight="medium">{t('host.redirect_url')}</Text>
                                             <TextField.Root
                                                 placeholder="https://new-site.com"
                                                 value={form.redirect_url}
@@ -276,11 +278,11 @@ function HostFormDialog({ open, onClose, onSaved, host }) {
                                                 size="2"
                                             />
                                             <Text size="1" color="gray">
-                                                The original URI path will be appended automatically
+                                                {t('host.redirect_url_hint')}
                                             </Text>
                                         </Flex>
                                         <Flex direction="column" gap="1" style={{ width: 200 }}>
-                                            <Text size="2" weight="medium">Redirect Code</Text>
+                                            <Text size="2" weight="medium">{t('host.redirect_code')}</Text>
                                             <Select.Root
                                                 value={String(form.redirect_code)}
                                                 onValueChange={(v) => setForm({ ...form, redirect_code: Number(v) })}
@@ -288,8 +290,8 @@ function HostFormDialog({ open, onClose, onSaved, host }) {
                                             >
                                                 <Select.Trigger />
                                                 <Select.Content>
-                                                    <Select.Item value="301">301 — Permanent</Select.Item>
-                                                    <Select.Item value="302">302 — Temporary</Select.Item>
+                                                    <Select.Item value="301">{t('host.301_permanent')}</Select.Item>
+                                                    <Select.Item value="302">{t('host.302_temporary')}</Select.Item>
                                                 </Select.Content>
                                             </Select.Root>
                                         </Flex>
@@ -298,7 +300,7 @@ function HostFormDialog({ open, onClose, onSaved, host }) {
                                     /* Static / PHP: Root path + options */
                                     <Flex direction="column" gap="3">
                                         <Flex direction="column" gap="1">
-                                            <Text size="2" weight="medium">根目录</Text>
+                                            <Text size="2" weight="medium">{t('host.root_path')}</Text>
                                             <TextField.Root
                                                 placeholder="/var/www/my-site"
                                                 value={form.root_path || ''}
@@ -306,12 +308,12 @@ function HostFormDialog({ open, onClose, onSaved, host }) {
                                                 size="2"
                                             />
                                             <Text size="1" color="gray">
-                                                {isStatic ? '静态文件所在的服务器目录' : 'PHP 站点根目录（如 WordPress）'}
+                                                {isStatic ? t('host.static_root_hint') : t('host.php_root_hint')}
                                             </Text>
                                         </Flex>
                                         {isPHP && (
                                             <Flex direction="column" gap="1">
-                                                <Text size="2" weight="medium">PHP-FPM 地址</Text>
+                                                <Text size="2" weight="medium">{t('host.php_fastcgi')}</Text>
                                                 <TextField.Root
                                                     placeholder="localhost:9000"
                                                     value={form.php_fastcgi || ''}
@@ -319,15 +321,15 @@ function HostFormDialog({ open, onClose, onSaved, host }) {
                                                     size="2"
                                                 />
                                                 <Text size="1" color="gray">
-                                                    PHP-FPM 监听地址，默认 localhost:9000
+                                                    {t('host.php_fastcgi_hint')}
                                                 </Text>
                                             </Flex>
                                         )}
                                         {isStatic && (
                                             <Flex justify="between" align="center">
                                                 <Flex direction="column">
-                                                    <Text size="2" weight="medium">目录浏览</Text>
-                                                    <Text size="1" color="gray">允许查看目录列表</Text>
+                                                    <Text size="2" weight="medium">{t('host.directory_browse')}</Text>
+                                                    <Text size="1" color="gray">{t('host.directory_browse_hint')}</Text>
                                                 </Flex>
                                                 <Switch
                                                     checked={form.directory_browse || false}
@@ -336,14 +338,14 @@ function HostFormDialog({ open, onClose, onSaved, host }) {
                                             </Flex>
                                         )}
                                         <Flex direction="column" gap="1">
-                                            <Text size="2" weight="medium">首页文件</Text>
+                                            <Text size="2" weight="medium">{t('host.index_files')}</Text>
                                             <TextField.Root
                                                 placeholder="index.html index.htm"
                                                 value={form.index_files || ''}
                                                 onChange={(e) => setForm({ ...form, index_files: e.target.value })}
                                                 size="2"
                                             />
-                                            <Text size="1" color="gray">空格分隔，留空使用默认</Text>
+                                            <Text size="1" color="gray">{t('host.index_files_hint')}</Text>
                                         </Flex>
                                     </Flex>
                                 )}
@@ -356,8 +358,8 @@ function HostFormDialog({ open, onClose, onSaved, host }) {
                                 <Flex direction="column" gap="3" p="1">
                                     <Flex justify="between" align="center">
                                         <Flex direction="column">
-                                            <Text size="2" weight="medium">TLS 模式</Text>
-                                            <Text size="1" color="gray">选择证书获取方式</Text>
+                                            <Text size="2" weight="medium">{t('host.tls_mode')}</Text>
+                                            <Text size="1" color="gray">{t('host.tls_mode_hint')}</Text>
                                         </Flex>
                                         <Select.Root
                                             value={form.tls_mode || 'auto'}
@@ -366,11 +368,11 @@ function HostFormDialog({ open, onClose, onSaved, host }) {
                                         >
                                             <Select.Trigger style={{ width: 160 }} />
                                             <Select.Content>
-                                                <Select.Item value="auto">自动 (Let's Encrypt)</Select.Item>
-                                                <Select.Item value="dns">DNS Challenge</Select.Item>
-                                                <Select.Item value="wildcard">通配符证书</Select.Item>
-                                                <Select.Item value="custom">自定义证书</Select.Item>
-                                                <Select.Item value="off">关闭 TLS</Select.Item>
+                                                <Select.Item value="auto">{t('host.tls_auto')}</Select.Item>
+                                                <Select.Item value="dns">{t('host.tls_dns')}</Select.Item>
+                                                <Select.Item value="wildcard">{t('host.tls_wildcard')}</Select.Item>
+                                                <Select.Item value="custom">{t('host.tls_custom')}</Select.Item>
+                                                <Select.Item value="off">{t('host.tls_off')}</Select.Item>
                                             </Select.Content>
                                         </Select.Root>
                                     </Flex>
@@ -379,7 +381,7 @@ function HostFormDialog({ open, onClose, onSaved, host }) {
                                         <Callout.Root color="blue" size="1">
                                             <Callout.Icon><AlertCircle size={14} /></Callout.Icon>
                                             <Callout.Text>
-                                                <Text size="1">请先添加 DNS 解析再保存：</Text>
+                                                <Text size="1">{t('host.dns_record_hint')}</Text>
                                                 {serverIPs.ipv4 && (
                                                     <Flex align="center" gap="1" mt="1">
                                                         <code style={{ fontSize: '0.75rem' }}>{form.domain} → {serverIPs.ipv4} (A)</code>
@@ -402,13 +404,13 @@ function HostFormDialog({ open, onClose, onSaved, host }) {
 
                                     {(form.tls_mode === 'dns' || form.tls_mode === 'wildcard') && (
                                         <Flex direction="column" gap="1" pl="4" style={{ borderLeft: '2px solid var(--cp-border-subtle)' }}>
-                                            <Text size="1" color="gray">DNS Provider</Text>
+                                            <Text size="1" color="gray">{t('host.dns_provider')}</Text>
                                             <Select.Root
                                                 value={form.dns_provider_id ? String(form.dns_provider_id) : ''}
                                                 onValueChange={(v) => setForm({ ...form, dns_provider_id: v ? Number(v) : null })}
                                                 size="2"
                                             >
-                                                <Select.Trigger placeholder="选择 DNS Provider" />
+                                                <Select.Trigger placeholder={t('host.dns_provider')} />
                                                 <Select.Content>
                                                     {dnsProviders.map(p => (
                                                         <Select.Item key={p.id} value={String(p.id)}>
@@ -418,37 +420,37 @@ function HostFormDialog({ open, onClose, onSaved, host }) {
                                                 </Select.Content>
                                             </Select.Root>
                                             {dnsProviders.length === 0 && (
-                                                <Text size="1" color="red">请先在 DNS Providers 页面添加 Provider</Text>
+                                                <Text size="1" color="red">{t('dns.no_providers_hint')}</Text>
                                             )}
                                         </Flex>
                                     )}
 
                                     {form.tls_mode === 'custom' && (
                                         <Flex direction="column" gap="2" pl="4" style={{ borderLeft: '2px solid var(--cp-border-subtle)' }}>
-                                            <Text size="1" color="gray">选择证书</Text>
+                                            <Text size="1" color="gray">{t('cert.title')}</Text>
                                             <Select.Root
                                                 value={form.certificate_id ? String(form.certificate_id) : ''}
                                                 onValueChange={(v) => setForm({ ...form, certificate_id: v ? Number(v) : null })}
                                                 size="2"
                                             >
-                                                <Select.Trigger placeholder="从已上传的证书中选择" />
+                                                <Select.Trigger placeholder={t('host.select_cert_hint')} />
                                                 <Select.Content>
                                                     {certificates.map(c => (
                                                         <Select.Item key={c.id} value={String(c.id)}>
-                                                            {c.name} — {c.domains || '未知域名'}
+                                                            {c.name} — {c.domains || t('common.unknown')}
                                                         </Select.Item>
                                                     ))}
                                                 </Select.Content>
                                             </Select.Root>
                                             {certificates.length === 0 && (
                                                 <Text size="1" color="orange">
-                                                    暂无证书，请先到 <strong>证书管理</strong> 页面上传
+                                                    {t('host.no_cert_hint')}
                                                 </Text>
                                             )}
 
                                             <Separator size="4" />
 
-                                            <Text size="1" color="gray">或直接上传证书</Text>
+                                            <Text size="1" color="gray">{t('host.upload_cert_hint')}</Text>
                                             <Flex gap="2">
                                                 <Button
                                                     variant="soft" color="gray" size="1"
@@ -471,7 +473,7 @@ function HostFormDialog({ open, onClose, onSaved, host }) {
                                                     onClick={handleUploadCert}
                                                     disabled={uploadingCert}
                                                 >
-                                                    {uploadingCert ? '上传中...' : '上传并关联'}
+                                                    {uploadingCert ? t('common.loading') : t('host.upload_and_associate')}
                                                 </Button>
                                             )}
                                         </Flex>
@@ -479,8 +481,8 @@ function HostFormDialog({ open, onClose, onSaved, host }) {
 
                                     <Flex justify="between" align="center">
                                         <Flex direction="column">
-                                            <Text size="2" weight="medium">HTTP → HTTPS Redirect</Text>
-                                            <Text size="1" color="gray">Force redirect HTTP to HTTPS</Text>
+                                            <Text size="2" weight="medium">{t('host.http_redirect')}</Text>
+                                            <Text size="1" color="gray">{t('host.http_redirect_hint')}</Text>
                                         </Flex>
                                         <Switch
                                             checked={form.http_redirect}
@@ -491,8 +493,8 @@ function HostFormDialog({ open, onClose, onSaved, host }) {
                                     {isProxy && (
                                         <Flex justify="between" align="center">
                                             <Flex direction="column">
-                                                <Text size="2" weight="medium">WebSocket Support</Text>
-                                                <Text size="1" color="gray">Enable WebSocket proxy</Text>
+                                                <Text size="2" weight="medium">{t('host.websocket')}</Text>
+                                                <Text size="1" color="gray">{t('host.websocket_hint')}</Text>
                                             </Flex>
                                             <Switch
                                                 checked={form.websocket}
@@ -502,12 +504,12 @@ function HostFormDialog({ open, onClose, onSaved, host }) {
                                     )}
 
                                     <Separator size="4" style={{ opacity: 0.15 }} />
-                                    <Text size="2" weight="bold" style={{ color: 'var(--cp-text-secondary)' }}>性能</Text>
+                                    <Text size="2" weight="bold" style={{ color: 'var(--cp-text-secondary)' }}>{t('host.performance')}</Text>
 
                                     <Flex justify="between" align="center">
                                         <Flex direction="column">
-                                            <Text size="2" weight="medium">响应压缩</Text>
-                                            <Text size="1" color="gray">启用 gzip + zstd 压缩</Text>
+                                            <Text size="2" weight="medium">{t('host.compression')}</Text>
+                                            <Text size="1" color="gray">{t('host.compression_hint')}</Text>
                                         </Flex>
                                         <Switch
                                             checked={form.compression}
@@ -516,12 +518,12 @@ function HostFormDialog({ open, onClose, onSaved, host }) {
                                     </Flex>
 
                                     <Separator size="4" style={{ opacity: 0.15 }} />
-                                    <Text size="2" weight="bold" style={{ color: 'var(--cp-text-secondary)' }}>安全</Text>
+                                    <Text size="2" weight="bold" style={{ color: 'var(--cp-text-secondary)' }}>{t('host.security')}</Text>
 
                                     <Flex justify="between" align="center">
                                         <Flex direction="column">
-                                            <Text size="2" weight="medium">安全响应头</Text>
-                                            <Text size="1" color="gray">HSTS / X-Frame-Options / CSP 等</Text>
+                                            <Text size="2" weight="medium">{t('host.security_headers')}</Text>
+                                            <Text size="1" color="gray">{t('host.security_headers_hint')}</Text>
                                         </Flex>
                                         <Switch
                                             checked={form.security_headers}
@@ -531,8 +533,8 @@ function HostFormDialog({ open, onClose, onSaved, host }) {
 
                                     <Flex justify="between" align="center">
                                         <Flex direction="column">
-                                            <Text size="2" weight="medium">CORS 跨域</Text>
-                                            <Text size="1" color="gray">允许跨域请求</Text>
+                                            <Text size="2" weight="medium">{t('host.cors')}</Text>
+                                            <Text size="1" color="gray">{t('host.cors_hint')}</Text>
                                         </Flex>
                                         <Switch
                                             checked={form.cors_enabled}
@@ -543,7 +545,7 @@ function HostFormDialog({ open, onClose, onSaved, host }) {
                                     {form.cors_enabled && (
                                         <Flex direction="column" gap="2" pl="4" style={{ borderLeft: '2px solid var(--cp-border-subtle)' }}>
                                             <Box>
-                                                <Text size="1" color="gray" mb="1">允许的源（逗号分隔）</Text>
+                                                <Text size="1" color="gray" mb="1">{t('host.cors_origins')}</Text>
                                                 <TextField.Root
                                                     value={form.cors_origins}
                                                     onChange={(e) => setForm({ ...form, cors_origins: e.target.value })}
@@ -551,7 +553,7 @@ function HostFormDialog({ open, onClose, onSaved, host }) {
                                                 />
                                             </Box>
                                             <Box>
-                                                <Text size="1" color="gray" mb="1">允许的方法</Text>
+                                                <Text size="1" color="gray" mb="1">{t('host.cors_methods')}</Text>
                                                 <TextField.Root
                                                     value={form.cors_methods}
                                                     onChange={(e) => setForm({ ...form, cors_methods: e.target.value })}
@@ -559,7 +561,7 @@ function HostFormDialog({ open, onClose, onSaved, host }) {
                                                 />
                                             </Box>
                                             <Box>
-                                                <Text size="1" color="gray" mb="1">允许的请求头</Text>
+                                                <Text size="1" color="gray" mb="1">{t('host.cors_headers')}</Text>
                                                 <TextField.Root
                                                     value={form.cors_headers}
                                                     onChange={(e) => setForm({ ...form, cors_headers: e.target.value })}
@@ -570,12 +572,12 @@ function HostFormDialog({ open, onClose, onSaved, host }) {
                                     )}
 
                                     <Separator size="4" style={{ opacity: 0.15 }} />
-                                    <Text size="2" weight="bold" style={{ color: 'var(--cp-text-secondary)' }}>错误页</Text>
+                                    <Text size="2" weight="bold" style={{ color: 'var(--cp-text-secondary)' }}>{t('host.error_page')}</Text>
 
                                     <Box>
-                                        <Text size="2" weight="medium" mb="1">自定义错误页目录</Text>
+                                        <Text size="2" weight="medium" mb="1">{t('host.error_page_path')}</Text>
                                         <Text size="1" color="gray" mb="2" as="p">
-                                            放置 404.html / 502.html / 503.html 的目录路径
+                                            {t('host.error_page_hint')}
                                         </Text>
                                         <TextField.Root
                                             value={form.error_page_path}
@@ -585,12 +587,12 @@ function HostFormDialog({ open, onClose, onSaved, host }) {
                                     </Box>
 
                                     <Separator size="4" style={{ opacity: 0.15 }} />
-                                    <Text size="2" weight="bold" style={{ color: 'var(--cp-text-secondary)' }}>高级</Text>
+                                    <Text size="2" weight="bold" style={{ color: 'var(--cp-text-secondary)' }}>{t('host.advanced')}</Text>
 
                                     <Box>
-                                        <Text size="2" weight="medium" mb="1">自定义 Caddy 指令</Text>
+                                        <Text size="2" weight="medium" mb="1">{t('host.custom_directives')}</Text>
                                         <Text size="1" color="gray" mb="2" as="p">
-                                            直接写入 Caddy 配置，如 rate_limit、encode 等
+                                            {t('host.custom_directives_hint')}
                                         </Text>
                                         <textarea
                                             value={form.custom_directives}
@@ -610,23 +612,23 @@ function HostFormDialog({ open, onClose, onSaved, host }) {
                                 <Flex direction="column" gap="2">
                                     <Flex justify="between" align="center">
                                         <Flex direction="column">
-                                            <Text size="2" weight="medium">HTTP Basic Auth</Text>
-                                            <Text size="1" color="gray">Protect this host with username/password</Text>
+                                            <Text size="2" weight="medium">{t('host.basic_auth')}</Text>
+                                            <Text size="1" color="gray">{t('host.basic_auth_hint')}</Text>
                                         </Flex>
                                         <Button variant="ghost" size="1" onClick={addBasicAuth}>
-                                            <Plus size={14} /> Add User
+                                            <Plus size={14} /> {t('host.add_auth_user')}
                                         </Button>
                                     </Flex>
                                     {form.basic_auths.length === 0 && (
                                         <Text size="2" color="gray" style={{ fontStyle: 'italic' }}>
-                                            No credentials set — host is publicly accessible
+                                            {t('host.no_auth_hint')}
                                         </Text>
                                     )}
                                     {form.basic_auths.map((auth, i) => (
                                         <Flex key={i} gap="2" align="center">
                                             <TextField.Root
                                                 style={{ flex: 1 }}
-                                                placeholder="Username"
+                                                placeholder={t('common.username')}
                                                 value={auth.username}
                                                 onChange={(e) => {
                                                     const auths = [...form.basic_auths]
@@ -637,7 +639,7 @@ function HostFormDialog({ open, onClose, onSaved, host }) {
                                             />
                                             <TextField.Root
                                                 style={{ flex: 1 }}
-                                                placeholder="Password"
+                                                placeholder={t('common.password')}
                                                 type="password"
                                                 value={auth.password}
                                                 onChange={(e) => {
@@ -661,7 +663,7 @@ function HostFormDialog({ open, onClose, onSaved, host }) {
                                         <Callout.Root size="1" color="blue">
                                             <Callout.Icon><Shield size={14} /></Callout.Icon>
                                             <Callout.Text>
-                                                {host.basic_auths.length} existing credential(s). Add new ones to replace, or leave empty to keep current.
+                                                {t('host.existing_auth_hint', { count: host.basic_auths.length })}
                                             </Callout.Text>
                                         </Callout.Root>
                                     )}
@@ -673,14 +675,14 @@ function HostFormDialog({ open, onClose, onSaved, host }) {
 
                 <Flex gap="3" mt="5" justify="end">
                     <Dialog.Close>
-                        <Button variant="soft" color="gray">Cancel</Button>
+                        <Button variant="soft" color="gray">{t('common.cancel')}</Button>
                     </Dialog.Close>
                     <Button
                         onClick={handleSave}
                         disabled={saving || !form.domain || (isProxy && !form.upstreams.some(u => u.address)) || (!isProxy && !form.redirect_url)}
                     >
                         {saving ? <Spinner size="1" /> : null}
-                        {isEdit ? 'Save Changes' : 'Create Host'}
+                        {isEdit ? t('common.save') : t('common.create')}
                     </Button>
                 </Flex>
             </Dialog.Content>
@@ -690,6 +692,7 @@ function HostFormDialog({ open, onClose, onSaved, host }) {
 
 // ============ Delete Confirmation ============
 function DeleteDialog({ open, onClose, host, onConfirm }) {
+    const { t } = useTranslation()
     const [deleting, setDeleting] = useState(false)
     const handleDelete = async () => {
         setDeleting(true)
@@ -699,19 +702,18 @@ function DeleteDialog({ open, onClose, host, onConfirm }) {
     return (
         <AlertDialog.Root open={open} onOpenChange={(o) => !o && onClose()}>
             <AlertDialog.Content maxWidth="400px" style={{ background: 'var(--cp-card)' }}>
-                <AlertDialog.Title>Delete Host</AlertDialog.Title>
+                <AlertDialog.Title>{t('host.delete_title')}</AlertDialog.Title>
                 <AlertDialog.Description size="2">
-                    Are you sure you want to delete <strong>{host?.domain}</strong>? This action cannot be
-                    undone and the Caddyfile will be updated immediately.
+                    {t('host.confirm_delete', { domain: host?.domain })}
                 </AlertDialog.Description>
                 <Flex gap="3" mt="4" justify="end">
                     <AlertDialog.Cancel>
-                        <Button variant="soft" color="gray">Cancel</Button>
+                        <Button variant="soft" color="gray">{t('common.cancel')}</Button>
                     </AlertDialog.Cancel>
                     <AlertDialog.Action>
                         <Button color="red" onClick={handleDelete} disabled={deleting}>
                             {deleting ? <Spinner size="1" /> : <Trash2 size={14} />}
-                            Delete
+                            {t('common.delete')}
                         </Button>
                     </AlertDialog.Action>
                 </Flex>
@@ -722,6 +724,7 @@ function DeleteDialog({ open, onClose, host, onConfirm }) {
 
 // ============ Host List Page ============
 export default function HostList() {
+    const { t } = useTranslation()
     const [hosts, setHosts] = useState([])
     const [loading, setLoading] = useState(true)
     const [editHost, setEditHost] = useState(null)
@@ -815,14 +818,14 @@ export default function HostList() {
         <Box>
             <Flex justify="between" align="center" mb="5">
                 <Box>
-                    <Heading size="6" style={{ color: 'var(--cp-text)' }}>Proxy Hosts</Heading>
+                    <Heading size="6" style={{ color: 'var(--cp-text)' }}>{t('host.title')}</Heading>
                     <Text size="2" color="gray">
-                        Manage your reverse proxy and redirect configurations
+                        {t('host.subtitle')}
                     </Text>
                 </Box>
                 <Button size="2" onClick={openCreate}>
                     <Plus size={16} />
-                    Add Host
+                    {t('host.add_host')}
                 </Button>
             </Flex>
 
@@ -834,9 +837,9 @@ export default function HostList() {
                 <Card style={{ background: 'var(--cp-card)', border: '1px solid var(--cp-border)' }}>
                     <Flex direction="column" align="center" gap="3" p="6">
                         <Globe size={48} strokeWidth={1} style={{ color: 'var(--cp-text-muted)' }} />
-                        <Text size="3" color="gray">No proxy hosts configured</Text>
+                        <Text size="3" color="gray">{t('common.no_data')}</Text>
                         <Button onClick={openCreate}>
-                            <Plus size={16} /> Add Your First Host
+                            <Plus size={16} /> {t('host.add_first_host')}
                         </Button>
                     </Flex>
                 </Card>
@@ -845,11 +848,11 @@ export default function HostList() {
                     <Table.Root>
                         <Table.Header>
                             <Table.Row>
-                                <Table.ColumnHeaderCell>Domain</Table.ColumnHeaderCell>
-                                <Table.ColumnHeaderCell>Target</Table.ColumnHeaderCell>
-                                <Table.ColumnHeaderCell>TLS</Table.ColumnHeaderCell>
-                                <Table.ColumnHeaderCell>Status</Table.ColumnHeaderCell>
-                                <Table.ColumnHeaderCell style={{ width: 120 }}>Actions</Table.ColumnHeaderCell>
+                                <Table.ColumnHeaderCell>{t('host.domain')}</Table.ColumnHeaderCell>
+                                <Table.ColumnHeaderCell>{t('host.target')}</Table.ColumnHeaderCell>
+                                <Table.ColumnHeaderCell>{t('host.tls')}</Table.ColumnHeaderCell>
+                                <Table.ColumnHeaderCell>{t('common.status')}</Table.ColumnHeaderCell>
+                                <Table.ColumnHeaderCell style={{ width: 120 }}>{t('common.actions')}</Table.ColumnHeaderCell>
                             </Table.Row>
                         </Table.Header>
                         <Table.Body>
@@ -871,7 +874,7 @@ export default function HostList() {
                                             )}
                                             <Text weight="medium">{host.domain}</Text>
                                             {host.basic_auths?.length > 0 && (
-                                                <Tooltip content="Protected by Basic Auth">
+                                                <Tooltip content={t('host.auth_protected_tooltip')}>
                                                     <Lock size={12} color="#8b5cf6" />
                                                 </Tooltip>
                                             )}
@@ -890,12 +893,12 @@ export default function HostList() {
                                         </Badge>
                                         {host.custom_cert_path && (
                                             <Badge color="blue" variant="soft" size="1" ml="1">
-                                                Custom
+                                                {t('host.tls_custom')}
                                             </Badge>
                                         )}
                                     </Table.Cell>
                                     <Table.Cell>
-                                        <Tooltip content={host.enabled ? 'Click to disable' : 'Click to enable'}>
+                                        <Tooltip content={host.enabled ? t('host.click_to_disable') : t('host.click_to_enable')}>
                                             <Switch
                                                 checked={host.enabled}
                                                 onCheckedChange={() => handleToggle(host)}
@@ -906,7 +909,7 @@ export default function HostList() {
                                     </Table.Cell>
                                     <Table.Cell>
                                         <Flex gap="2">
-                                            <Tooltip content="Edit">
+                                            <Tooltip content={t('common.edit')}>
                                                 <IconButton
                                                     variant="ghost"
                                                     size="1"
@@ -915,7 +918,7 @@ export default function HostList() {
                                                     <Pencil size={14} />
                                                 </IconButton>
                                             </Tooltip>
-                                            <Tooltip content="Delete">
+                                            <Tooltip content={t('common.delete')}>
                                                 <IconButton
                                                     variant="ghost"
                                                     color="red"

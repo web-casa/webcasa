@@ -8,8 +8,10 @@ import {
     AlertCircle, CheckCircle2,
 } from 'lucide-react'
 import { caddyAPI, configAPI, settingAPI } from '../api/index.js'
+import { useTranslation } from 'react-i18next'
 
 export default function Settings() {
+    const { t } = useTranslation()
     const [caddyStatus, setCaddyStatus] = useState(null)
     const [caddyfile, setCaddyfile] = useState('')
     const [actionLoading, setActionLoading] = useState(null)
@@ -76,7 +78,7 @@ export default function Settings() {
             showMessage('success', res.data.message)
             await fetchStatus()
         } catch (err) {
-            showMessage('error', err.response?.data?.error || `Failed to ${action} Caddy`)
+            showMessage('error', err.response?.data?.error || t('settings.action_failed', { action }))
         } finally {
             setActionLoading(null)
         }
@@ -86,10 +88,10 @@ export default function Settings() {
         setAutoReload(value)
         try {
             await settingAPI.update('auto_reload', value ? 'true' : 'false')
-            showMessage('success', value ? '已开启自动重载' : '已关闭自动重载')
+            showMessage('success', value ? t('settings.auto_reload_on') : t('settings.auto_reload_off'))
         } catch {
             setAutoReload(!value) // revert on error
-            showMessage('error', '保存设置失败')
+            showMessage('error', t('settings.save_failed'))
         }
     }
 
@@ -99,9 +101,9 @@ export default function Settings() {
                 settingAPI.update('server_ipv4', serverIpv4),
                 settingAPI.update('server_ipv6', serverIpv6),
             ])
-            showMessage('success', 'IP 已保存')
+            showMessage('success', t('settings.ip_saved'))
         } catch {
-            showMessage('error', '保存 IP 失败')
+            showMessage('error', t('settings.save_ip_failed'))
         }
     }
 
@@ -118,9 +120,9 @@ export default function Settings() {
             link.download = `caddypanel-export-${new Date().toISOString().slice(0, 10)}.json`
             link.click()
             URL.revokeObjectURL(url)
-            showMessage('success', 'Configuration exported successfully')
+            showMessage('success', t('settings.export_success'))
         } catch (err) {
-            showMessage('error', 'Failed to export configuration')
+            showMessage('error', t('settings.export_failed'))
         } finally {
             setActionLoading(null)
         }
@@ -139,7 +141,7 @@ export default function Settings() {
             await fetchStatus()
             await fetchCaddyfile()
         } catch (err) {
-            showMessage('error', err.response?.data?.error || 'Invalid import file')
+            showMessage('error', err.response?.data?.error || t('settings.import_invalid'))
         } finally {
             setActionLoading(null)
             e.target.value = '' // reset file input
@@ -150,9 +152,9 @@ export default function Settings() {
 
     return (
         <Box>
-            <Heading size="6" mb="1" style={{ color: 'var(--cp-text)' }}>Settings</Heading>
+            <Heading size="6" mb="1" style={{ color: 'var(--cp-text)' }}>{t('settings.title')}</Heading>
             <Text size="2" color="gray" mb="5" as="p">
-                Manage Caddy server and panel configuration
+                {t('settings.subtitle')}
             </Text>
 
             {/* Status message */}
@@ -172,29 +174,29 @@ export default function Settings() {
             <Tabs.Root defaultValue="caddy">
                 <Tabs.List>
                     <Tabs.Trigger value="caddy">
-                        <Server size={14} style={{ marginRight: 6 }} /> Caddy Server
+                        <Server size={14} style={{ marginRight: 6 }} /> {t('settings.caddy_server')}
                     </Tabs.Trigger>
                     <Tabs.Trigger value="caddyfile">
-                        <FileCode size={14} style={{ marginRight: 6 }} /> Caddyfile
+                        <FileCode size={14} style={{ marginRight: 6 }} /> {t('settings.caddyfile')}
                     </Tabs.Trigger>
                     <Tabs.Trigger value="backup">
-                        <Download size={14} style={{ marginRight: 6 }} /> Backup
+                        <Download size={14} style={{ marginRight: 6 }} /> {t('settings.backup')}
                     </Tabs.Trigger>
                 </Tabs.List>
 
                 {/* ---- Caddy Server Tab ---- */}
                 <Tabs.Content value="caddy">
                     <Card mt="4" style={{ background: 'var(--cp-card)', border: '1px solid var(--cp-border)' }}>
-                        <Heading size="3" mb="4">Process Control</Heading>
+                        <Heading size="3" mb="4">{t('settings.process_control')}</Heading>
 
                         <Flex align="center" gap="3" mb="4">
-                            <Text size="2" color="gray">Status:</Text>
+                            <Text size="2" color="gray">{t('common.status')}:</Text>
                             <Badge
                                 color={running ? 'green' : 'red'}
                                 variant="solid"
                                 size="2"
                             >
-                                {running ? '● Running' : '○ Stopped'}
+                                {running ? `● ${t('dashboard.running')}` : `○ ${t('dashboard.stopped')}`}
                             </Badge>
                             {caddyStatus?.version && (
                                 <Badge variant="soft" size="1">{caddyStatus.version}</Badge>
@@ -208,7 +210,7 @@ export default function Settings() {
                                 onClick={() => handleCaddyAction('start')}
                             >
                                 <Play size={14} />
-                                {actionLoading === 'start' ? 'Starting...' : 'Start'}
+                                {actionLoading === 'start' ? t('settings.starting') : t('settings.start')}
                             </Button>
                             <Button
                                 color="red"
@@ -217,7 +219,7 @@ export default function Settings() {
                                 onClick={() => handleCaddyAction('stop')}
                             >
                                 <Square size={14} />
-                                {actionLoading === 'stop' ? 'Stopping...' : 'Stop'}
+                                {actionLoading === 'stop' ? t('settings.stopping') : t('settings.stop')}
                             </Button>
                             <Button
                                 variant="soft"
@@ -225,19 +227,19 @@ export default function Settings() {
                                 onClick={() => handleCaddyAction('reload')}
                             >
                                 <RefreshCw size={14} />
-                                {actionLoading === 'reload' ? 'Reloading...' : 'Reload'}
+                                {actionLoading === 'reload' ? t('settings.reloading') : t('settings.reload')}
                             </Button>
                         </Flex>
                     </Card>
 
                     <Card mt="4" style={{ background: 'var(--cp-card)', border: '1px solid var(--cp-border)' }}>
-                        <Heading size="3" mb="3">自动管理</Heading>
+                        <Heading size="3" mb="3">{t('settings.auto_management')}</Heading>
 
                         <Flex justify="between" align="center">
                             <Flex direction="column" style={{ flex: 1 }}>
-                                <Text size="2" weight="medium">自动重载 Caddy</Text>
+                                <Text size="2" weight="medium">{t('settings.auto_reload')}</Text>
                                 <Text size="1" color="gray">
-                                    添加/修改/删除站点后自动重载 Caddy 使配置生效。关闭后需手动点击 Reload。
+                                    {t('settings.auto_reload_hint')}
                                 </Text>
                             </Flex>
                             <Switch
@@ -249,22 +251,22 @@ export default function Settings() {
                         <Callout.Root color="blue" size="1" mt="3">
                             <Callout.Icon><AlertCircle size={14} /></Callout.Icon>
                             <Callout.Text>
-                                面板启动时会自动启动 Caddy Server。开启自动重载后，如果 Caddy 未运行也会自动启动。
+                                {t('settings.auto_reload_callout')}
                             </Callout.Text>
                         </Callout.Root>
                     </Card>
 
                     <Card mt="4" style={{ background: 'var(--cp-card)', border: '1px solid var(--cp-border)' }}>
-                        <Heading size="3" mb="3">服务器 IP</Heading>
+                        <Heading size="3" mb="3">{t('settings.server_ip')}</Heading>
                         <Text size="1" color="gray" mb="3" as="p">
-                            安装时自动检测。添加站点时会提示用户将域名解析到此 IP。
+                            {t('settings.server_ip_hint')}
                         </Text>
 
                         <Flex direction="column" gap="2">
                             <Flex align="center" gap="2">
                                 <Text size="2" style={{ width: 50 }}>IPv4</Text>
                                 <TextField.Root
-                                    placeholder="未检测到"
+                                    placeholder={t('common.not_detected')}
                                     value={serverIpv4}
                                     onChange={(e) => setServerIpv4(e.target.value)}
                                     size="2"
@@ -274,7 +276,7 @@ export default function Settings() {
                             <Flex align="center" gap="2">
                                 <Text size="2" style={{ width: 50 }}>IPv6</Text>
                                 <TextField.Root
-                                    placeholder="未检测到"
+                                    placeholder={t('common.not_detected')}
                                     value={serverIpv6}
                                     onChange={(e) => setServerIpv6(e.target.value)}
                                     size="2"
@@ -282,7 +284,7 @@ export default function Settings() {
                                 />
                             </Flex>
                             <Flex justify="end">
-                                <Button size="1" variant="soft" onClick={handleSaveIPs}>保存 IP</Button>
+                                <Button size="1" variant="soft" onClick={handleSaveIPs}>{t('settings.save_ip')}</Button>
                             </Flex>
                         </Flex>
                     </Card>
@@ -292,9 +294,9 @@ export default function Settings() {
                 <Tabs.Content value="caddyfile">
                     <Card mt="4" style={{ background: 'var(--cp-card)', border: '1px solid var(--cp-border)' }}>
                         <Flex justify="between" align="center" mb="3">
-                            <Heading size="3">Generated Caddyfile</Heading>
+                            <Heading size="3">{t('settings.generated_caddyfile')}</Heading>
                             <Button variant="ghost" size="1" onClick={fetchCaddyfile}>
-                                <RefreshCw size={12} /> Refresh
+                                <RefreshCw size={12} /> {t('common.refresh')}
                             </Button>
                         </Flex>
 
@@ -309,7 +311,7 @@ export default function Settings() {
                             }}
                         >
                             <pre className="log-viewer" style={{ margin: 0, color: 'var(--cp-text)' }}>
-                                {caddyfile || '# No Caddyfile generated yet. Add a proxy host first.'}
+                                {caddyfile || t('settings.no_caddyfile_hint')}
                             </pre>
                         </Box>
                     </Card>
@@ -318,10 +320,10 @@ export default function Settings() {
                 {/* ---- Backup Tab ---- */}
                 <Tabs.Content value="backup">
                     <Card mt="4" style={{ background: 'var(--cp-card)', border: '1px solid var(--cp-border)' }}>
-                        <Heading size="3" mb="4">Import / Export</Heading>
+                        <Heading size="3" mb="4">{t('settings.import_export')}</Heading>
 
                         <Text size="2" color="gray" mb="4" as="p">
-                            Export your entire configuration as JSON, or import from a previous backup.
+                            {t('settings.import_export_hint')}
                         </Text>
 
                         <Flex gap="3" wrap="wrap">
@@ -330,7 +332,7 @@ export default function Settings() {
                                 disabled={actionLoading === 'export'}
                             >
                                 <Download size={14} />
-                                {actionLoading === 'export' ? 'Exporting...' : 'Export Configuration'}
+                                {actionLoading === 'export' ? t('settings.exporting') : t('settings.export_config')}
                             </Button>
 
                             <Button
@@ -340,7 +342,7 @@ export default function Settings() {
                                 disabled={actionLoading === 'import'}
                             >
                                 <Upload size={14} />
-                                {actionLoading === 'import' ? 'Importing...' : 'Import Configuration'}
+                                {actionLoading === 'import' ? t('settings.importing') : t('settings.import_config')}
                             </Button>
 
                             <input
@@ -355,8 +357,7 @@ export default function Settings() {
                         <Callout.Root color="orange" size="1" mt="4">
                             <Callout.Icon><AlertCircle size={14} /></Callout.Icon>
                             <Callout.Text>
-                                Importing will <strong>replace</strong> all existing host configurations.
-                                Make sure to export a backup first.
+                                {t('settings.import_warning')}
                             </Callout.Text>
                         </Callout.Root>
                     </Card>

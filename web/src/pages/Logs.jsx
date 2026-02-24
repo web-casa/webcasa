@@ -1,11 +1,13 @@
 import { useState, useEffect, useRef } from 'react'
 import {
-    Box, Flex, Heading, Text, Button, Card, Select, TextField, Badge, Code,
+    Box, Flex, Heading, Text, Button, Card, Select, TextField, Badge,
 } from '@radix-ui/themes'
 import { Download, RefreshCw, Search, FileText } from 'lucide-react'
 import { logAPI } from '../api/index.js'
+import { useTranslation } from 'react-i18next'
 
 export default function Logs() {
+    const { t } = useTranslation()
     const [logType, setLogType] = useState('caddy')
     const [lines, setLines] = useState('200')
     const [search, setSearch] = useState('')
@@ -64,17 +66,17 @@ export default function Logs() {
         <Box>
             <Flex justify="between" align="center" mb="5">
                 <Box>
-                    <Heading size="6" style={{ color: 'var(--cp-text)' }}>Logs</Heading>
-                    <Text size="2" color="gray">View Caddy access and error logs</Text>
+                    <Heading size="6" style={{ color: 'var(--cp-text)' }}>{t('log.title')}</Heading>
+                    <Text size="2" color="gray">{t('log.subtitle')}</Text>
                 </Box>
                 <Flex gap="2">
                     <Button variant="soft" onClick={fetchLogs} disabled={loading}>
                         <RefreshCw size={14} className={loading ? 'animate-spin' : ''} />
-                        Refresh
+                        {t('common.refresh')}
                     </Button>
                     <Button variant="soft" color="gray" onClick={handleDownload}>
                         <Download size={14} />
-                        Download
+                        {t('common.download')}
                     </Button>
                 </Flex>
             </Flex>
@@ -83,11 +85,11 @@ export default function Logs() {
             <Card style={{ background: 'var(--cp-card)', border: '1px solid var(--cp-border)' }} mb="4">
                 <Flex gap="3" align="end" wrap="wrap">
                     <Flex direction="column" gap="1" style={{ minWidth: 180 }}>
-                        <Text size="1" weight="medium" color="gray">Log File</Text>
+                        <Text size="1" weight="medium" color="gray">{t('log.select_file')}</Text>
                         <Select.Root value={logType} onValueChange={setLogType}>
                             <Select.Trigger />
                             <Select.Content>
-                                <Select.Item value="caddy">caddy.log (main)</Select.Item>
+                                <Select.Item value="caddy">{t('log.main_log')}</Select.Item>
                                 {logFiles
                                     .filter((f) => f.name !== 'caddy.log')
                                     .map((f) => (
@@ -100,7 +102,7 @@ export default function Logs() {
                     </Flex>
 
                     <Flex direction="column" gap="1" style={{ minWidth: 100 }}>
-                        <Text size="1" weight="medium" color="gray">Lines</Text>
+                        <Text size="1" weight="medium" color="gray">{t('log.lines')}</Text>
                         <Select.Root value={lines} onValueChange={setLines}>
                             <Select.Trigger />
                             <Select.Content>
@@ -115,11 +117,11 @@ export default function Logs() {
 
                     <form onSubmit={handleSearch} style={{ flex: 1, minWidth: 200 }}>
                         <Flex direction="column" gap="1">
-                            <Text size="1" weight="medium" color="gray">Search</Text>
+                            <Text size="1" weight="medium" color="gray">{t('common.search')}</Text>
                             <Flex gap="2">
                                 <TextField.Root
                                     style={{ flex: 1 }}
-                                    placeholder="Filter log lines..."
+                                    placeholder={t('log.search_placeholder')}
                                     value={search}
                                     onChange={(e) => setSearch(e.target.value)}
                                     size="2"
@@ -129,7 +131,7 @@ export default function Logs() {
                                     </TextField.Slot>
                                 </TextField.Root>
                                 <Button type="submit" variant="soft" size="2">
-                                    Filter
+                                    {t('log.filter')}
                                 </Button>
                             </Flex>
                         </Flex>
@@ -157,7 +159,7 @@ export default function Logs() {
                         <Text size="1" color="gray">{logType}</Text>
                     </Flex>
                     <Badge variant="soft" size="1">
-                        {logLines.length} lines
+                        {t('log.lines_count', { count: logLines.length })}
                     </Badge>
                 </Flex>
 
@@ -171,7 +173,7 @@ export default function Logs() {
                     {logLines.length === 0 ? (
                         <Flex justify="center" p="6">
                             <Text size="2" color="gray">
-                                {loading ? 'Loading...' : 'No log entries found'}
+                                {loading ? t('common.loading') : t('log.no_logs')}
                             </Text>
                         </Flex>
                     ) : (
