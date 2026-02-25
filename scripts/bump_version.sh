@@ -34,7 +34,7 @@ echo "✅ 更新 VERSION 文件"
 
 # 2. 更新 web/package.json 和 web/package-lock.json
 cd web
-npm version "$NEW_VERSION" --no-git-tag-version
+npm version "$NEW_VERSION" --no-git-tag-version --allow-same-version
 cd ..
 echo "✅ 更新 web/package.json 和 package-lock.json"
 
