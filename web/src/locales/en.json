@@ -88,7 +88,7 @@
         "setup_title": "Create Admin Account",
         "setup_hint": "This is your first time using WebCasa. Please create an admin account.",
         "create_account": "Create Account",
-        "footer": "Powered by WebCasa",
+        "footer": "Powered by Web.Casa",
         "pow": {
             "idle": "Click to verify",
             "solving": "Verifying... {{progress}}%",
