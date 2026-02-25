@@ -29,6 +29,8 @@ func setupTestDB(t *testing.T) *gorm.DB {
 	if err != nil {
 		t.Fatalf("failed to open test db: %v", err)
 	}
+	sqlDB, _ := db.DB()
+	t.Cleanup(func() { sqlDB.Close() })
 	err = db.AutoMigrate(
 		&model.Host{},
 		&model.Upstream{},

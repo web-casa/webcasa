@@ -35,6 +35,8 @@ func setupTOTPTestDB(t *testing.T) (*TOTPService, *config.Config) {
 	if err != nil {
 		t.Fatalf("failed to open test db: %v", err)
 	}
+	sqlDB, _ := db.DB()
+	t.Cleanup(func() { sqlDB.Close() })
 	db.AutoMigrate(
 		&model.User{},
 		&model.Host{},
