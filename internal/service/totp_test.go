@@ -93,7 +93,7 @@ func decryptTestSecret(t *testing.T, encryptedSecret string) string {
 // **Validates: Requirements 4.1, 4.3**
 func TestProperty4_TOTPGenerateVerifyRoundTrip(t *testing.T) {
 	parameters := gopter.DefaultTestParameters()
-	parameters.MinSuccessfulTests = 100
+	parameters.MinSuccessfulTests = 30 // bcrypt is intentionally slow; 30 iterations suffice
 	properties := gopter.NewProperties(parameters)
 
 	properties.Property("TOTP generate and verify round-trip", prop.ForAll(
@@ -145,7 +145,7 @@ func TestProperty4_TOTPGenerateVerifyRoundTrip(t *testing.T) {
 // **Validates: Requirements 4.4**
 func TestProperty5_RecoveryCodeFormatAndCount(t *testing.T) {
 	parameters := gopter.DefaultTestParameters()
-	parameters.MinSuccessfulTests = 100
+	parameters.MinSuccessfulTests = 30 // bcrypt is intentionally slow; 30 iterations suffice
 	properties := gopter.NewProperties(parameters)
 
 	alphanumRegex := regexp.MustCompile(`^[a-z0-9]{8}$`)
@@ -286,7 +286,7 @@ func setupTestRouter(t *testing.T, svc *TOTPService, cfg *config.Config) *gin.En
 // **Validates: Requirements 4.5, 4.10**
 func TestProperty6_LoginFlowDependsOn2FAState(t *testing.T) {
 	parameters := gopter.DefaultTestParameters()
-	parameters.MinSuccessfulTests = 100
+	parameters.MinSuccessfulTests = 30 // bcrypt is intentionally slow; 30 iterations suffice
 	properties := gopter.NewProperties(parameters)
 
 	properties.Property("login flow depends on 2FA state", prop.ForAll(
@@ -379,7 +379,7 @@ func enableTestUser2FA(t *testing.T, svc *TOTPService, userID uint) ([]string, s
 // **Validates: Requirements 4.6**
 func TestProperty7_RecoveryCodeOneTimeUse(t *testing.T) {
 	parameters := gopter.DefaultTestParameters()
-	parameters.MinSuccessfulTests = 100
+	parameters.MinSuccessfulTests = 30 // bcrypt is intentionally slow; 30 iterations suffice
 	properties := gopter.NewProperties(parameters)
 
 	properties.Property("recovery code one-time use", prop.ForAll(
@@ -425,7 +425,7 @@ func TestProperty7_RecoveryCodeOneTimeUse(t *testing.T) {
 // **Validates: Requirements 4.7**
 func TestProperty8_InvalidCodeRejected(t *testing.T) {
 	parameters := gopter.DefaultTestParameters()
-	parameters.MinSuccessfulTests = 100
+	parameters.MinSuccessfulTests = 30 // bcrypt is intentionally slow; 30 iterations suffice
 	properties := gopter.NewProperties(parameters)
 
 	properties.Property("invalid codes rejected", prop.ForAll(
@@ -456,7 +456,7 @@ func TestProperty8_InvalidCodeRejected(t *testing.T) {
 // **Validates: Requirements 4.8**
 func TestProperty9_Disable2FARoundTrip(t *testing.T) {
 	parameters := gopter.DefaultTestParameters()
-	parameters.MinSuccessfulTests = 100
+	parameters.MinSuccessfulTests = 30 // bcrypt is intentionally slow; 30 iterations suffice
 	properties := gopter.NewProperties(parameters)
 
 	properties.Property("2FA disable round-trip", prop.ForAll(

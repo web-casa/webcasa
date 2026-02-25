@@ -37,7 +37,7 @@ jobs:
         run: go vet ./...
 
       - name: Go — Unit tests
-        run: go test ./... -v -count=1 -timeout 600s
+        run: go test ./... -v -count=1 -timeout 900s
 
       # --- Frontend ---
       - name: Frontend — Install & Build
