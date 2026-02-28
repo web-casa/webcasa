@@ -20,6 +20,12 @@ import {
     Menu,
     X,
     Layers,
+    Package,
+    Container,
+    Rocket,
+    Bot,
+    FolderOpen,
+    SquareTerminal,
 } from 'lucide-react'
 import { useAuthStore } from '../stores/auth.js'
 import { useThemeStore } from '../stores/theme.js'
@@ -34,9 +40,15 @@ const navItems = [
     { to: '/dns', icon: Shield, labelKey: 'nav.dns' },
     { to: '/certificates', icon: ShieldCheck, labelKey: 'nav.certificates' },
     { to: '/templates', icon: Layers, labelKey: 'nav.templates' },
+    { to: '/docker', icon: Container, labelKey: 'nav.docker' },
+    { to: '/deploy', icon: Rocket, labelKey: 'nav.deploy' },
+    { to: '/ai/config', icon: Bot, labelKey: 'nav.ai' },
+    { to: '/files', icon: FolderOpen, labelKey: 'nav.files' },
+    { to: '/terminal', icon: SquareTerminal, labelKey: 'nav.terminal' },
     { to: '/logs', icon: FileText, labelKey: 'nav.logs' },
     { to: '/users', icon: Users, labelKey: 'nav.users' },
     { to: '/audit', icon: ClipboardList, labelKey: 'nav.audit' },
+    { to: '/plugins', icon: Package, labelKey: 'nav.plugins' },
     { to: '/settings', icon: Settings, labelKey: 'nav.settings' },
 ]
 

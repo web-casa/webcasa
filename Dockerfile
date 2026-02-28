@@ -7,7 +7,7 @@ COPY web/ ./
 RUN npm run build
 
 # Build stage - Backend
-FROM golang:1.22-alpine AS backend
+FROM golang:1.26-alpine AS backend
 RUN apk add --no-cache gcc musl-dev
 WORKDIR /app
 COPY go.mod go.sum ./
@@ -18,7 +18,7 @@ RUN CGO_ENABLED=1 go build -o webcasa .
 
 # Runtime stage
 FROM alpine:3.19
-RUN apk add --no-cache ca-certificates curl
+RUN apk add --no-cache ca-certificates curl bash
 
 # Install Caddy
 RUN curl -sSL "https://caddyserver.com/api/download?os=linux&arch=$(uname -m | sed 's/x86_64/amd64/' | sed 's/aarch64/arm64/')" -o /usr/local/bin/caddy \

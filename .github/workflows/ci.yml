@@ -167,6 +167,8 @@ jobs:
                 process.exit(0);
               }
             }
+            console.error('PoW solve failed within 50000 iterations');
+            process.exit(1);
           ")
           echo "Solved PoW: $NUMBER"
 
@@ -409,6 +411,108 @@ jobs:
             -H "Authorization: Bearer $TOKEN" | jq -r '.running')
           [ "$STATUS" = "false" ] || exit 1
           echo "✅ Caddy stopped"
+
+      # ==================== Plugin Integration Tests ====================
+
+      - name: 'Test: Plugin list >= 4'
+        run: |
+          PLUGIN_COUNT=$(curl -sf http://localhost:$PANEL_PORT/api/plugins \
+            -H "Authorization: Bearer $TOKEN" | jq '.plugins | length')
+          echo "Plugin count: $PLUGIN_COUNT"
+          [ "$PLUGIN_COUNT" -ge 4 ] || exit 1
+          echo "✅ Plugin list OK (>= 4 plugins)"
+
+      - name: 'Test: Frontend manifests >= 4'
+        run: |
+          MANIFEST_COUNT=$(curl -sf http://localhost:$PANEL_PORT/api/plugins/frontend-manifests \
+            -H "Authorization: Bearer $TOKEN" | jq '. | length')
+          echo "Manifest count: $MANIFEST_COUNT"
+          [ "$MANIFEST_COUNT" -ge 4 ] || exit 1
+          echo "✅ Frontend manifests OK"
+
+      - name: 'Test: File Manager CRUD'
+        run: |
+          # mkdir
+          curl -sf -X POST http://localhost:$PANEL_PORT/api/plugins/filemanager/mkdir \
+            -H "Authorization: Bearer $TOKEN" \
+            -H 'Content-Type: application/json' \
+            -d '{"path":"/tmp/ci-fm-test"}' | jq -e '.status == "ok"' > /dev/null
+          echo "  mkdir OK"
+
+          # write
+          curl -sf -X POST http://localhost:$PANEL_PORT/api/plugins/filemanager/write \
+            -H "Authorization: Bearer $TOKEN" \
+            -H 'Content-Type: application/json' \
+            -d '{"path":"/tmp/ci-fm-test/hello.txt","content":"CI Test Content"}' | jq -e '.status == "ok"' > /dev/null
+          echo "  write OK"
+
+          # read
+          CONTENT=$(curl -sf "http://localhost:$PANEL_PORT/api/plugins/filemanager/read?path=/tmp/ci-fm-test/hello.txt" \
+            -H "Authorization: Bearer $TOKEN" | jq -r '.content')
+          [ "$CONTENT" = "CI Test Content" ] || exit 1
+          echo "  read OK"
+
+          # rename
+          curl -sf -X POST http://localhost:$PANEL_PORT/api/plugins/filemanager/rename \
+            -H "Authorization: Bearer $TOKEN" \
+            -H 'Content-Type: application/json' \
+            -d '{"old_path":"/tmp/ci-fm-test/hello.txt","new_path":"/tmp/ci-fm-test/renamed.txt"}' | jq -e '.status == "ok"' > /dev/null
+          echo "  rename OK"
+
+          # info
+          NAME=$(curl -sf "http://localhost:$PANEL_PORT/api/plugins/filemanager/info?path=/tmp/ci-fm-test/renamed.txt" \
+            -H "Authorization: Bearer $TOKEN" | jq -r '.name')
+          [ "$NAME" = "renamed.txt" ] || exit 1
+          echo "  info OK"
+
+          # delete
+          curl -sf -X DELETE http://localhost:$PANEL_PORT/api/plugins/filemanager/delete \
+            -H "Authorization: Bearer $TOKEN" \
+            -H 'Content-Type: application/json' \
+            -d '{"paths":["/tmp/ci-fm-test"]}' | jq -e '.status == "ok"' > /dev/null
+          echo "  delete OK"
+
+          echo "✅ File Manager CRUD passed"
+
+      - name: 'Test: Deploy plugin frameworks'
+        run: |
+          FW_COUNT=$(curl -sf http://localhost:$PANEL_PORT/api/plugins/deploy/frameworks \
+            -H "Authorization: Bearer $TOKEN" | jq '. | length')
+          echo "Frameworks: $FW_COUNT"
+          [ "$FW_COUNT" -ge 1 ] || exit 1
+          echo "✅ Deploy frameworks OK"
+
+      - name: 'Test: Deploy plugin projects list'
+        run: |
+          curl -sf http://localhost:$PANEL_PORT/api/plugins/deploy/projects \
+            -H "Authorization: Bearer $TOKEN" | jq -e 'type == "array"' > /dev/null
+          echo "✅ Deploy projects list OK"
+
+      - name: 'Test: AI config get/update'
+        run: |
+          # Get config
+          curl -sf http://localhost:$PANEL_PORT/api/plugins/ai/config \
+            -H "Authorization: Bearer $TOKEN" | jq -e '.base_url != null' > /dev/null
+          echo "  AI config get OK"
+
+          # Update config
+          curl -sf -X PUT http://localhost:$PANEL_PORT/api/plugins/ai/config \
+            -H "Authorization: Bearer $TOKEN" \
+            -H 'Content-Type: application/json' \
+            -d '{"base_url":"https://api.test.com","model":"test-model"}' | jq -e '.status == "ok"' > /dev/null
+          echo "  AI config update OK"
+
+          echo "✅ AI config OK"
+
+      - name: 'Test: Docker info (graceful)'
+        run: |
+          HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" \
+            http://localhost:$PANEL_PORT/api/plugins/docker/info \
+            -H "Authorization: Bearer $TOKEN")
+          echo "Docker info HTTP: $HTTP_CODE"
+          # Docker daemon may not be available in CI, 200 or 500 both acceptable
+          [ "$HTTP_CODE" = "200" ] || [ "$HTTP_CODE" = "500" ] || exit 1
+          echo "✅ Docker info endpoint exists"
 
       # --- Diagnostics on failure ---
       - name: Show logs on failure

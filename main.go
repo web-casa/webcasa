@@ -15,10 +15,16 @@ import (
 	"github.com/web-casa/webcasa/internal/database"
 	"github.com/web-casa/webcasa/internal/handler"
 	"github.com/web-casa/webcasa/internal/model"
+	"github.com/web-casa/webcasa/internal/plugin"
 	"github.com/web-casa/webcasa/internal/service"
+	aiplugin "github.com/web-casa/webcasa/plugins/ai"
+	deployplugin "github.com/web-casa/webcasa/plugins/deploy"
+	dockerplugin "github.com/web-casa/webcasa/plugins/docker"
+	fmplugin "github.com/web-casa/webcasa/plugins/filemanager"
 	"github.com/gin-contrib/cors"
 	"github.com/gin-gonic/gin"
 	"golang.org/x/crypto/bcrypt"
+	"gorm.io/gorm"
 )
 
 // Version is set at build time via -ldflags "-X main.Version=x.y.z"
@@ -209,6 +215,16 @@ func main() {
 	protected.POST("/certificates", certMgrH.Upload)
 	protected.DELETE("/certificates/:id", certMgrH.Delete)
 
+	// ============ Plugin System ============
+	pluginRouter := protected.Group("/plugins")
+	publicPluginRouter := api.Group("/plugins") // public routes (no JWT) for webhooks etc.
+	pluginMgr := initPlugins(db, pluginRouter, publicPluginRouter, hostSvc, caddyMgr, cfg)
+	pluginH := handler.NewPluginHandler(pluginMgr)
+	protected.GET("/plugins", pluginH.List)
+	protected.POST("/plugins/:id/enable", pluginH.Enable)
+	protected.POST("/plugins/:id/disable", pluginH.Disable)
+	protected.GET("/plugins/frontend-manifests", pluginH.FrontendManifests)
+
 	// ============ Frontend Static Files ============
 	setupFrontend(r)
 
@@ -221,6 +237,38 @@ func main() {
 	if err := r.Run(addr); err != nil {
 		log.Fatalf("Failed to start server: %v", err)
 	}
+}
+
+// initPlugins creates the plugin manager and registers all compiled-in plugins.
+// New plugins are added here by calling pluginMgr.Register(...).
+func initPlugins(db *gorm.DB, protectedRouter *gin.RouterGroup, publicRouter *gin.RouterGroup, hostSvc *service.HostService, caddyMgr *caddy.Manager, cfg *config.Config) *plugin.Manager {
+	coreAPI := plugin.NewCoreAPI(db, hostSvc, caddyMgr)
+	pluginMgr := plugin.NewManager(db, protectedRouter, publicRouter, coreAPI, cfg.DataDir)
+
+	// ── Register plugins here ──
+	if err := pluginMgr.Register(dockerplugin.New()); err != nil {
+		log.Printf("⚠️  Register docker plugin: %v", err)
+	}
+	if err := pluginMgr.Register(deployplugin.New()); err != nil {
+		log.Printf("⚠️  Register deploy plugin: %v", err)
+	}
+	if err := pluginMgr.Register(aiplugin.New()); err != nil {
+		log.Printf("⚠️  Register ai plugin: %v", err)
+	}
+	if err := pluginMgr.Register(fmplugin.New()); err != nil {
+		log.Printf("⚠️  Register filemanager plugin: %v", err)
+	}
+	// Future:
+
+	// Initialise and start all enabled plugins.
+	if err := pluginMgr.InitAll(); err != nil {
+		log.Printf("⚠️  Plugin init failed: %v", err)
+	}
+	if err := pluginMgr.StartAll(); err != nil {
+		log.Printf("⚠️  Plugin start failed: %v", err)
+	}
+
+	return pluginMgr
 }
 
 // setupFrontend serves the Vue SPA from web/dist if it exists

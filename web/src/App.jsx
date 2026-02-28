@@ -13,6 +13,20 @@ import CaddyfileEditor from './pages/CaddyfileEditor.jsx'
 import DnsProviders from './pages/DnsProviders.jsx'
 import Certificates from './pages/Certificates.jsx'
 import Templates from './pages/Templates.jsx'
+import Plugins from './pages/Plugins.jsx'
+import DockerOverview from './pages/DockerOverview.jsx'
+import DockerContainers from './pages/DockerContainers.jsx'
+import DockerImages from './pages/DockerImages.jsx'
+import DockerNetworks from './pages/DockerNetworks.jsx'
+import DockerVolumes from './pages/DockerVolumes.jsx'
+import ProjectList from './pages/ProjectList.jsx'
+import ProjectCreate from './pages/ProjectCreate.jsx'
+import ProjectDetail from './pages/ProjectDetail.jsx'
+import AIConfig from './pages/AIConfig.jsx'
+import AIChatWidget from './pages/AIChatWidget.jsx'
+import FileManager from './pages/FileManager.jsx'
+import FileEditor from './pages/FileEditor.jsx'
+import WebTerminal from './pages/WebTerminal.jsx'
 
 function ProtectedRoute({ children }) {
     const token = useAuthStore((s) => s.token)
@@ -37,6 +51,7 @@ export default function App() {
                     element={
                         <ProtectedRoute>
                             <Layout />
+                            <AIChatWidget />
                         </ProtectedRoute>
                     }
                 >
@@ -49,6 +64,19 @@ export default function App() {
                     <Route path="dns" element={<DnsProviders />} />
                     <Route path="certificates" element={<Certificates />} />
                     <Route path="templates" element={<Templates />} />
+                    <Route path="docker" element={<DockerOverview />} />
+                    <Route path="docker/containers" element={<DockerContainers />} />
+                    <Route path="docker/images" element={<DockerImages />} />
+                    <Route path="docker/networks" element={<DockerNetworks />} />
+                    <Route path="docker/volumes" element={<DockerVolumes />} />
+                    <Route path="deploy" element={<ProjectList />} />
+                    <Route path="deploy/create" element={<ProjectCreate />} />
+                    <Route path="deploy/:id" element={<ProjectDetail />} />
+                    <Route path="plugins" element={<Plugins />} />
+                    <Route path="ai/config" element={<AIConfig />} />
+                    <Route path="files" element={<FileManager />} />
+                    <Route path="files/edit" element={<FileEditor />} />
+                    <Route path="terminal" element={<WebTerminal />} />
                     <Route path="settings" element={<Settings />} />
                 </Route>
                 <Route path="*" element={<Navigate to="/" replace />} />

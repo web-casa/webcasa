@@ -148,6 +148,123 @@ export const certificateAPI = {
     delete: (id) => api.delete(`/certificates/${id}`),
 }
 
+// ============ Docker (plugin) ============
+export const dockerAPI = {
+    // System
+    info: () => api.get('/plugins/docker/info'),
+
+    // Stacks
+    listStacks: () => api.get('/plugins/docker/stacks'),
+    getStack: (id) => api.get(`/plugins/docker/stacks/${id}`),
+    createStack: (data) => api.post('/plugins/docker/stacks', data),
+    updateStack: (id, data) => api.put(`/plugins/docker/stacks/${id}`, data),
+    deleteStack: (id) => api.delete(`/plugins/docker/stacks/${id}`),
+    stackUp: (id) => api.post(`/plugins/docker/stacks/${id}/up`),
+    stackDown: (id) => api.post(`/plugins/docker/stacks/${id}/down`),
+    stackRestart: (id) => api.post(`/plugins/docker/stacks/${id}/restart`),
+    stackPull: (id) => api.post(`/plugins/docker/stacks/${id}/pull`),
+    stackLogs: (id, tail) => api.get(`/plugins/docker/stacks/${id}/logs`, { params: { tail } }),
+
+    // Containers
+    listContainers: (all = true) => api.get('/plugins/docker/containers', { params: { all } }),
+    startContainer: (id) => api.post(`/plugins/docker/containers/${id}/start`),
+    stopContainer: (id) => api.post(`/plugins/docker/containers/${id}/stop`),
+    restartContainer: (id) => api.post(`/plugins/docker/containers/${id}/restart`),
+    removeContainer: (id) => api.delete(`/plugins/docker/containers/${id}`),
+    containerLogs: (id, tail) => api.get(`/plugins/docker/containers/${id}/logs`, { params: { tail } }),
+    containerStats: (id) => api.get(`/plugins/docker/containers/${id}/stats`),
+
+    // Images
+    listImages: () => api.get('/plugins/docker/images'),
+    pullImage: (image) => api.post('/plugins/docker/images/pull', { image }, { timeout: 300000 }),
+    removeImage: (id) => api.delete(`/plugins/docker/images/${id}`),
+    pruneImages: () => api.post('/plugins/docker/images/prune'),
+    searchImages: (q, limit) => api.get('/plugins/docker/images/search', { params: { q, limit } }),
+
+    // Networks
+    listNetworks: () => api.get('/plugins/docker/networks'),
+    createNetwork: (name) => api.post('/plugins/docker/networks', { name }),
+    removeNetwork: (id) => api.delete(`/plugins/docker/networks/${id}`),
+
+    // Volumes
+    listVolumes: () => api.get('/plugins/docker/volumes'),
+    createVolume: (name) => api.post('/plugins/docker/volumes', { name }),
+    removeVolume: (id) => api.delete(`/plugins/docker/volumes/${id}`),
+}
+
+// ============ Deploy (plugin) ============
+export const deployAPI = {
+    // Frameworks
+    frameworks: () => api.get('/plugins/deploy/frameworks'),
+    detect: (url, branch) => api.get('/plugins/deploy/detect', { params: { url, branch } }),
+
+    // Projects
+    listProjects: () => api.get('/plugins/deploy/projects'),
+    getProject: (id) => api.get(`/plugins/deploy/projects/${id}`),
+    createProject: (data) => api.post('/plugins/deploy/projects', data),
+    updateProject: (id, data) => api.put(`/plugins/deploy/projects/${id}`, data),
+    deleteProject: (id) => api.delete(`/plugins/deploy/projects/${id}`),
+
+    // Actions
+    build: (id) => api.post(`/plugins/deploy/projects/${id}/build`),
+    start: (id) => api.post(`/plugins/deploy/projects/${id}/start`),
+    stop: (id) => api.post(`/plugins/deploy/projects/${id}/stop`),
+    rollback: (id, buildNum) => api.post(`/plugins/deploy/projects/${id}/rollback`, { build_num: buildNum }),
+
+    // Deployments & Logs
+    deployments: (id) => api.get(`/plugins/deploy/projects/${id}/deployments`),
+    logs: (id, params) => api.get(`/plugins/deploy/projects/${id}/logs`, { params }),
+}
+
+// ============ AI (plugin) ============
+export const aiAPI = {
+    // Config
+    getConfig: () => api.get('/plugins/ai/config'),
+    updateConfig: (data) => api.put('/plugins/ai/config', data),
+    testConnection: () => api.post('/plugins/ai/config/test'),
+
+    // Conversations
+    listConversations: () => api.get('/plugins/ai/conversations'),
+    getConversation: (id) => api.get(`/plugins/ai/conversations/${id}`),
+    deleteConversation: (id) => api.delete(`/plugins/ai/conversations/${id}`),
+
+    // Tools
+    generateCompose: (description) => api.post('/plugins/ai/generate-compose', { description }),
+    diagnose: (logs, context) => api.post('/plugins/ai/diagnose', { logs, context }),
+}
+
+// ============ File Manager (plugin) ============
+export const fileManagerAPI = {
+    list: (path) => api.get('/plugins/filemanager/list', { params: { path } }),
+    read: (path) => api.get('/plugins/filemanager/read', { params: { path } }),
+    write: (path, content) => api.post('/plugins/filemanager/write', { path, content }),
+    upload: (formData) => api.post('/plugins/filemanager/upload', formData, {
+        headers: { 'Content-Type': 'multipart/form-data' },
+        timeout: 300000,
+    }),
+    download: (path) => `/api/plugins/filemanager/download?path=${encodeURIComponent(path)}`,
+    mkdir: (path) => api.post('/plugins/filemanager/mkdir', { path }),
+    delete: (paths) => api.delete('/plugins/filemanager/delete', { data: { paths } }),
+    rename: (old_path, new_path) => api.post('/plugins/filemanager/rename', { old_path, new_path }),
+    chmod: (path, mode) => api.post('/plugins/filemanager/chmod', { path, mode }),
+    info: (path) => api.get('/plugins/filemanager/info', { params: { path } }),
+    compress: (paths, dest, format) => api.post('/plugins/filemanager/compress', { paths, dest, format }),
+    extract: (path, dest) => api.post('/plugins/filemanager/extract', { path, dest }),
+    terminalWsUrl: (cols, rows) => {
+        const proto = window.location.protocol === 'https:' ? 'wss:' : 'ws:'
+        const token = localStorage.getItem('token')
+        return `${proto}//${window.location.host}/api/plugins/filemanager/terminal/ws?cols=${cols}&rows=${rows}&token=${token}`
+    },
+}
+
+// ============ Plugins ============
+export const pluginAPI = {
+    list: () => api.get('/plugins'),
+    enable: (id) => api.post(`/plugins/${id}/enable`),
+    disable: (id) => api.post(`/plugins/${id}/disable`),
+    frontendManifests: () => api.get('/plugins/frontend-manifests'),
+}
+
 // ============ DNS Providers ============
 export const dnsProviderAPI = {
     list: () => api.get('/dns-providers'),
