@@ -560,18 +560,8 @@ jobs:
           echo "============================================"
 
           # Run install.sh with fake systemctl (no systemd in CI)
-          # Create a fake systemctl that simulates success
           sudo mkdir -p /tmp/systemctl-log
-          sudo tee /usr/local/bin/systemctl > /dev/null <<'FAKESC'
-#!/bin/bash
-echo "$@" >> /tmp/systemctl-log/calls.log
-case "$1" in
-    is-active)  exit 0 ;;
-    is-enabled) exit 0 ;;
-    start|stop|enable|disable|daemon-reload) exit 0 ;;
-    *)          exit 0 ;;
-esac
-FAKESC
+          printf '#!/bin/bash\necho "$@" >> /tmp/systemctl-log/calls.log\ncase "$1" in\n  is-active)  exit 0 ;;\n  is-enabled) exit 0 ;;\n  start|stop|enable|disable|daemon-reload) exit 0 ;;\n  *)          exit 0 ;;\nesac\n' | sudo tee /usr/local/bin/systemctl > /dev/null
           sudo chmod +x /usr/local/bin/systemctl
 
           # Run install script
