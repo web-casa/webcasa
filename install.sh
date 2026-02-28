@@ -1,6 +1,8 @@
 #!/usr/bin/env bash
 # ============================================================================
-#  WebCasa — One-Click Install Script
+#  Web.Casa — One-Click Install Script
+#  https://web.casa
+#
 #  Supports: Ubuntu 20+, Debian 11+, CentOS Stream 8+, AlmaLinux 8+, Fedora 38+
 #           openAnolis, Alibaba Cloud Linux, openEuler, openCloudOS, Kylin (银河麒麟)
 #
@@ -13,6 +15,7 @@
 #    --uninstall     Remove WebCasa (keeps data by default)
 #    --purge         Remove WebCasa and all data
 #    --no-caddy      Skip Caddy installation
+#    --no-docker     Skip Docker group setup
 #    --port PORT     Set panel port (default: 39921)
 #    --from-source   Build from source instead of downloading pre-built binary
 #    -y, --yes       Non-interactive mode (skip prompts)
@@ -38,6 +41,7 @@ CONFIG_DIR="/etc/webcasa"
 SERVICE_USER="webcasa"
 PANEL_PORT="39921"
 SKIP_CADDY=false
+SKIP_DOCKER_GROUP=false
 UNINSTALL=false
 PURGE=false
 NON_INTERACTIVE=false
@@ -132,6 +136,7 @@ parse_args() {
             --uninstall)    UNINSTALL=true; shift ;;
             --purge)        PURGE=true; UNINSTALL=true; shift ;;
             --no-caddy)     SKIP_CADDY=true; shift ;;
+            --no-docker)    SKIP_DOCKER_GROUP=true; shift ;;
             --port)         PANEL_PORT="$2"; shift 2 ;;
             --from-source)  FROM_SOURCE=true; shift ;;
             -y|--yes)       NON_INTERACTIVE=true; shift ;;
@@ -143,14 +148,16 @@ parse_args() {
 
 usage() {
     cat <<EOF
-${BOLD}WebCasa Installer v${WEBCASA_VERSION}${NC}
+${BOLD}Web.Casa Installer v${WEBCASA_VERSION}${NC}
+https://web.casa
 
 Usage: bash install.sh [OPTIONS]
 
 Options:
-  --uninstall      Remove WebCasa (keeps data)
-  --purge          Remove WebCasa and all data
+  --uninstall      Remove Web.Casa (keeps data)
+  --purge          Remove Web.Casa and all data
   --no-caddy       Skip Caddy installation
+  --no-docker      Skip Docker group setup
   --port PORT      Set panel port (default: 39921)
   --from-source    Build from source (requires Go + Node.js)
   -y, --yes        Non-interactive mode (skip prompts)
@@ -161,6 +168,10 @@ Supported OS:
   AlmaLinux 8+, Rocky Linux 8+, Fedora 38+,
   openAnolis, Alibaba Cloud Linux, openEuler,
   openCloudOS, Kylin (银河麒麟)
+
+Features (Pro):
+  Reverse Proxy Management, File Manager, Web Terminal,
+  Docker Management, Project Deploy (Git), AI Assistant
 EOF
 }
 
@@ -187,13 +198,18 @@ do_uninstall() {
         rm -rf "$DATA_DIR"
         rm -rf "$LOG_DIR"
         rm -rf "$CONFIG_DIR"
+        # Remove docker group membership
+        if id "$SERVICE_USER" &>/dev/null; then
+            gpasswd -d "$SERVICE_USER" docker 2>/dev/null || true
+        fi
         userdel -r "$SERVICE_USER" 2>/dev/null || true
         groupdel "$SERVICE_USER" 2>/dev/null || true
-        success "WebCasa completely removed (including data)"
+        rm -f /etc/sudoers.d/webcasa
+        success "Web.Casa completely removed (including data)"
     else
         info "Data preserved at: $DATA_DIR"
         info "Config preserved at: $CONFIG_DIR"
-        success "WebCasa removed (data kept). Use --purge to remove everything."
+        success "Web.Casa removed (data kept). Use --purge to remove everything."
     fi
 
     exit 0
@@ -206,13 +222,13 @@ install_deps() {
         debian)
             apt-get update -qq
             DEBIAN_FRONTEND=noninteractive apt-get install -y -qq \
-                curl wget ca-certificates tar gzip sqlite3 jq > /dev/null
+                curl wget ca-certificates tar gzip xz-utils sqlite3 jq git bash > /dev/null
             ;;
         rhel)
             if command -v dnf &>/dev/null; then
-                dnf install -y -q curl wget ca-certificates tar gzip which sqlite jq
+                dnf install -y -q curl wget ca-certificates tar gzip xz which sqlite jq git bash
             else
-                yum install -y -q curl wget ca-certificates tar gzip which sqlite jq
+                yum install -y -q curl wget ca-certificates tar gzip xz which sqlite jq git bash
             fi
             ;;
     esac
@@ -367,7 +383,7 @@ install_from_source() {
     # Build frontend
     info "Building frontend..."
     cd "$SRC_DIR/web"
-    npm install --unsafe-perm --loglevel=warn 2>&1
+    npm ci 2>&1
     npm run build 2>&1
     success "Frontend built"
 
@@ -466,7 +482,14 @@ setup_user() {
         info "User $SERVICE_USER already exists"
     fi
 
+    # Add user to docker group if Docker is installed
+    if ! $SKIP_DOCKER_GROUP && getent group docker &>/dev/null; then
+        usermod -aG docker "$SERVICE_USER" 2>/dev/null || true
+        info "Added $SERVICE_USER to docker group"
+    fi
+
     mkdir -p "$DATA_DIR"/{backups,web/dist}
+    mkdir -p "$DATA_DIR"/plugins/{docker,deploy,filemanager,ai}
     mkdir -p "$LOG_DIR"
     mkdir -p "$CONFIG_DIR"
 
@@ -483,13 +506,24 @@ setup_config() {
 
     if [[ -f "$ENV_FILE" ]]; then
         info "Config file already exists, preserving: $ENV_FILE"
+        # Merge any new variables that may not exist in old config
+        local NEED_RELOAD=false
+        if ! grep -q "GIN_MODE" "$ENV_FILE"; then
+            echo "" >> "$ENV_FILE"
+            echo "GIN_MODE=release" >> "$ENV_FILE"
+            NEED_RELOAD=true
+        fi
+        if $NEED_RELOAD; then
+            info "Added new config entries to existing $ENV_FILE"
+        fi
     else
         JWT_SECRET=$(head -c 32 /dev/urandom | base64 | tr -dc 'a-zA-Z0-9' | head -c 48)
         CADDY_BIN=$(command -v caddy 2>/dev/null || echo "/usr/bin/caddy")
 
         cat > "$ENV_FILE" <<ENVEOF
-# WebCasa Configuration
+# Web.Casa Configuration
 # Generated on $(date -Iseconds)
+# https://web.casa
 
 WEBCASA_PORT=${PANEL_PORT}
 WEBCASA_DATA_DIR=${DATA_DIR}
@@ -499,6 +533,7 @@ WEBCASA_CADDY_BIN=${CADDY_BIN}
 WEBCASA_CADDYFILE_PATH=${DATA_DIR}/Caddyfile
 WEBCASA_LOG_DIR=${LOG_DIR}
 WEBCASA_ADMIN_API=http://localhost:2019
+GIN_MODE=release
 ENVEOF
 
         chmod 600 "$ENV_FILE"
@@ -536,15 +571,15 @@ setup_systemd() {
 
     cat > /etc/systemd/system/webcasa.service <<SVCEOF
 [Unit]
-Description=WebCasa - Caddy Reverse Proxy Management Panel
+Description=Web.Casa — Server Management Panel (https://web.casa)
 Documentation=https://github.com/${GITHUB_REPO}
 After=network-online.target
 Wants=network-online.target
 
 [Service]
 Type=simple
-User=${SERVICE_USER}
-Group=${SERVICE_USER}
+User=root
+Group=root
 ExecStart=${INSTALL_DIR}/webcasa
 WorkingDirectory=${DATA_DIR}
 Restart=on-failure
@@ -554,11 +589,8 @@ LimitNOFILE=65536
 # Environment
 EnvironmentFile=-${CONFIG_DIR}/webcasa.env
 
-# Security hardening
-NoNewPrivileges=true
-ProtectSystem=strict
-ProtectHome=true
-ReadWritePaths=${DATA_DIR} ${LOG_DIR}
+# Security
+NoNewPrivileges=false
 PrivateTmp=true
 
 # Caddy needs to bind to privileged ports
@@ -603,11 +635,8 @@ setup_caddy_permissions() {
 
     CADDY_BIN=$(command -v caddy 2>/dev/null || echo "")
     if [[ -n "$CADDY_BIN" ]]; then
+        # Allow Caddy to bind to privileged ports when invoked by the service
         setcap 'cap_net_bind_service=+ep' "$CADDY_BIN" 2>/dev/null || true
-        if [[ -d /etc/sudoers.d ]]; then
-            echo "${SERVICE_USER} ALL=(ALL) NOPASSWD: ${CADDY_BIN}" > /etc/sudoers.d/webcasa 2>/dev/null || true
-            chmod 0440 /etc/sudoers.d/webcasa 2>/dev/null || true
-        fi
     fi
 }
 
@@ -619,8 +648,8 @@ prompt_port() {
     fi
 
     echo ""
-    echo -e "${BOLD}📌 Panel Port Configuration${NC}"
-    echo -e "   WebCasa will listen on this port for the management UI."
+    echo -e "${BOLD}Panel Port Configuration${NC}"
+    echo -e "   Web.Casa will listen on this port for the management UI."
     echo -e "   Default: ${GREEN}${PANEL_PORT}${NC}"
     echo ""
 
@@ -663,21 +692,21 @@ detect_public_ip() {
 
     # Detect IPv4 (priority: icanhazip → api.ip.sb → ifconfig.me → Cloudflare trace)
     for svc in "https://ipv4.icanhazip.com" "https://api.ip.sb/ip" "https://ifconfig.me/ip"; do
-        PUBLIC_IPV4=$(curl -4 -fsSL --connect-timeout 3 --max-time 5 "$svc" 2>/dev/null | tr -d '[:space:]')
+        PUBLIC_IPV4=$(curl -4 -fsSL --connect-timeout 3 --max-time 5 "$svc" 2>/dev/null | tr -d '[:space:]') || true
         if [[ -n "$PUBLIC_IPV4" ]]; then break; fi
     done
     # Fallback: Cloudflare trace (parse ip= field)
     if [[ -z "$PUBLIC_IPV4" ]]; then
-        PUBLIC_IPV4=$(curl -4 -fsSL --connect-timeout 3 --max-time 5 "https://1.1.1.1/cdn-cgi/trace" 2>/dev/null | grep -oP '^ip=\K.*')
+        PUBLIC_IPV4=$(curl -4 -fsSL --connect-timeout 3 --max-time 5 "https://1.1.1.1/cdn-cgi/trace" 2>/dev/null | grep -oP '^ip=\K.*') || true
     fi
 
     # Detect IPv6 (priority: icanhazip → api.ip.sb → Cloudflare trace)
     for svc in "https://ipv6.icanhazip.com" "https://api.ip.sb/ip" "https://ifconfig.me/ip"; do
-        PUBLIC_IPV6=$(curl -6 -fsSL --connect-timeout 3 --max-time 5 "$svc" 2>/dev/null | tr -d '[:space:]')
+        PUBLIC_IPV6=$(curl -6 -fsSL --connect-timeout 3 --max-time 5 "$svc" 2>/dev/null | tr -d '[:space:]') || true
         if [[ -n "$PUBLIC_IPV6" ]]; then break; fi
     done
     if [[ -z "$PUBLIC_IPV6" ]]; then
-        PUBLIC_IPV6=$(curl -6 -fsSL --connect-timeout 3 --max-time 5 "https://[2606:4700:4700::1111]/cdn-cgi/trace" 2>/dev/null | grep -oP '^ip=\K.*')
+        PUBLIC_IPV6=$(curl -6 -fsSL --connect-timeout 3 --max-time 5 "https://[2606:4700:4700::1111]/cdn-cgi/trace" 2>/dev/null | grep -oP '^ip=\K.*') || true
     fi
 
     # Write to SQLite settings table
@@ -722,7 +751,7 @@ print_summary() {
 
     echo ""
     echo -e "${GREEN}${BOLD}╔══════════════════════════════════════════════════════════════╗${NC}"
-    echo -e "${GREEN}${BOLD}║           WebCasa Installation Complete! 🎉              ║${NC}"
+    echo -e "${GREEN}${BOLD}║           Web.Casa Installation Complete!                ║${NC}"
     echo -e "${GREEN}${BOLD}╚══════════════════════════════════════════════════════════════╝${NC}"
     echo ""
     echo -e "  ${BOLD}Panel URL:${NC}      http://${DISPLAY_IP}:${PANEL_PORT}"
@@ -744,21 +773,29 @@ print_summary() {
     echo -e "    systemctl restart webcasa   ${CYAN}# Restart${NC}"
     echo -e "    journalctl -u webcasa -f    ${CYAN}# View logs${NC}"
     echo ""
-    echo -e "  ${YELLOW}⚠  First visit: create your admin account at the URL above${NC}"
+    echo -e "  ${BOLD}Included Features:${NC}"
+    echo -e "    Reverse Proxy  │  File Manager  │  Web Terminal"
+    echo -e "    Docker Mgmt    │  Project Deploy │  AI Assistant"
+    echo ""
+    if ! command -v docker &>/dev/null; then
+        echo -e "  ${YELLOW}Note: Docker is not installed. Install Docker to use Docker management features.${NC}"
+    fi
+    echo -e "  ${YELLOW}First visit: create your admin account at the URL above${NC}"
     echo ""
 }
 
 # ==================== Main ====================
 main() {
     echo -e "${GREEN}${BOLD}"
-    echo '   ____          _     _       ____                  _ '
-    echo '  / ___|__ _  __| | __| |_   _|  _ \ __ _ _ __   ___| |'
-    echo ' | |   / _` |/ _` |/ _` | | | | |_) / _` |  _ \ / _ \ |'
-    echo ' | |__| (_| | (_| | (_| | |_| |  __/ (_| | | | |  __/ |'
-    echo '  \____\__,_|\__,_|\__,_|\__, |_|   \__,_|_| |_|\___|_|'
-    echo '                         |___/                          '
+    echo ' __        __   _       ____                '
+    echo ' \ \      / /__| |__   / ___|__ _ ___  __ _ '
+    echo '  \ \ /\ / / _ \  _ \ | |   / _` / __|/ _` |'
+    echo '   \ V  V /  __/ |_) || |__| (_| \__ \ (_| |'
+    echo '    \_/\_/ \___|_.__/  \____\__,_|___/\__,_|'
+    echo '                                             '
     echo -e "${NC}"
     echo -e "  ${BOLD}One-Click Installer v${WEBCASA_VERSION}${NC}"
+    echo -e "  ${CYAN}https://web.casa${NC}"
     echo ""
 
     parse_args "$@"

@@ -535,3 +535,201 @@ jobs:
         run: |
           kill $(cat /tmp/webcasa.pid) 2>/dev/null || true
           caddy stop 2>/dev/null || true
+
+  # ============================================================
+  # Job 3: Install Script Test
+  # Verifies install.sh --from-source works on fresh Ubuntu
+  # ============================================================
+  install-test:
+    name: Install Script Test
+    runs-on: ubuntu-latest
+    needs: build
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Node.js (for PoW solver)
+        uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+
+      - name: Test install.sh --from-source
+        run: |
+          echo "============================================"
+          echo "  Install Script Test (from source)"
+          echo "============================================"
+
+          # Run install.sh with fake systemctl (no systemd in CI)
+          # Create a fake systemctl that simulates success
+          sudo mkdir -p /tmp/systemctl-log
+          sudo tee /usr/local/bin/systemctl > /dev/null <<'FAKESC'
+#!/bin/bash
+echo "$@" >> /tmp/systemctl-log/calls.log
+case "$1" in
+    is-active)  exit 0 ;;
+    is-enabled) exit 0 ;;
+    start|stop|enable|disable|daemon-reload) exit 0 ;;
+    *)          exit 0 ;;
+esac
+FAKESC
+          sudo chmod +x /usr/local/bin/systemctl
+
+          # Run install script
+          sudo bash install.sh --from-source -y --no-caddy
+
+      - name: Verify installation artifacts
+        run: |
+          echo "--- Binary ---"
+          test -f /usr/local/bin/webcasa || { echo "FAIL: binary missing"; exit 1; }
+          /usr/local/bin/webcasa --version
+          echo "PASS: binary installed"
+
+          echo "--- Config ---"
+          test -f /etc/webcasa/webcasa.env || { echo "FAIL: config missing"; exit 1; }
+          grep -q "WEBCASA_JWT_SECRET" /etc/webcasa/webcasa.env || { echo "FAIL: no JWT_SECRET"; exit 1; }
+          grep -q "GIN_MODE=release" /etc/webcasa/webcasa.env || { echo "FAIL: no GIN_MODE"; exit 1; }
+          echo "PASS: config correct"
+
+          echo "--- Directories ---"
+          test -d /var/lib/webcasa || { echo "FAIL: data dir"; exit 1; }
+          test -d /var/lib/webcasa/plugins/filemanager || { echo "FAIL: filemanager dir"; exit 1; }
+          test -d /var/lib/webcasa/plugins/docker || { echo "FAIL: docker dir"; exit 1; }
+          test -d /var/lib/webcasa/plugins/deploy || { echo "FAIL: deploy dir"; exit 1; }
+          test -d /var/lib/webcasa/plugins/ai || { echo "FAIL: ai dir"; exit 1; }
+          test -d /var/log/webcasa || { echo "FAIL: log dir"; exit 1; }
+          echo "PASS: directories created"
+
+          echo "--- Frontend ---"
+          test -f /var/lib/webcasa/web/dist/index.html || { echo "FAIL: frontend missing"; exit 1; }
+          echo "PASS: frontend installed"
+
+          echo "--- Systemd service ---"
+          test -f /etc/systemd/system/webcasa.service || { echo "FAIL: service file missing"; exit 1; }
+          grep -q "User=root" /etc/systemd/system/webcasa.service || { echo "FAIL: not root user"; exit 1; }
+          ! grep -q "ProtectHome" /etc/systemd/system/webcasa.service || { echo "FAIL: has ProtectHome"; exit 1; }
+          ! grep -q "ProtectSystem=strict" /etc/systemd/system/webcasa.service || { echo "FAIL: has ProtectSystem=strict"; exit 1; }
+          echo "PASS: systemd service correct"
+
+          echo "--- Caddyfile ---"
+          test -f /var/lib/webcasa/Caddyfile || { echo "FAIL: Caddyfile missing"; exit 1; }
+          echo "PASS: Caddyfile created"
+
+          echo "--- Dependencies ---"
+          which git || { echo "FAIL: git not installed"; exit 1; }
+          which bash || { echo "FAIL: bash not installed"; exit 1; }
+          echo "PASS: dependencies installed"
+
+      - name: Start installed binary and test API
+        run: |
+          # Source config and start
+          set -a
+          source /etc/webcasa/webcasa.env
+          set +a
+          export WEBCASA_CADDY_BIN=/bin/false
+
+          cd /var/lib/webcasa
+          sudo -E /usr/local/bin/webcasa > /tmp/webcasa-install.log 2>&1 &
+          echo $! > /tmp/webcasa-install.pid
+
+          # Wait for API
+          echo "Waiting for API..."
+          for i in $(seq 1 30); do
+            if curl -s http://localhost:$PANEL_PORT/api/auth/need-setup > /dev/null 2>&1; then
+              echo "API ready after ${i}s"
+              break
+            fi
+            sleep 1
+          done
+
+          # Verify API responds
+          NEED_SETUP=$(curl -sf http://localhost:$PANEL_PORT/api/auth/need-setup | jq -r '.need_setup')
+          [ "$NEED_SETUP" = "true" ] || { echo "FAIL: need-setup should be true"; exit 1; }
+          echo "PASS: API responding"
+
+          # Setup admin
+          curl -sf -X POST http://localhost:$PANEL_PORT/api/auth/setup \
+            -H 'Content-Type: application/json' \
+            -d '{"username":"admin","password":"InstallTest123!"}' > /dev/null
+          echo "PASS: admin created"
+
+          # Solve ALTCHA and login
+          CHALLENGE_JSON=$(curl -sf http://localhost:$PANEL_PORT/api/auth/altcha-challenge)
+          SALT=$(echo "$CHALLENGE_JSON" | jq -r '.salt')
+          CHALLENGE=$(echo "$CHALLENGE_JSON" | jq -r '.challenge')
+          ALGORITHM=$(echo "$CHALLENGE_JSON" | jq -r '.algorithm')
+          SIGNATURE=$(echo "$CHALLENGE_JSON" | jq -r '.signature')
+
+          NUMBER=$(SALT="$SALT" CHALLENGE="$CHALLENGE" node -e "
+            const crypto = require('crypto');
+            const salt = process.env.SALT;
+            const challenge = process.env.CHALLENGE;
+            for(let i=0; i<=50000; i++) {
+              if(crypto.createHash('sha256').update(salt+i).digest('hex') === challenge) {
+                console.log(i);
+                process.exit(0);
+              }
+            }
+            process.exit(1);
+          ")
+
+          PAYLOAD_JSON=$(jq -n \
+            --arg alg "$ALGORITHM" \
+            --arg chal "$CHALLENGE" \
+            --argjson num "$NUMBER" \
+            --arg salt "$SALT" \
+            --arg sig "$SIGNATURE" \
+            '{algorithm: $alg, challenge: $chal, number: $num, salt: $salt, signature: $sig}')
+          ALTCHA_B64=$(echo -n "$PAYLOAD_JSON" | base64 -w 0)
+
+          TOKEN=$(curl -sf -X POST http://localhost:$PANEL_PORT/api/auth/login \
+            -H 'Content-Type: application/json' \
+            -d "{\"username\":\"admin\",\"password\":\"InstallTest123!\",\"altcha\":\"$ALTCHA_B64\"}" | jq -r '.token')
+          [ -n "$TOKEN" ] && [ "$TOKEN" != "null" ] || { echo "FAIL: login"; exit 1; }
+          echo "PASS: login succeeded"
+
+          # Verify plugins loaded
+          PLUGIN_COUNT=$(curl -sf http://localhost:$PANEL_PORT/api/plugins \
+            -H "Authorization: Bearer $TOKEN" | jq '.plugins | length')
+          [ "$PLUGIN_COUNT" -ge 4 ] || { echo "FAIL: only $PLUGIN_COUNT plugins"; exit 1; }
+          echo "PASS: $PLUGIN_COUNT plugins registered"
+
+          # File Manager test
+          curl -sf "http://localhost:$PANEL_PORT/api/plugins/filemanager/list?path=/tmp" \
+            -H "Authorization: Bearer $TOKEN" | jq -e '.files' > /dev/null
+          echo "PASS: file manager working"
+
+          # Deploy frameworks
+          FW=$(curl -sf http://localhost:$PANEL_PORT/api/plugins/deploy/frameworks \
+            -H "Authorization: Bearer $TOKEN" | jq '. | length')
+          [ "$FW" -ge 1 ] || { echo "FAIL: no frameworks"; exit 1; }
+          echo "PASS: deploy plugin working ($FW frameworks)"
+
+          # AI config
+          curl -sf http://localhost:$PANEL_PORT/api/plugins/ai/config \
+            -H "Authorization: Bearer $TOKEN" | jq -e '.base_url != null' > /dev/null
+          echo "PASS: AI plugin working"
+
+          echo ""
+          echo "============================================"
+          echo "  All install script tests passed!"
+          echo "============================================"
+
+      - name: Show logs on failure
+        if: failure()
+        run: |
+          echo "=== Install log ==="
+          cat /tmp/webcasa-install.log 2>/dev/null || echo "No log"
+          echo ""
+          echo "=== Config ==="
+          sudo cat /etc/webcasa/webcasa.env 2>/dev/null || echo "No config"
+          echo ""
+          echo "=== Systemd service ==="
+          cat /etc/systemd/system/webcasa.service 2>/dev/null || echo "No service"
+          echo ""
+          echo "=== systemctl calls ==="
+          cat /tmp/systemctl-log/calls.log 2>/dev/null || echo "No calls"
+
+      - name: Cleanup
+        if: always()
+        run: |
+          sudo kill $(cat /tmp/webcasa-install.pid 2>/dev/null) 2>/dev/null || true
