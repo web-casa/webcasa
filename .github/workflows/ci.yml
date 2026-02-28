@@ -559,6 +559,13 @@ jobs:
           echo "  Install Script Test (from source)"
           echo "============================================"
 
+          # Make CI's Node.js visible to sudo (install script checks /usr/local/bin)
+          # Without this, sudo strips PATH and install script can't find node,
+          # then installs a potentially incompatible version
+          sudo ln -sf "$(which node)" /usr/local/bin/node
+          sudo ln -sf "$(which npm)" /usr/local/bin/npm
+          sudo ln -sf "$(which npx)" /usr/local/bin/npx
+
           # Run install.sh with fake systemctl (no systemd in CI)
           sudo mkdir -p /tmp/systemctl-log
           printf '#!/bin/bash\necho "$@" >> /tmp/systemctl-log/calls.log\ncase "$1" in\n  is-active)  exit 0 ;;\n  is-enabled) exit 0 ;;\n  start|stop|enable|disable|daemon-reload) exit 0 ;;\n  *)          exit 0 ;;\nesac\n' | sudo tee /usr/local/bin/systemctl > /dev/null
