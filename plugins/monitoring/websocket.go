@@ -4,7 +4,7 @@ import (
 	"encoding/json"
 	"log/slog"
 	"net/http"
-	"strings"
+	"net/url"
 	"sync"
 
 	"github.com/gorilla/websocket"
@@ -80,6 +80,10 @@ var wsUpgrader = websocket.Upgrader{
 		if origin == "" {
 			return true
 		}
-		return strings.HasSuffix(origin, "://"+r.Host)
+		u, err := url.Parse(origin)
+		if err != nil {
+			return false
+		}
+		return u.Host == r.Host
 	},
 }

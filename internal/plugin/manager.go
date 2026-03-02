@@ -21,6 +21,7 @@ type Manager struct {
 
 	db           *gorm.DB
 	router       *gin.RouterGroup // /api/plugins (protected)
+	adminRouter  *gin.RouterGroup // /api/plugins (admin only)
 	publicRouter *gin.RouterGroup // /api/plugins (public, no JWT)
 	eventBus     *EventBus
 	coreAPI      CoreAPI
@@ -29,13 +30,14 @@ type Manager struct {
 }
 
 // NewManager creates a plugin Manager.
-func NewManager(db *gorm.DB, router *gin.RouterGroup, publicRouter *gin.RouterGroup, coreAPI CoreAPI, dataDir string) *Manager {
+func NewManager(db *gorm.DB, router *gin.RouterGroup, adminRouter *gin.RouterGroup, publicRouter *gin.RouterGroup, coreAPI CoreAPI, dataDir string) *Manager {
 	logger := slog.Default().With("module", "plugin")
 	return &Manager{
 		plugins:      make(map[string]Plugin),
 		contexts:     make(map[string]*Context),
 		db:           db,
 		router:       router,
+		adminRouter:  adminRouter,
 		publicRouter: publicRouter,
 		eventBus:     NewEventBus(logger),
 		coreAPI:      coreAPI,
@@ -104,11 +106,13 @@ func (m *Manager) InitAll() error {
 
 		// Create a sub-router under /api/plugins/{id}
 		pluginRouter := m.router.Group("/" + id)
+		adminPluginRouter := m.adminRouter.Group("/" + id)
 		publicPluginRouter := m.publicRouter.Group("/" + id)
 
 		ctx := &Context{
 			DB:           m.db,
 			Router:       pluginRouter,
+			AdminRouter:  adminPluginRouter,
 			PublicRouter: publicPluginRouter,
 			EventBus:     m.eventBus,
 			Logger:       m.logger.With("plugin", id),

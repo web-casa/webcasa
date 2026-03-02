@@ -4,8 +4,8 @@ import (
 	"bufio"
 	"context"
 	"net/http"
+	"net/url"
 	"strconv"
-	"strings"
 
 	"github.com/gin-gonic/gin"
 	"github.com/gorilla/websocket"
@@ -346,7 +346,11 @@ var wsUpgrader = websocket.Upgrader{
 		if origin == "" {
 			return true
 		}
-		return strings.HasSuffix(origin, "://"+r.Host)
+		u, err := url.Parse(origin)
+		if err != nil {
+			return false
+		}
+		return u.Host == r.Host
 	},
 }
 

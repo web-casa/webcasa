@@ -64,22 +64,23 @@ func (p *Plugin) Init(ctx *pluginpkg.Context) error {
 	p.handler = NewHandler(p.svc)
 
 	// Register API routes under /api/plugins/ai/
-	r := ctx.Router
+	r := ctx.Router       // read-only
+	a := ctx.AdminRouter  // admin-only
 
-	// Config
+	// Config (read + admin mutations)
 	r.GET("/config", p.handler.GetConfig)
-	r.PUT("/config", p.handler.UpdateConfig)
-	r.POST("/config/test", p.handler.TestConnection)
+	a.PUT("/config", p.handler.UpdateConfig)
+	a.POST("/config/test", p.handler.TestConnection)
 
-	// Chat (SSE)
+	// Chat (SSE) — any logged-in user can chat
 	r.POST("/chat", p.handler.Chat)
 
-	// Conversations
+	// Conversations (read + user delete)
 	r.GET("/conversations", p.handler.ListConversations)
 	r.GET("/conversations/:id", p.handler.GetConversation)
 	r.DELETE("/conversations/:id", p.handler.DeleteConversation)
 
-	// Tools (SSE)
+	// Tools (SSE) — any logged-in user can use
 	r.POST("/generate-compose", p.handler.GenerateCompose)
 	r.POST("/diagnose", p.handler.Diagnose)
 

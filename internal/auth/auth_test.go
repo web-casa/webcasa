@@ -518,10 +518,11 @@ func TestRequireAdmin_ViewerUser(t *testing.T) {
 func TestRequireAdmin_APIToken(t *testing.T) {
 	db := setupTestDB(t)
 
-	// Simulate what the auth middleware does when it validates an API token:
-	// it sets api_token=true in the context. We replicate that with a shim middleware.
+	// Create an admin user in the database so RequireAdmin can look up the role.
+	admin := createTestUser(t, db, "apitoken-admin", "admin")
+
 	apiTokenShim := func(c *gin.Context) {
-		c.Set("user_id", uint(1))
+		c.Set("user_id", admin.ID)
 		c.Set("username", "api-token")
 		c.Set("api_token", true)
 		c.Next()
@@ -540,7 +541,37 @@ func TestRequireAdmin_APIToken(t *testing.T) {
 	r.ServeHTTP(w, req)
 
 	if w.Code != http.StatusOK {
-		t.Errorf("status = %d, want %d (API token should pass RequireAdmin)", w.Code, http.StatusOK)
+		t.Errorf("status = %d, want %d (API token for admin should pass RequireAdmin)", w.Code, http.StatusOK)
+	}
+}
+
+func TestRequireAdmin_APIToken_ViewerDenied(t *testing.T) {
+	db := setupTestDB(t)
+
+	// Create a viewer user — API token owned by viewer should NOT pass RequireAdmin.
+	viewer := createTestUser(t, db, "apitoken-viewer", "viewer")
+
+	apiTokenShim := func(c *gin.Context) {
+		c.Set("user_id", viewer.ID)
+		c.Set("username", "api-token")
+		c.Set("api_token", true)
+		c.Next()
+	}
+
+	gin.SetMode(gin.TestMode)
+	r := gin.New()
+	group := r.Group("/test")
+	group.Use(apiTokenShim, RequireAdmin(db))
+	group.GET("/protected", func(c *gin.Context) {
+		c.JSON(http.StatusOK, gin.H{"ok": true})
+	})
+
+	w := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/test/protected", nil)
+	r.ServeHTTP(w, req)
+
+	if w.Code != http.StatusForbidden {
+		t.Errorf("status = %d, want %d (API token for viewer should be denied)", w.Code, http.StatusForbidden)
 	}
 }
 

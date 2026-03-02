@@ -3,7 +3,9 @@ package appstore
 import (
 	"net/http"
 	"os"
+	"path/filepath"
 	"strconv"
+	"strings"
 
 	"github.com/gin-gonic/gin"
 )
@@ -89,12 +91,34 @@ func (h *Handler) AppLogo(c *gin.Context) {
 		return
 	}
 
-	if _, err := os.Stat(logoPath); os.IsNotExist(err) {
+	// Security: reject symlinks and verify the resolved path stays within the source directory.
+	fi, err := os.Lstat(logoPath)
+	if err != nil {
 		c.Status(http.StatusNotFound)
 		return
 	}
+	if fi.Mode()&os.ModeSymlink != 0 {
+		c.JSON(http.StatusForbidden, gin.H{"error": "symlinks not allowed"})
+		return
+	}
+	resolved, err := filepath.EvalSymlinks(logoPath)
+	if err != nil {
+		c.Status(http.StatusNotFound)
+		return
+	}
+	sourceRoot := h.svc.sources.SourceDir(app.SourceID)
+	if sourceRoot != "" {
+		resolvedRoot, _ := filepath.EvalSymlinks(sourceRoot)
+		if resolvedRoot == "" {
+			resolvedRoot = sourceRoot
+		}
+		if !strings.HasPrefix(resolved, resolvedRoot+string(filepath.Separator)) && resolved != resolvedRoot {
+			c.JSON(http.StatusForbidden, gin.H{"error": "path outside source directory"})
+			return
+		}
+	}
 
-	c.File(logoPath)
+	c.File(resolved)
 }
 
 // ListCategories returns all available app categories.

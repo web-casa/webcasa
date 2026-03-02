@@ -329,9 +329,9 @@ FAKESC
         fail "Frontend manifests: only $MANIFEST_COUNT (expected >= 4)"
     fi
 
-    # File Manager: mkdir + list
-    auth_get "/api/plugins/filemanager/list?path=/tmp" > /dev/null && \
-        pass "File Manager: list /tmp" || fail "File Manager: list failed"
+    # File Manager: mkdir + list (default root is /home, path=/ lists root)
+    auth_get "/api/plugins/filemanager/list?path=/" > /dev/null && \
+        pass "File Manager: list root" || fail "File Manager: list failed"
 
     # Deploy: list frameworks
     local FW_COUNT

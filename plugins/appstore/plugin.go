@@ -57,34 +57,35 @@ func (p *Plugin) Init(ctx *pluginpkg.Context) error {
 	p.handler = NewHandler(p.svc, p.tplSvc)
 
 	// 4. Register routes
-	r := ctx.Router
+	r := ctx.Router       // read-only for any logged-in user
+	a := ctx.AdminRouter  // admin-only for dangerous operations
 
-	// App catalog
+	// App catalog (read)
 	r.GET("/apps", p.handler.ListApps)
 	r.GET("/apps/:id", p.handler.GetApp)
 	r.GET("/apps/:id/logo", p.handler.AppLogo)
 	r.GET("/categories", p.handler.ListCategories)
 
-	// Sources
+	// Sources (admin)
 	r.GET("/sources", p.handler.ListSources)
-	r.POST("/sources", p.handler.AddSource)
-	r.POST("/sources/:id/sync", p.handler.SyncSource)
-	r.DELETE("/sources/:id", p.handler.RemoveSource)
+	a.POST("/sources", p.handler.AddSource)
+	a.POST("/sources/:id/sync", p.handler.SyncSource)
+	a.DELETE("/sources/:id", p.handler.RemoveSource)
 
-	// Installed apps
+	// Installed apps (read + admin mutations)
 	r.GET("/installed", p.handler.ListInstalled)
 	r.GET("/installed/:id", p.handler.GetInstalled)
-	r.POST("/install", p.handler.InstallApp)
-	r.POST("/installed/:id/start", p.handler.StartApp)
-	r.POST("/installed/:id/stop", p.handler.StopApp)
-	r.POST("/installed/:id/update", p.handler.UpdateApp)
-	r.DELETE("/installed/:id", p.handler.UninstallApp)
+	a.POST("/install", p.handler.InstallApp)
+	a.POST("/installed/:id/start", p.handler.StartApp)
+	a.POST("/installed/:id/stop", p.handler.StopApp)
+	a.POST("/installed/:id/update", p.handler.UpdateApp)
+	a.DELETE("/installed/:id", p.handler.UninstallApp)
 	r.GET("/updates", p.handler.CheckUpdates)
 
-	// Project templates
+	// Project templates (read + admin deploy)
 	r.GET("/templates", p.handler.ListTemplates)
 	r.GET("/templates/:id", p.handler.GetTemplate)
-	r.POST("/templates/deploy", p.handler.DeployFromTemplate)
+	a.POST("/templates/deploy", p.handler.DeployFromTemplate)
 
 	ctx.Logger.Info("App Store plugin initialized")
 	return nil

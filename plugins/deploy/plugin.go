@@ -43,26 +43,27 @@ func (p *Plugin) Init(ctx *pluginpkg.Context) error {
 	p.handler = NewHandler(p.svc)
 
 	// Register API routes under /api/plugins/deploy/
-	r := ctx.Router
+	r := ctx.Router       // read-only
+	a := ctx.AdminRouter  // admin-only
 
-	// Frameworks presets
+	// Frameworks presets (read)
 	r.GET("/frameworks", p.handler.GetFrameworks)
 	r.GET("/detect", p.handler.DetectFramework)
 
-	// Projects CRUD
+	// Projects CRUD (read + admin mutations)
 	r.GET("/projects", p.handler.ListProjects)
-	r.POST("/projects", p.handler.CreateProject)
+	a.POST("/projects", p.handler.CreateProject)
 	r.GET("/projects/:id", p.handler.GetProject)
-	r.PUT("/projects/:id", p.handler.UpdateProject)
-	r.DELETE("/projects/:id", p.handler.DeleteProject)
+	a.PUT("/projects/:id", p.handler.UpdateProject)
+	a.DELETE("/projects/:id", p.handler.DeleteProject)
 
-	// Project actions
-	r.POST("/projects/:id/build", p.handler.BuildProject)
-	r.POST("/projects/:id/start", p.handler.StartProject)
-	r.POST("/projects/:id/stop", p.handler.StopProject)
-	r.POST("/projects/:id/rollback", p.handler.RollbackProject)
+	// Project actions (admin)
+	a.POST("/projects/:id/build", p.handler.BuildProject)
+	a.POST("/projects/:id/start", p.handler.StartProject)
+	a.POST("/projects/:id/stop", p.handler.StopProject)
+	a.POST("/projects/:id/rollback", p.handler.RollbackProject)
 
-	// Deployments & logs
+	// Deployments & logs (read)
 	r.GET("/projects/:id/deployments", p.handler.GetDeployments)
 	r.GET("/projects/:id/logs", p.handler.GetBuildLog)
 

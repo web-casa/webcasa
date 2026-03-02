@@ -9,6 +9,7 @@ import (
 // Conversation represents a chat conversation.
 type Conversation struct {
 	ID        uint           `json:"id" gorm:"primaryKey"`
+	UserID    uint           `json:"user_id" gorm:"index;not null;default:0"`
 	Title     string         `json:"title"`
 	CreatedAt time.Time      `json:"created_at"`
 	UpdatedAt time.Time      `json:"updated_at"`

@@ -43,19 +43,20 @@ func (p *Plugin) Init(ctx *pluginpkg.Context) error {
 	p.handler = NewHandler(p.svc)
 
 	// Register API routes under /api/plugins/monitoring/
-	r := ctx.Router
+	r := ctx.Router       // read-only
+	a := ctx.AdminRouter  // admin-only
 
-	// Metrics
+	// Metrics (read)
 	r.GET("/metrics/current", p.handler.GetCurrent)
 	r.GET("/metrics/history", p.handler.GetHistory)
 	r.GET("/metrics/containers", p.handler.GetContainers)
 	r.GET("/metrics/ws", p.handler.MetricsWS)
 
-	// Alerts
+	// Alerts (read + admin mutations)
 	r.GET("/alerts", p.handler.ListAlertRules)
-	r.POST("/alerts", p.handler.CreateAlertRule)
-	r.PUT("/alerts/:id", p.handler.UpdateAlertRule)
-	r.DELETE("/alerts/:id", p.handler.DeleteAlertRule)
+	a.POST("/alerts", p.handler.CreateAlertRule)
+	a.PUT("/alerts/:id", p.handler.UpdateAlertRule)
+	a.DELETE("/alerts/:id", p.handler.DeleteAlertRule)
 	r.GET("/alerts/history", p.handler.ListAlertHistory)
 
 	ctx.Logger.Info("Monitoring plugin routes registered")

@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"os"
 	"strconv"
 	"strings"
@@ -21,9 +22,11 @@ var wsUpgrader = websocket.Upgrader{
 		if origin == "" {
 			return true // Non-browser clients
 		}
-		host := r.Host
-		// Allow same-origin connections
-		return strings.HasSuffix(origin, "://"+host)
+		u, err := url.Parse(origin)
+		if err != nil {
+			return false
+		}
+		return u.Host == r.Host
 	},
 }
 

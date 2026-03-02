@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log"
 	"net/http"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
@@ -80,9 +81,45 @@ func main() {
 	// Setup Gin
 	r := gin.Default()
 
-	// CORS — allow frontend dev server and same-origin requests
+	// CORS — dynamic origin check: same-origin + localhost dev + WEBCASA_CORS_ORIGINS
+	corsOrigins := os.Getenv("WEBCASA_CORS_ORIGINS") // comma-separated extra origins
 	r.Use(cors.New(cors.Config{
-		AllowAllOrigins:  true,
+		AllowOriginWithContextFunc: func(c *gin.Context, origin string) bool {
+			u, err := url.Parse(origin)
+			if err != nil {
+				return false
+			}
+			hostname := u.Hostname()
+			// Allow localhost/127.0.0.1 for development
+			if hostname == "localhost" || hostname == "127.0.0.1" || hostname == "::1" {
+				return true
+			}
+			// Allow same-origin: compare full host:port from origin against request Host header.
+			// u.Host includes port (e.g., "example.com:8080"), c.Request.Host also includes port.
+			// Also infer scheme from the request to compare schemes.
+			originHost := u.Host // host:port (or just host if default port)
+			reqHost := c.Request.Host
+			if originHost == reqHost {
+				// Hosts match; also verify scheme matches.
+				originScheme := u.Scheme
+				reqScheme := "http"
+				if c.Request.TLS != nil || c.GetHeader("X-Forwarded-Proto") == "https" {
+					reqScheme = "https"
+				}
+				if originScheme == reqScheme {
+					return true
+				}
+			}
+			// Allow if full origin URL matches configured extra origins
+			if corsOrigins != "" {
+				for _, allowed := range strings.Split(corsOrigins, ",") {
+					if strings.TrimSpace(allowed) == origin {
+						return true
+					}
+				}
+			}
+			return false
+		},
 		AllowMethods:     []string{"GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"},
 		AllowHeaders:     []string{"Origin", "Content-Type", "Authorization"},
 		ExposeHeaders:    []string{"Content-Length", "Content-Disposition"},
@@ -227,12 +264,13 @@ func main() {
 
 	// ============ Plugin System ============
 	pluginRouter := protected.Group("/plugins")
+	adminPluginRouter := adminOnly.Group("/plugins")
 	publicPluginRouter := api.Group("/plugins") // public routes (no JWT) for webhooks etc.
-	pluginMgr := initPlugins(db, pluginRouter, publicPluginRouter, hostSvc, caddyMgr, cfg)
+	pluginMgr := initPlugins(db, pluginRouter, adminPluginRouter, publicPluginRouter, hostSvc, caddyMgr, cfg)
 	pluginH := handler.NewPluginHandler(pluginMgr)
 	protected.GET("/plugins", pluginH.List)
-	protected.POST("/plugins/:id/enable", pluginH.Enable)
-	protected.POST("/plugins/:id/disable", pluginH.Disable)
+	adminOnly.POST("/plugins/:id/enable", pluginH.Enable)
+	adminOnly.POST("/plugins/:id/disable", pluginH.Disable)
 	protected.GET("/plugins/frontend-manifests", pluginH.FrontendManifests)
 
 	// ============ Frontend Static Files ============
@@ -251,9 +289,9 @@ func main() {
 
 // initPlugins creates the plugin manager and registers all compiled-in plugins.
 // New plugins are added here by calling pluginMgr.Register(...).
-func initPlugins(db *gorm.DB, protectedRouter *gin.RouterGroup, publicRouter *gin.RouterGroup, hostSvc *service.HostService, caddyMgr *caddy.Manager, cfg *config.Config) *plugin.Manager {
+func initPlugins(db *gorm.DB, protectedRouter *gin.RouterGroup, adminRouter *gin.RouterGroup, publicRouter *gin.RouterGroup, hostSvc *service.HostService, caddyMgr *caddy.Manager, cfg *config.Config) *plugin.Manager {
 	coreAPI := plugin.NewCoreAPI(db, hostSvc, caddyMgr)
-	pluginMgr := plugin.NewManager(db, protectedRouter, publicRouter, coreAPI, cfg.DataDir)
+	pluginMgr := plugin.NewManager(db, protectedRouter, adminRouter, publicRouter, coreAPI, cfg.DataDir)
 
 	// ── Register plugins here ──
 	if err := pluginMgr.Register(dockerplugin.New()); err != nil {
@@ -322,8 +360,18 @@ func setupFrontend(r *gin.Engine) {
 			return
 		}
 
+		// Resolve and validate the path stays within distPath
+		cleaned := filepath.Clean(path)
+		filePath := filepath.Join(distPath, cleaned)
+		absDistPath, _ := filepath.Abs(distPath)
+		absFilePath, _ := filepath.Abs(filePath)
+		if !strings.HasPrefix(absFilePath, absDistPath+string(filepath.Separator)) && absFilePath != absDistPath {
+			// Path traversal attempt — fall back to index.html
+			c.File(filepath.Join(distPath, "index.html"))
+			return
+		}
+
 		// Try to serve the exact file
-		filePath := filepath.Join(distPath, path)
 		if _, err := os.Stat(filePath); err == nil {
 			c.File(filePath)
 			return

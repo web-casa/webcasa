@@ -79,7 +79,7 @@ func (sm *SourceManager) RemoveSource(id uint) error {
 	sm.db.Where("source_id = ?", id).Delete(&ProjectTemplate{})
 
 	// Remove local clone
-	srcDir := sm.sourceDir(id)
+	srcDir := sm.SourceDir(id)
 	os.RemoveAll(srcDir)
 
 	return sm.db.Delete(&AppSource{}, id).Error
@@ -98,7 +98,7 @@ func (sm *SourceManager) SyncSource(sourceID uint) error {
 		"sync_error":  "",
 	})
 
-	srcDir := sm.sourceDir(sourceID)
+	srcDir := sm.SourceDir(sourceID)
 
 	// Clone or pull
 	if err := sm.gitSync(src.URL, src.Branch, srcDir); err != nil {
@@ -157,11 +157,11 @@ func (sm *SourceManager) GetAppLogoPath(sourceID uint, logoPath string) string {
 	if filepath.IsAbs(logoPath) {
 		return logoPath
 	}
-	return filepath.Join(sm.sourceDir(sourceID), logoPath)
+	return filepath.Join(sm.SourceDir(sourceID), logoPath)
 }
 
-// sourceDir returns the local directory for a source's cloned repo.
-func (sm *SourceManager) sourceDir(sourceID uint) string {
+// SourceDir returns the local directory for a source's cloned repo.
+func (sm *SourceManager) SourceDir(sourceID uint) string {
 	return filepath.Join(sm.dataDir, "sources", fmt.Sprintf("%d", sourceID))
 }
 

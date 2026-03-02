@@ -44,26 +44,29 @@ func (p *Plugin) Init(ctx *pluginpkg.Context) error {
 	p.termMgr = NewTerminalManager(ctx.Logger)
 	p.handler = NewHandler(p.fileOps, p.termMgr)
 
-	r := ctx.Router
+	r := ctx.Router       // read-only
+	a := ctx.AdminRouter  // admin-only
 
-	// File operations
+	// File operations (read)
 	r.GET("/list", p.handler.List)
 	r.GET("/read", p.handler.Read)
-	r.POST("/write", p.handler.Write)
-	r.POST("/upload", p.handler.Upload)
 	r.GET("/download", p.handler.Download)
-	r.POST("/mkdir", p.handler.Mkdir)
-	r.DELETE("/delete", p.handler.Delete)
-	r.POST("/rename", p.handler.Rename)
-	r.POST("/chmod", p.handler.Chmod)
 	r.GET("/info", p.handler.Info)
 
-	// Archive
-	r.POST("/compress", p.handler.Compress)
-	r.POST("/extract", p.handler.Extract)
+	// File operations (admin - write/modify)
+	a.POST("/write", p.handler.Write)
+	a.POST("/upload", p.handler.Upload)
+	a.POST("/mkdir", p.handler.Mkdir)
+	a.DELETE("/delete", p.handler.Delete)
+	a.POST("/rename", p.handler.Rename)
+	a.POST("/chmod", p.handler.Chmod)
 
-	// Terminal
-	r.GET("/terminal/ws", p.handler.TerminalWS)
+	// Archive (admin)
+	a.POST("/compress", p.handler.Compress)
+	a.POST("/extract", p.handler.Extract)
+
+	// Terminal (admin - full shell access)
+	a.GET("/terminal/ws", p.handler.TerminalWS)
 
 	ctx.Logger.Info("File Manager plugin routes registered")
 	return nil

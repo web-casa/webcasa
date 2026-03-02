@@ -40,6 +40,7 @@ type Metadata struct {
 type Context struct {
 	DB           *gorm.DB         // database connection (use plugin-prefixed tables)
 	Router       *gin.RouterGroup // API route group: /api/plugins/{id}/ (requires JWT)
+	AdminRouter  *gin.RouterGroup // API route group: /api/plugins/{id}/ (requires JWT + admin role)
 	PublicRouter *gin.RouterGroup // public API route group: /api/plugins/{id}/ (no JWT)
 	EventBus     *EventBus        // publish/subscribe event bus
 	Logger       *slog.Logger     // structured logger with plugin ID prefix

@@ -19,12 +19,7 @@ func RequireAdmin(db *gorm.DB) gin.HandlerFunc {
 			return
 		}
 
-		// API token users are treated as admin (tokens are admin-managed)
-		if isAPI, _ := c.Get("api_token"); isAPI == true {
-			c.Next()
-			return
-		}
-
+		// Always verify the user's role from the database, including API token users.
 		var user model.User
 		if err := db.Select("id, role").First(&user, userID).Error; err != nil {
 			c.JSON(http.StatusUnauthorized, gin.H{"error": "User not found"})

@@ -57,50 +57,51 @@ func (p *Plugin) Init(ctx *pluginpkg.Context) error {
 	p.handler = NewHandler(p.svc, client)
 
 	// Register API routes under /api/plugins/docker/
-	r := ctx.Router
+	r := ctx.Router       // read-only
+	a := ctx.AdminRouter  // admin-only
 
-	// System
+	// System (read)
 	r.GET("/info", p.handler.Info)
 
-	// Stacks (simple mode)
+	// Stacks (read + admin mutations)
 	r.GET("/stacks", p.handler.ListStacks)
-	r.POST("/stacks", p.handler.CreateStack)
+	a.POST("/stacks", p.handler.CreateStack)
 	r.GET("/stacks/:id", p.handler.GetStack)
-	r.PUT("/stacks/:id", p.handler.UpdateStack)
-	r.DELETE("/stacks/:id", p.handler.DeleteStack)
-	r.POST("/stacks/:id/up", p.handler.StackUp)
-	r.POST("/stacks/:id/down", p.handler.StackDown)
-	r.POST("/stacks/:id/restart", p.handler.StackRestart)
-	r.POST("/stacks/:id/pull", p.handler.StackPull)
+	a.PUT("/stacks/:id", p.handler.UpdateStack)
+	a.DELETE("/stacks/:id", p.handler.DeleteStack)
+	a.POST("/stacks/:id/up", p.handler.StackUp)
+	a.POST("/stacks/:id/down", p.handler.StackDown)
+	a.POST("/stacks/:id/restart", p.handler.StackRestart)
+	a.POST("/stacks/:id/pull", p.handler.StackPull)
 	r.GET("/stacks/:id/logs", p.handler.StackLogs)
 
-	// Containers (advanced mode)
+	// Containers (read + admin mutations)
 	r.GET("/containers", p.handler.ListContainers)
-	r.POST("/containers/:id/start", p.handler.StartContainer)
-	r.POST("/containers/:id/stop", p.handler.StopContainer)
-	r.POST("/containers/:id/restart", p.handler.RestartContainer)
-	r.DELETE("/containers/:id", p.handler.RemoveContainer)
+	a.POST("/containers/:id/start", p.handler.StartContainer)
+	a.POST("/containers/:id/stop", p.handler.StopContainer)
+	a.POST("/containers/:id/restart", p.handler.RestartContainer)
+	a.DELETE("/containers/:id", p.handler.RemoveContainer)
 	r.GET("/containers/:id/logs", p.handler.ContainerLogs)
 	r.GET("/containers/:id/stats", p.handler.ContainerStats)
 
-	// Images
+	// Images (read + admin mutations)
 	r.GET("/images", p.handler.ListImages)
-	r.POST("/images/pull", p.handler.PullImage)
-	r.DELETE("/images/:id", p.handler.RemoveImage)
-	r.POST("/images/prune", p.handler.PruneImages)
+	a.POST("/images/pull", p.handler.PullImage)
+	a.DELETE("/images/:id", p.handler.RemoveImage)
+	a.POST("/images/prune", p.handler.PruneImages)
 	r.GET("/images/search", p.handler.SearchImages)
 
-	// Networks
+	// Networks (read + admin mutations)
 	r.GET("/networks", p.handler.ListNetworks)
-	r.POST("/networks", p.handler.CreateNetwork)
-	r.DELETE("/networks/:id", p.handler.RemoveNetwork)
+	a.POST("/networks", p.handler.CreateNetwork)
+	a.DELETE("/networks/:id", p.handler.RemoveNetwork)
 
-	// Volumes
+	// Volumes (read + admin mutations)
 	r.GET("/volumes", p.handler.ListVolumes)
-	r.POST("/volumes", p.handler.CreateVolume)
-	r.DELETE("/volumes/:id", p.handler.RemoveVolume)
+	a.POST("/volumes", p.handler.CreateVolume)
+	a.DELETE("/volumes/:id", p.handler.RemoveVolume)
 
-	// WebSocket log streaming
+	// WebSocket log streaming (read)
 	r.GET("/containers/:id/logs/ws", p.handler.ContainerLogsWS)
 	r.GET("/stacks/:id/logs/ws", p.handler.StackLogsWS)
 

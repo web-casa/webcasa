@@ -73,33 +73,37 @@ func (s *Service) TestConnection(ctx context.Context) error {
 
 // ── Conversations ──
 
-// ListConversations returns all conversations ordered by most recent.
-func (s *Service) ListConversations() ([]Conversation, error) {
+// ListConversations returns conversations for a specific user ordered by most recent.
+func (s *Service) ListConversations(userID uint) ([]Conversation, error) {
 	var convs []Conversation
-	err := s.db.Order("updated_at DESC").Find(&convs).Error
+	err := s.db.Where("user_id = ?", userID).Order("updated_at DESC").Find(&convs).Error
 	return convs, err
 }
 
-// GetConversation returns a conversation with its messages.
-func (s *Service) GetConversation(id uint) (*Conversation, error) {
+// GetConversation returns a conversation with its messages, scoped to the user.
+func (s *Service) GetConversation(id uint, userID uint) (*Conversation, error) {
 	var conv Conversation
 	if err := s.db.Preload("Messages", func(db *gorm.DB) *gorm.DB {
 		return db.Order("created_at ASC")
-	}).First(&conv, id).Error; err != nil {
+	}).Where("user_id = ?", userID).First(&conv, id).Error; err != nil {
 		return nil, err
 	}
 	return &conv, nil
 }
 
-// DeleteConversation removes a conversation and its messages.
-func (s *Service) DeleteConversation(id uint) error {
-	return s.db.Select("Messages").Delete(&Conversation{ID: id}).Error
+// DeleteConversation removes a conversation and its messages, scoped to the user.
+func (s *Service) DeleteConversation(id uint, userID uint) error {
+	result := s.db.Where("id = ? AND user_id = ?", id, userID).Select("Messages").Delete(&Conversation{})
+	if result.RowsAffected == 0 {
+		return fmt.Errorf("conversation not found")
+	}
+	return result.Error
 }
 
 // ── Chat ──
 
 // Chat handles a user message: creates/appends to conversation, streams AI response.
-func (s *Service) Chat(ctx context.Context, req ChatRequest, cb StreamCallback) (uint, error) {
+func (s *Service) Chat(ctx context.Context, req ChatRequest, userID uint, cb StreamCallback) (uint, error) {
 	client, err := s.getClient()
 	if err != nil {
 		return 0, err
@@ -107,7 +111,7 @@ func (s *Service) Chat(ctx context.Context, req ChatRequest, cb StreamCallback) 
 
 	var conv Conversation
 	if req.ConversationID > 0 {
-		if err := s.db.First(&conv, req.ConversationID).Error; err != nil {
+		if err := s.db.Where("user_id = ?", userID).First(&conv, req.ConversationID).Error; err != nil {
 			return 0, fmt.Errorf("conversation not found: %w", err)
 		}
 	} else {
@@ -116,7 +120,7 @@ func (s *Service) Chat(ctx context.Context, req ChatRequest, cb StreamCallback) 
 		if len(title) > 30 {
 			title = title[:30] + "..."
 		}
-		conv = Conversation{Title: title}
+		conv = Conversation{Title: title, UserID: userID}
 		if err := s.db.Create(&conv).Error; err != nil {
 			return 0, fmt.Errorf("create conversation: %w", err)
 		}

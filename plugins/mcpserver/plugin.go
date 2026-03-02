@@ -83,10 +83,10 @@ func (p *Plugin) Init(ctx *plugin.Context) error {
 
 	// ── Routes ──
 
-	// Token management (JWT-protected)
+	// Token management (admin-only: only admins can create/delete API tokens)
 	ctx.Router.GET("/tokens", handler.ListTokens)
-	ctx.Router.POST("/tokens", handler.CreateToken)
-	ctx.Router.DELETE("/tokens/:id", handler.DeleteToken)
+	ctx.AdminRouter.POST("/tokens", handler.CreateToken)
+	ctx.AdminRouter.DELETE("/tokens/:id", handler.DeleteToken)
 
 	// MCP protocol endpoint (public route — authenticates via API token internally)
 	ctx.PublicRouter.Any("/mcp", p.mcpMiddleware(tokenSvc), gin.WrapH(p.mcpHandler))
@@ -138,6 +138,7 @@ func (p *Plugin) mcpMiddleware(tokenSvc *TokenService) gin.HandlerFunc {
 
 		// Also set it in the request context so MCP tool handlers can access it
 		ctx := ContextWithToken(c.Request.Context(), tokenStr)
+		ctx = ContextWithPermissions(ctx, token.Permissions)
 		c.Request = c.Request.WithContext(ctx)
 
 		c.Next()

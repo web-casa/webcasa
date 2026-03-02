@@ -25,10 +25,16 @@ type ToolService struct {
 type contextKey string
 
 const tokenContextKey contextKey = "api_token_str"
+const permissionsContextKey contextKey = "api_token_permissions"
 
 // ContextWithToken adds the API token string to the context.
 func ContextWithToken(ctx context.Context, token string) context.Context {
 	return context.WithValue(ctx, tokenContextKey, token)
+}
+
+// ContextWithPermissions adds the token permissions to the context.
+func ContextWithPermissions(ctx context.Context, permissions string) context.Context {
+	return context.WithValue(ctx, permissionsContextKey, permissions)
 }
 
 // tokenFromContext retrieves the API token from context.
@@ -37,6 +43,58 @@ func tokenFromContext(ctx context.Context) string {
 		return v
 	}
 	return ""
+}
+
+// checkPermission verifies the current token has the required permission scope.
+// Scope format: "hosts:read", "hosts:write", "deploy:write", "docker:write", etc.
+// An empty permissions list "[]" grants full access (backwards compatible).
+func checkPermission(ctx context.Context, scope string) error {
+	permsStr, _ := ctx.Value(permissionsContextKey).(string)
+	if permsStr == "" || permsStr == "[]" {
+		return nil // empty = full access (backwards compatible)
+	}
+
+	var perms []string
+	if err := json.Unmarshal([]byte(permsStr), &perms); err != nil {
+		return nil // parse error = treat as full access for safety
+	}
+	if len(perms) == 0 {
+		return nil // empty array = full access
+	}
+
+	// Parse the requested scope: "hosts:write" → category="hosts", action="write"
+	parts := splitScope(scope)
+	category, action := parts[0], parts[1]
+
+	for _, p := range perms {
+		pp := splitScope(p)
+		pCat, pAct := pp[0], pp[1]
+		if pCat == "*" || pCat == category {
+			if pAct == "*" || pAct == action {
+				return nil
+			}
+		}
+	}
+
+	return fmt.Errorf("permission denied: token lacks %q scope", scope)
+}
+
+func splitScope(s string) [2]string {
+	for i, c := range s {
+		if c == ':' {
+			return [2]string{s[:i], s[i+1:]}
+		}
+	}
+	return [2]string{s, "*"}
+}
+
+// requirePerm is a helper that checks permission and returns an error result if denied.
+func requirePerm(ctx context.Context, scope string) (*mcp.CallToolResult, bool) {
+	if err := checkPermission(ctx, scope); err != nil {
+		r, _ := errorResult(err.Error())
+		return r, true
+	}
+	return nil, false
 }
 
 // jsonText marshals v to JSON and returns it as a TextContent result.
@@ -182,6 +240,9 @@ type listHostsInput struct {
 }
 
 func (ts *ToolService) handleListHosts(ctx context.Context, req *mcp.CallToolRequest, input listHostsInput) (*mcp.CallToolResult, any, error) {
+	if r, denied := requirePerm(ctx, "hosts:read"); denied {
+		return r, nil, nil
+	}
 	var hosts []model.Host
 	q := ts.db.Preload("Upstreams").Order("domain ASC")
 	if input.Search != "" {
@@ -230,6 +291,9 @@ type createHostInput struct {
 }
 
 func (ts *ToolService) handleCreateHost(ctx context.Context, req *mcp.CallToolRequest, input createHostInput) (*mcp.CallToolResult, any, error) {
+	if r, denied := requirePerm(ctx, "hosts:write"); denied {
+		return r, nil, nil
+	}
 	tlsEnabled := true
 	if input.TLS != nil {
 		tlsEnabled = *input.TLS
@@ -264,6 +328,9 @@ type deleteHostInput struct {
 }
 
 func (ts *ToolService) handleDeleteHost(ctx context.Context, req *mcp.CallToolRequest, input deleteHostInput) (*mcp.CallToolResult, any, error) {
+	if r, denied := requirePerm(ctx, "hosts:write"); denied {
+		return r, nil, nil
+	}
 	if err := ts.coreAPI.DeleteHost(input.HostID); err != nil {
 		r, _ := errorResult("failed to delete host: " + err.Error())
 		return r, nil, nil
@@ -277,6 +344,9 @@ type toggleHostInput struct {
 }
 
 func (ts *ToolService) handleToggleHost(ctx context.Context, req *mcp.CallToolRequest, input toggleHostInput) (*mcp.CallToolResult, any, error) {
+	if r, denied := requirePerm(ctx, "hosts:write"); denied {
+		return r, nil, nil
+	}
 	token := tokenFromContext(ctx)
 	_, err := ts.caller.Call("PATCH", "/api/hosts/"+strconv.FormatUint(uint64(input.HostID), 10)+"/toggle", nil, token)
 	if err != nil {
@@ -292,6 +362,9 @@ func (ts *ToolService) handleToggleHost(ctx context.Context, req *mcp.CallToolRe
 type emptyInput struct{}
 
 func (ts *ToolService) handleListProjects(ctx context.Context, req *mcp.CallToolRequest, _ emptyInput) (*mcp.CallToolResult, any, error) {
+	if r, denied := requirePerm(ctx, "deploy:read"); denied {
+		return r, nil, nil
+	}
 	token := tokenFromContext(ctx)
 	data, err := ts.caller.Get("/api/plugins/deploy/projects", token)
 	if err != nil {
@@ -308,6 +381,9 @@ type getProjectInput struct {
 }
 
 func (ts *ToolService) handleGetProject(ctx context.Context, req *mcp.CallToolRequest, input getProjectInput) (*mcp.CallToolResult, any, error) {
+	if r, denied := requirePerm(ctx, "deploy:read"); denied {
+		return r, nil, nil
+	}
 	token := tokenFromContext(ctx)
 	data, err := ts.caller.Get("/api/plugins/deploy/projects/"+strconv.FormatUint(uint64(input.ProjectID), 10), token)
 	if err != nil {
@@ -328,6 +404,9 @@ type deployProjectInput struct {
 }
 
 func (ts *ToolService) handleDeployProject(ctx context.Context, req *mcp.CallToolRequest, input deployProjectInput) (*mcp.CallToolResult, any, error) {
+	if r, denied := requirePerm(ctx, "deploy:write"); denied {
+		return r, nil, nil
+	}
 	token := tokenFromContext(ctx)
 	body := map[string]interface{}{
 		"name":    input.Name,
@@ -368,6 +447,9 @@ type buildProjectInput struct {
 }
 
 func (ts *ToolService) handleBuildProject(ctx context.Context, req *mcp.CallToolRequest, input buildProjectInput) (*mcp.CallToolResult, any, error) {
+	if r, denied := requirePerm(ctx, "deploy:write"); denied {
+		return r, nil, nil
+	}
 	token := tokenFromContext(ctx)
 	data, err := ts.caller.Post("/api/plugins/deploy/projects/"+strconv.FormatUint(uint64(input.ProjectID), 10)+"/build", nil, token)
 	if err != nil {
@@ -385,6 +467,9 @@ type getBuildLogsInput struct {
 }
 
 func (ts *ToolService) handleGetBuildLogs(ctx context.Context, req *mcp.CallToolRequest, input getBuildLogsInput) (*mcp.CallToolResult, any, error) {
+	if r, denied := requirePerm(ctx, "deploy:read"); denied {
+		return r, nil, nil
+	}
 	token := tokenFromContext(ctx)
 	path := fmt.Sprintf("/api/plugins/deploy/projects/%d/logs?type=build", input.ProjectID)
 	if input.BuildNumber > 0 {
@@ -403,6 +488,9 @@ func (ts *ToolService) handleGetBuildLogs(ctx context.Context, req *mcp.CallTool
 // ──────────────────────────── Docker Tools ────────────────────────────
 
 func (ts *ToolService) handleListStacks(ctx context.Context, req *mcp.CallToolRequest, _ emptyInput) (*mcp.CallToolResult, any, error) {
+	if r, denied := requirePerm(ctx, "docker:read"); denied {
+		return r, nil, nil
+	}
 	token := tokenFromContext(ctx)
 	data, err := ts.caller.Get("/api/plugins/docker/stacks", token)
 	if err != nil {
@@ -421,6 +509,9 @@ type createStackInput struct {
 }
 
 func (ts *ToolService) handleCreateStack(ctx context.Context, req *mcp.CallToolRequest, input createStackInput) (*mcp.CallToolResult, any, error) {
+	if r, denied := requirePerm(ctx, "docker:write"); denied {
+		return r, nil, nil
+	}
 	token := tokenFromContext(ctx)
 	body := map[string]interface{}{
 		"name":         input.Name,
@@ -445,6 +536,9 @@ type controlStackInput struct {
 }
 
 func (ts *ToolService) handleControlStack(ctx context.Context, req *mcp.CallToolRequest, input controlStackInput) (*mcp.CallToolResult, any, error) {
+	if r, denied := requirePerm(ctx, "docker:write"); denied {
+		return r, nil, nil
+	}
 	// Validate action against allowed values to prevent path traversal
 	switch input.Action {
 	case "up", "down", "restart":
@@ -472,6 +566,9 @@ type getStackLogsInput struct {
 }
 
 func (ts *ToolService) handleGetStackLogs(ctx context.Context, req *mcp.CallToolRequest, input getStackLogsInput) (*mcp.CallToolResult, any, error) {
+	if r, denied := requirePerm(ctx, "docker:read"); denied {
+		return r, nil, nil
+	}
 	token := tokenFromContext(ctx)
 	tail := 100
 	if input.Tail > 0 {
@@ -491,6 +588,9 @@ func (ts *ToolService) handleGetStackLogs(ctx context.Context, req *mcp.CallTool
 // ──────────────────────────── Database Tools ────────────────────────────
 
 func (ts *ToolService) handleListDBInstances(ctx context.Context, req *mcp.CallToolRequest, _ emptyInput) (*mcp.CallToolResult, any, error) {
+	if r, denied := requirePerm(ctx, "database:read"); denied {
+		return r, nil, nil
+	}
 	token := tokenFromContext(ctx)
 	data, err := ts.caller.Get("/api/plugins/database/instances", token)
 	if err != nil {
@@ -509,6 +609,9 @@ type createDBInstanceInput struct {
 }
 
 func (ts *ToolService) handleCreateDBInstance(ctx context.Context, req *mcp.CallToolRequest, input createDBInstanceInput) (*mcp.CallToolResult, any, error) {
+	if r, denied := requirePerm(ctx, "database:write"); denied {
+		return r, nil, nil
+	}
 	token := tokenFromContext(ctx)
 	body := map[string]interface{}{
 		"engine": input.Engine,
@@ -534,6 +637,9 @@ type executeQueryInput struct {
 }
 
 func (ts *ToolService) handleExecuteQuery(ctx context.Context, req *mcp.CallToolRequest, input executeQueryInput) (*mcp.CallToolResult, any, error) {
+	if r, denied := requirePerm(ctx, "database:write"); denied {
+		return r, nil, nil
+	}
 	token := tokenFromContext(ctx)
 	body := map[string]interface{}{
 		"database": input.Database,
@@ -558,6 +664,9 @@ type generateComposeInput struct {
 }
 
 func (ts *ToolService) handleGenerateCompose(ctx context.Context, req *mcp.CallToolRequest, input generateComposeInput) (*mcp.CallToolResult, any, error) {
+	if r, denied := requirePerm(ctx, "ai:read"); denied {
+		return r, nil, nil
+	}
 	token := tokenFromContext(ctx)
 	// The AI generate-compose endpoint uses SSE, but we need a synchronous result.
 	// We'll call it and collect the full response.
@@ -581,6 +690,9 @@ type diagnoseErrorInput struct {
 }
 
 func (ts *ToolService) handleDiagnoseError(ctx context.Context, req *mcp.CallToolRequest, input diagnoseErrorInput) (*mcp.CallToolResult, any, error) {
+	if r, denied := requirePerm(ctx, "ai:read"); denied {
+		return r, nil, nil
+	}
 	token := tokenFromContext(ctx)
 	body := map[string]interface{}{
 		"logs":    input.Logs,

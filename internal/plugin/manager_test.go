@@ -44,9 +44,10 @@ func setupTestManager(t *testing.T) (*Manager, *gorm.DB) {
 	gin.SetMode(gin.TestMode)
 	r := gin.New()
 	rg := r.Group("/api/plugins")
+	adminRg := r.Group("/api/plugins")
 	publicRg := r.Group("/api/plugins")
 	dataDir := t.TempDir()
-	mgr := NewManager(db, rg, publicRg, &stubCoreAPI{}, dataDir)
+	mgr := NewManager(db, rg, adminRg, publicRg, &stubCoreAPI{}, dataDir)
 	return mgr, db
 }
 

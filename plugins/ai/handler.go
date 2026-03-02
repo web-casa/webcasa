@@ -19,6 +19,21 @@ func NewHandler(svc *Service) *Handler {
 	return &Handler{svc: svc}
 }
 
+// getUserID extracts the current user ID from the gin context.
+func getUserID(c *gin.Context) uint {
+	if id, exists := c.Get("user_id"); exists {
+		switch v := id.(type) {
+		case uint:
+			return v
+		case int:
+			return uint(v)
+		case float64:
+			return uint(v)
+		}
+	}
+	return 0
+}
+
 // writeSSEData writes an SSE data field, encoding multi-line content correctly.
 // Each line of the payload must be prefixed with "data: " per the SSE spec.
 func writeSSEData(w gin.ResponseWriter, payload string) error {
@@ -89,7 +104,7 @@ func (h *Handler) Chat(c *gin.Context) {
 	c.Header("X-Accel-Buffering", "no")
 	c.Writer.Flush()
 
-	convID, err := h.svc.Chat(c.Request.Context(), req, func(delta string) error {
+	convID, err := h.svc.Chat(c.Request.Context(), req, getUserID(c), func(delta string) error {
 		if err := writeSSEData(c.Writer, delta); err != nil {
 			return err
 		}
@@ -107,9 +122,9 @@ func (h *Handler) Chat(c *gin.Context) {
 	c.Writer.Flush()
 }
 
-// ListConversations returns all conversations.
+// ListConversations returns conversations for the current user.
 func (h *Handler) ListConversations(c *gin.Context) {
-	convs, err := h.svc.ListConversations()
+	convs, err := h.svc.ListConversations(getUserID(c))
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
@@ -117,14 +132,14 @@ func (h *Handler) ListConversations(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"conversations": convs})
 }
 
-// GetConversation returns a conversation with messages.
+// GetConversation returns a conversation with messages, scoped to current user.
 func (h *Handler) GetConversation(c *gin.Context) {
 	id, err := strconv.ParseUint(c.Param("id"), 10, 64)
 	if err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid id"})
 		return
 	}
-	conv, err := h.svc.GetConversation(uint(id))
+	conv, err := h.svc.GetConversation(uint(id), getUserID(c))
 	if err != nil {
 		c.JSON(http.StatusNotFound, gin.H{"error": "not found"})
 		return
@@ -132,14 +147,14 @@ func (h *Handler) GetConversation(c *gin.Context) {
 	c.JSON(http.StatusOK, conv)
 }
 
-// DeleteConversation removes a conversation.
+// DeleteConversation removes a conversation, scoped to current user.
 func (h *Handler) DeleteConversation(c *gin.Context) {
 	id, err := strconv.ParseUint(c.Param("id"), 10, 64)
 	if err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid id"})
 		return
 	}
-	if err := h.svc.DeleteConversation(uint(id)); err != nil {
+	if err := h.svc.DeleteConversation(uint(id), getUserID(c)); err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}

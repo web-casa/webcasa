@@ -43,20 +43,21 @@ func (p *Plugin) Init(ctx *pluginpkg.Context) error {
 	p.handler = NewHandler(p.svc)
 
 	// Register API routes under /api/plugins/backup/
-	r := ctx.Router
+	r := ctx.Router       // read-only
+	a := ctx.AdminRouter  // admin-only
 
-	// Config
+	// Config (read + admin mutations)
 	r.GET("/config", p.handler.GetConfig)
-	r.PUT("/config", p.handler.UpdateConfig)
-	r.POST("/config/test", p.handler.TestConnection)
+	a.PUT("/config", p.handler.UpdateConfig)
+	a.POST("/config/test", p.handler.TestConnection)
 
-	// Snapshots
+	// Snapshots (read + admin mutations)
 	r.GET("/snapshots", p.handler.ListSnapshots)
-	r.POST("/snapshots", p.handler.CreateSnapshot)
-	r.POST("/snapshots/:id/restore", p.handler.RestoreSnapshot)
-	r.DELETE("/snapshots/:id", p.handler.DeleteSnapshot)
+	a.POST("/snapshots", p.handler.CreateSnapshot)
+	a.POST("/snapshots/:id/restore", p.handler.RestoreSnapshot)
+	a.DELETE("/snapshots/:id", p.handler.DeleteSnapshot)
 
-	// Status & Logs
+	// Status & Logs (read)
 	r.GET("/status", p.handler.GetStatus)
 	r.GET("/logs", p.handler.ListLogs)
 

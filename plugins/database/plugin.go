@@ -46,41 +46,42 @@ func (p *Plugin) Init(ctx *pluginpkg.Context) error {
 	p.handler = NewHandler(p.svc, p.sqlite)
 
 	// Register API routes under /api/plugins/database/
-	r := ctx.Router
+	r := ctx.Router       // read-only
+	a := ctx.AdminRouter  // admin-only
 
-	// Engines
+	// Engines (read)
 	r.GET("/engines", p.handler.ListEngines)
 
-	// Instances
+	// Instances (read + admin mutations)
 	r.GET("/instances", p.handler.ListInstances)
-	r.POST("/instances", p.handler.CreateInstance)
+	a.POST("/instances", p.handler.CreateInstance)
 	r.GET("/instances/:id", p.handler.GetInstance)
-	r.DELETE("/instances/:id", p.handler.DeleteInstance)
-	r.POST("/instances/:id/start", p.handler.StartInstance)
-	r.POST("/instances/:id/stop", p.handler.StopInstance)
-	r.POST("/instances/:id/restart", p.handler.RestartInstance)
+	a.DELETE("/instances/:id", p.handler.DeleteInstance)
+	a.POST("/instances/:id/start", p.handler.StartInstance)
+	a.POST("/instances/:id/stop", p.handler.StopInstance)
+	a.POST("/instances/:id/restart", p.handler.RestartInstance)
 	r.GET("/instances/:id/logs", p.handler.InstanceLogs)
 	r.GET("/instances/:id/logs/ws", p.handler.InstanceLogsWS)
 	r.GET("/instances/:id/connection", p.handler.GetConnectionInfo)
-	r.GET("/instances/:id/password", p.handler.GetRootPassword)
+	a.GET("/instances/:id/password", p.handler.GetRootPassword) // sensitive
 
-	// Database CRUD
+	// Database CRUD (admin)
 	r.GET("/instances/:id/databases", p.handler.ListDatabases)
-	r.POST("/instances/:id/databases", p.handler.CreateDatabase)
-	r.DELETE("/instances/:id/databases/:dbname", p.handler.DeleteDatabase)
+	a.POST("/instances/:id/databases", p.handler.CreateDatabase)
+	a.DELETE("/instances/:id/databases/:dbname", p.handler.DeleteDatabase)
 
-	// User CRUD
+	// User CRUD (admin)
 	r.GET("/instances/:id/users", p.handler.ListUsers)
-	r.POST("/instances/:id/users", p.handler.CreateUser)
-	r.DELETE("/instances/:id/users/:username", p.handler.DeleteUser)
+	a.POST("/instances/:id/users", p.handler.CreateUser)
+	a.DELETE("/instances/:id/users/:username", p.handler.DeleteUser)
 
-	// Query execution
-	r.POST("/instances/:id/query", p.handler.ExecuteQuery)
+	// Query execution (admin)
+	a.POST("/instances/:id/query", p.handler.ExecuteQuery)
 
-	// SQLite Browser
+	// SQLite Browser (read + admin query)
 	r.GET("/sqlite/tables", p.handler.SQLiteTables)
 	r.GET("/sqlite/schema", p.handler.SQLiteSchema)
-	r.POST("/sqlite/query", p.handler.SQLiteQuery)
+	a.POST("/sqlite/query", p.handler.SQLiteQuery)
 
 	ctx.Logger.Info("Database plugin routes registered")
 	return nil
