@@ -3,7 +3,7 @@ import { Box, Flex, Text, Card, Badge, Heading, Button, Separator, Dialog, TextA
 import { Container, Play, Square, RefreshCw, Trash2, FileText, Plus, Download, Server, Search, Radio, Upload } from 'lucide-react'
 import { dockerAPI } from '../api/index.js'
 import { useTranslation } from 'react-i18next'
-import { Link } from 'react-router'
+// Docker — Compose Stacks management (simplified view)
 
 const statusColors = { running: 'green', stopped: 'gray', partial: 'orange', error: 'red', unknown: 'gray' }
 
@@ -113,7 +113,6 @@ export default function DockerOverview() {
                     <Heading size="5">Docker</Heading>
                 </Flex>
                 <Flex gap="2">
-                    <Link to="/docker/containers"><Button variant="soft" size="2">{t('docker.advanced_mode')}</Button></Link>
                     <Button size="2" onClick={() => setShowCreate(true)}><Plus size={16} /> {t('docker.create_stack')}</Button>
                 </Flex>
             </Flex>

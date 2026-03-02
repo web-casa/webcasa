@@ -1,6 +1,9 @@
 # Web.Casa 方案设计稿
 
-> 版本: 1.0 | 日期: 2026-02-28
+> 版本: 1.1 | 日期: 2026-03-01
+>
+> 变更记录:
+> - v1.1 (2026-03-01): Phase 0-4 已完成，功能精简重组阶段。详见 [04-feature-simplification.md](./04-feature-simplification.md)
 
 ---
 

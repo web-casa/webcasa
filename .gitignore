@@ -7,8 +7,11 @@ webcasa
 *.test
 *.out
 vendor/
+coverage.out
+coverage.html
 
 # === Node / Frontend ===
+node_modules/
 web/node_modules/
 web/dist/
 web/.vite/
@@ -23,6 +26,15 @@ Caddyfile
 Caddyfile.tmp
 *.bak
 *.log
+*.pid
+
+# === Security / Secrets ===
+.env
+.env.*
+*.pem
+*.key
+*.crt
+.jwt_secret
 
 # === IDE ===
 .idea/
@@ -33,6 +45,13 @@ Caddyfile.tmp
 .DS_Store
 Thumbs.db
 
-# === Environment ===
-.env
-*.env.local
+# === OS ===
+.Trash-*
+desktop.ini
+
+# === Docker (local test artifacts) ===
+docker-compose.override.yml
+
+# === Temp ===
+tmp/
+*.tmp

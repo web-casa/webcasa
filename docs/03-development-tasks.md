@@ -1,23 +1,25 @@
 # Web.Casa 开发任务表
 
-> 版本: 1.0 | 日期: 2026-02-28
+> 版本: 1.1 | 日期: 2026-03-01
+>
+> 变更记录:
+> - v1.1 (2026-03-01): Phase 0-4 已完成，新增功能精简阶段。Docker 管理精简为仅 Compose Stacks。详见 [04-feature-simplification.md](./04-feature-simplification.md)
 
 ---
 
 ## 总体开发阶段
 
 ```
-Phase 0: 插件框架基础         (2-3 周)  ← 最核心，Pro 的基石
-Phase 1: Docker 管理插件      (2-3 周)  ← 其他插件的基础设施
-Phase 2: 项目部署插件         (2-3 周)  ← MVP 核心功能
-Phase 3: AI 助手插件          (1-2 周)  ← 差异化核心
-Phase 4: 文件管理 + 终端      (1-2 周)
-Phase 5: 数据库管理插件       (1-2 周)
-Phase 6: 备份 + 监控          (2-3 周)
-Phase 7: 应用商店 + 模板市场  (2-3 周)
-Phase 8: MCP Server + 体验打磨(2-3 周)
-                              --------
-                              ~16-22 周 (全量)
+Phase 0: 插件框架基础         ✅ 已完成
+Phase 1: Docker 管理插件      ✅ 已完成（后续精简为仅 Compose Stacks）
+Phase 2: 项目部署插件         ✅ 已完成
+Phase 3: AI 助手插件          ✅ 已完成
+Phase 4: 文件管理 + 终端      ✅ 已完成
+Phase 4.5: 功能精简重组       ← 当前阶段
+Phase 5: 数据库管理插件       (待定)
+Phase 6: 备份 + 监控          (待定)
+Phase 7: 应用商店 + 模板市场  (待定)
+Phase 8: MCP Server + 体验打磨(待定)
 ```
 
 ---
@@ -177,6 +179,56 @@ Phase 8: MCP Server + 体验打磨(2-3 周)
 
 ---
 
+## Phase 4.5: 功能精简重组 ← 当前阶段
+
+> 目标: 将 16 个导航项精简到 8 个，合并低频独立页面到 Settings，Docker 只保留 Compose Stacks
+> 详细方案: [04-feature-simplification.md](./04-feature-simplification.md)
+
+### 4.5.1 Settings 页重构
+
+| ID | 任务 | 描述 |
+|----|------|------|
+| 4.5.1.1 | Settings Tab 布局 | 重构为 General/Users/Logs/AI/DNS/Certificates/Plugins 七个 Tab |
+| 4.5.1.2 | 迁移 Users | Users.jsx 内容迁入 Settings Users Tab |
+| 4.5.1.3 | 迁移 Logs + AuditLogs | 合并为 Logs Tab，Caddy 日志和审计日志用子 Tab 切换 |
+| 4.5.1.4 | 迁移 AI Config | AIConfig.jsx 内容迁入 Settings AI Tab |
+| 4.5.1.5 | 迁移 DNS Providers | DnsProviders.jsx 内容迁入 Settings DNS Tab |
+| 4.5.1.6 | 迁移 Certificates | Certificates.jsx 内容迁入 Settings Certificates Tab |
+| 4.5.1.7 | 迁移 Plugins | Plugins.jsx 内容迁入 Settings Plugins Tab |
+
+### 4.5.2 Docker 精简
+
+| ID | 任务 | 描述 |
+|----|------|------|
+| 4.5.2.1 | DockerOverview 重构 | 改为纯 Compose Stacks 管理页面 |
+| 4.5.2.2 | 删除 Docker 子页面 | 删除 DockerContainers/Images/Networks/Volumes 四个页面 |
+
+### 4.5.3 Host 模板融合
+
+| ID | 任务 | 描述 |
+|----|------|------|
+| 4.5.3.1 | 创建 Host 模板选择 | Host 创建弹窗增加「从模板创建」预设选择 |
+| 4.5.3.2 | 删除 Templates 页面 | 独立 Templates 页面和导航项移除 |
+
+### 4.5.4 路由和导航更新
+
+| ID | 任务 | 描述 |
+|----|------|------|
+| 4.5.4.1 | App.jsx 路由清理 | 删除多余路由，Settings 增加子路由 |
+| 4.5.4.2 | Layout.jsx 导航精简 | 16 项 → 8 项 |
+| 4.5.4.3 | i18n 更新 | 更新 en.json / zh.json 翻译 |
+| 4.5.4.4 | 删除废弃文件 | 清理 10 个不再使用的 .jsx 页面文件 |
+
+### 4.5.5 验证
+
+| ID | 任务 | 描述 |
+|----|------|------|
+| 4.5.5.1 | 前端构建 | npm run build 通过 |
+| 4.5.5.2 | Docker 集成测试 | scripts/test-local.sh 通过 |
+| 4.5.5.3 | CI 验证 | GitHub Actions 全绿 |
+
+---
+
 ## Phase 5: 数据库管理插件
 
 | ID | 任务 | 描述 | 预估 |
@@ -272,16 +324,18 @@ Phase 8: MCP Server + 体验打磨(2-3 周)
 
 ## 里程碑总览
 
-| 里程碑 | 包含 Phase | 核心交付 | 累计人天 |
-|--------|-----------|---------|---------|
-| **M0: 插件框架** | Phase 0 | 插件系统可用，Lite 功能不受影响 | 9.5 |
-| **M1: Docker MVP** | Phase 0+1 | Lite + Docker 管理 | 20.5 |
-| **M2: 部署 MVP** | +Phase 2 | + 项目源码部署 | 33 |
-| **M3: AI MVP** | +Phase 3 | + AI 助手 (差异化核心) | 41.5 |
-| **M4: 工具补全** | +Phase 4+5 | + 文件管理/终端/数据库 | 55.5 |
-| **M5: 运维能力** | +Phase 6 | + 备份/监控 | 64 |
-| **M6: 生态建设** | +Phase 7 | + 应用商店/模板市场 | 72 |
-| **M7: Pro 完整版** | +Phase 8 | + MCP/体验打磨 → Pro 发布 | 82 |
+| 里程碑 | 包含 Phase | 核心交付 | 状态 |
+|--------|-----------|---------|------|
+| **M0: 插件框架** | Phase 0 | 插件系统可用 | ✅ 已完成 |
+| **M1: Docker MVP** | Phase 0+1 | + Docker 管理 | ✅ 已完成 |
+| **M2: 部署 MVP** | +Phase 2 | + 项目源码部署 | ✅ 已完成 |
+| **M3: AI MVP** | +Phase 3 | + AI 助手 | ✅ 已完成 |
+| **M4: 工具补全** | +Phase 4 | + 文件管理/终端 | ✅ 已完成 |
+| **M4.5: 功能精简** | +Phase 4.5 | 导航 16→8，合并页面 | ← 当前 |
+| **M5: 数据库** | +Phase 5 | + 数据库管理 | 待定 |
+| **M6: 运维能力** | +Phase 6 | + 备份/监控 | 待定 |
+| **M7: 生态建设** | +Phase 7 | + 应用商店/模板市场 | 待定 |
+| **M8: AI-First** | +Phase 8 | + MCP Server/体验打磨 | 待定 |
 
 ---
 

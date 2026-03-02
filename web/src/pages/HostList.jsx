@@ -61,6 +61,7 @@ function HostFormDialog({ open, onClose, onSaved, host }) {
     const [dnsChecking, setDnsChecking] = useState(false)
     const [groups, setGroups] = useState([])
     const [allTags, setAllTags] = useState([])
+    const [templates, setTemplates] = useState([])
 
     useEffect(() => {
         dnsProviderAPI.list().then(res => setDnsProviders(res.data.providers || [])).catch(() => { })
@@ -71,7 +72,22 @@ function HostFormDialog({ open, onClose, onSaved, host }) {
         certificateAPI.list().then(res => setCertificates(res.data.certificates || [])).catch(() => { })
         groupAPI.list().then(res => setGroups(res.data.groups || [])).catch(() => { })
         tagAPI.list().then(res => setAllTags(res.data.tags || [])).catch(() => { })
+        templateAPI.list().then(res => setTemplates(res.data.templates || [])).catch(() => { })
     }, [])
+
+    const applyTemplate = (tpl) => {
+        try {
+            const config = typeof tpl.config === 'string' ? JSON.parse(tpl.config) : tpl.config
+            setForm({
+                ...DEFAULT_FORM,
+                ...config,
+                domain: '', // always let user fill in domain
+                upstreams: config.upstreams?.length ? config.upstreams : [{ address: '' }],
+                basic_auths: [],
+                tag_ids: config.tag_ids || [],
+            })
+        } catch { /* ignore parse errors */ }
+    }
 
     useEffect(() => {
         if (host) {
@@ -221,6 +237,27 @@ function HostFormDialog({ open, onClose, onSaved, host }) {
                             <Callout.Icon><AlertCircle size={14} /></Callout.Icon>
                             <Callout.Text>{error}</Callout.Text>
                         </Callout.Root>
+                    )}
+
+                    {/* Template quick-apply (create mode only) */}
+                    {!isEdit && templates.length > 0 && (
+                        <Flex direction="column" gap="2">
+                            <Text size="1" weight="medium" color="gray">{t('template.from_template')}</Text>
+                            <Flex gap="2" wrap="wrap">
+                                {templates.map(tpl => (
+                                    <Tooltip key={tpl.id} content={tpl.description || tpl.name}>
+                                        <Button
+                                            variant="outline"
+                                            size="1"
+                                            onClick={() => applyTemplate(tpl)}
+                                        >
+                                            <Layers size={12} />
+                                            {tpl.name}
+                                        </Button>
+                                    </Tooltip>
+                                ))}
+                            </Flex>
+                        </Flex>
                     )}
 
                     {/* Host Type + Domain */}

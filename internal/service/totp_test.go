@@ -1,6 +1,7 @@
 package service
 
 import (
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -525,4 +526,170 @@ func TestProperty9_Disable2FARoundTrip(t *testing.T) {
 	))
 
 	properties.TestingRun(t)
+}
+
+// ---------------------------------------------------------------------------
+// Unit tests for generateRecoveryCodes and AES-GCM helpers
+// ---------------------------------------------------------------------------
+
+func TestGenerateRecoveryCodes_Count(t *testing.T) {
+	codes := generateRecoveryCodes()
+	if got := len(codes); got != 8 {
+		t.Errorf("expected 8 recovery codes, got %d", got)
+	}
+}
+
+func TestGenerateRecoveryCodes_Length(t *testing.T) {
+	codes := generateRecoveryCodes()
+	for i, c := range codes {
+		if len(c) != 8 {
+			t.Errorf("code[%d] = %q has length %d, want 8", i, c, len(c))
+		}
+	}
+}
+
+func TestGenerateRecoveryCodes_Charset(t *testing.T) {
+	validChar := regexp.MustCompile(`^[a-z0-9]+$`)
+	codes := generateRecoveryCodes()
+	for i, c := range codes {
+		if !validChar.MatchString(c) {
+			t.Errorf("code[%d] = %q contains characters outside [a-z0-9]", i, c)
+		}
+	}
+}
+
+func TestGenerateRecoveryCodes_Uniqueness(t *testing.T) {
+	codes := generateRecoveryCodes()
+	seen := make(map[string]bool, len(codes))
+	for i, c := range codes {
+		if seen[c] {
+			t.Errorf("duplicate code %q found at index %d", c, i)
+		}
+		seen[c] = true
+	}
+}
+
+func TestGenerateRecoveryCodes_Randomness(t *testing.T) {
+	batch1 := generateRecoveryCodes()
+	batch2 := generateRecoveryCodes()
+
+	allSame := true
+	for i := range batch1 {
+		if batch1[i] != batch2[i] {
+			allSame = false
+			break
+		}
+	}
+	if allSame {
+		t.Error("two consecutive calls produced identical code sets; expected different outputs from crypto/rand")
+	}
+}
+
+func TestEncryptDecryptAESGCM(t *testing.T) {
+	tests := []struct {
+		name      string
+		plaintext string
+	}{
+		{"empty string", ""},
+		{"short text", "hello"},
+		{"longer text", "the quick brown fox jumps over the lazy dog"},
+		{"unicode", "你好世界🌍"},
+		{"special chars", "p@$$w0rd!#%&*()"},
+	}
+
+	key := deriveAESKey("my-secret-key")
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			encrypted, err := encryptAESGCM([]byte(tt.plaintext), key)
+			if err != nil {
+				t.Fatalf("encryptAESGCM failed: %v", err)
+			}
+			if encrypted == "" {
+				t.Fatal("encrypted output is empty")
+			}
+
+			decrypted, err := decryptAESGCM(encrypted, key)
+			if err != nil {
+				t.Fatalf("decryptAESGCM failed: %v", err)
+			}
+			if string(decrypted) != tt.plaintext {
+				t.Errorf("roundtrip mismatch: got %q, want %q", string(decrypted), tt.plaintext)
+			}
+		})
+	}
+}
+
+func TestDecryptAESGCM_WrongKey(t *testing.T) {
+	correctKey := deriveAESKey("correct-key")
+	wrongKey := deriveAESKey("wrong-key")
+
+	plaintext := []byte("sensitive data")
+	encrypted, err := encryptAESGCM(plaintext, correctKey)
+	if err != nil {
+		t.Fatalf("encryptAESGCM failed: %v", err)
+	}
+
+	_, err = decryptAESGCM(encrypted, wrongKey)
+	if err == nil {
+		t.Error("expected error when decrypting with wrong key, got nil")
+	}
+}
+
+func TestDecryptAESGCM_InvalidData(t *testing.T) {
+	key := deriveAESKey("some-key")
+
+	tests := []struct {
+		name  string
+		input string
+	}{
+		{"not base64", "!!!not-valid-base64!!!"},
+		{"valid base64 but garbage", base64.StdEncoding.EncodeToString([]byte("garbage"))},
+		{"empty base64", base64.StdEncoding.EncodeToString([]byte(""))},
+		{"truncated ciphertext", base64.StdEncoding.EncodeToString([]byte("short"))},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			_, err := decryptAESGCM(tt.input, key)
+			if err == nil {
+				t.Errorf("expected error for input %q, got nil", tt.name)
+			}
+		})
+	}
+}
+
+func TestDeriveAESKey(t *testing.T) {
+	key := deriveAESKey("any-secret")
+	if len(key) != 32 {
+		t.Errorf("expected 32-byte key, got %d bytes", len(key))
+	}
+}
+
+func TestDeriveAESKey_Deterministic(t *testing.T) {
+	tests := []struct {
+		name  string
+		input string
+	}{
+		{"simple", "my-secret"},
+		{"empty", ""},
+		{"long", "a-very-long-jwt-secret-that-exceeds-32-bytes-in-length-to-test-sha256-hashing"},
+		{"unicode", "秘密🔑"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			key1 := deriveAESKey(tt.input)
+			key2 := deriveAESKey(tt.input)
+
+			if len(key1) != 32 {
+				t.Errorf("expected 32-byte key, got %d", len(key1))
+			}
+			for i := range key1 {
+				if key1[i] != key2[i] {
+					t.Errorf("keys differ at byte %d: %x vs %x", i, key1[i], key2[i])
+					break
+				}
+			}
+		})
+	}
 }

@@ -20,7 +20,12 @@ import (
 	aiplugin "github.com/web-casa/webcasa/plugins/ai"
 	deployplugin "github.com/web-casa/webcasa/plugins/deploy"
 	dockerplugin "github.com/web-casa/webcasa/plugins/docker"
+	dbplugin "github.com/web-casa/webcasa/plugins/database"
 	fmplugin "github.com/web-casa/webcasa/plugins/filemanager"
+	appstoreplugin "github.com/web-casa/webcasa/plugins/appstore"
+	mcpplugin "github.com/web-casa/webcasa/plugins/mcpserver"
+	backupplugin "github.com/web-casa/webcasa/plugins/backup"
+	monitoringplugin "github.com/web-casa/webcasa/plugins/monitoring"
 	"github.com/gin-contrib/cors"
 	"github.com/gin-gonic/gin"
 	"golang.org/x/crypto/bcrypt"
@@ -98,7 +103,12 @@ func main() {
 
 	// Protected routes (JWT required)
 	protected := api.Group("")
-	protected.Use(auth.Middleware(cfg.JWTSecret))
+	protected.Use(auth.Middleware(cfg.JWTSecret, auth.WithDB(db)))
+
+	// Admin-only routes (JWT + admin role required)
+	adminOnly := api.Group("")
+	adminOnly.Use(auth.Middleware(cfg.JWTSecret, auth.WithDB(db)))
+	adminOnly.Use(auth.RequireAdmin(db))
 
 	// User info
 	protected.GET("/auth/me", authH.Me)
@@ -127,16 +137,16 @@ func main() {
 	protected.POST("/hosts/:id/cert", certH.Upload)
 	protected.DELETE("/hosts/:id/cert", certH.Delete)
 
-	// Caddy process control
+	// Caddy process control (admin only)
 	caddyH := handler.NewCaddyHandler(caddyMgr, db)
 	protected.GET("/caddy/status", caddyH.Status)
-	protected.POST("/caddy/start", caddyH.Start)
-	protected.POST("/caddy/stop", caddyH.Stop)
-	protected.POST("/caddy/reload", caddyH.Reload)
+	adminOnly.POST("/caddy/start", caddyH.Start)
+	adminOnly.POST("/caddy/stop", caddyH.Stop)
+	adminOnly.POST("/caddy/reload", caddyH.Reload)
 	protected.GET("/caddy/caddyfile", caddyH.GetCaddyfile)
-	protected.POST("/caddy/caddyfile", caddyH.SaveCaddyfile)
-	protected.POST("/caddy/fmt", caddyH.Format)
-	protected.POST("/caddy/validate", caddyH.Validate)
+	adminOnly.POST("/caddy/caddyfile", caddyH.SaveCaddyfile)
+	adminOnly.POST("/caddy/fmt", caddyH.Format)
+	adminOnly.POST("/caddy/validate", caddyH.Validate)
 
 	// Log viewing
 	logH := handler.NewLogHandler(cfg)
@@ -144,29 +154,29 @@ func main() {
 	protected.GET("/logs/files", logH.ListLogFiles)
 	protected.GET("/logs/download", logH.Download)
 
-	// Config import/export
+	// Config import/export (admin only)
 	exportH := handler.NewExportHandler(hostSvc)
 	protected.GET("/config/export", exportH.Export)
-	protected.POST("/config/import", exportH.Import)
+	adminOnly.POST("/config/import", exportH.Import)
 
-	// User management
+	// User management (admin only)
 	userH := handler.NewUserHandler(db)
 	protected.GET("/users", userH.List)
-	protected.POST("/users", userH.Create)
-	protected.PUT("/users/:id", userH.Update)
-	protected.DELETE("/users/:id", userH.Delete)
+	adminOnly.POST("/users", userH.Create)
+	adminOnly.PUT("/users/:id", userH.Update)
+	adminOnly.DELETE("/users/:id", userH.Delete)
 
 	// Audit logs
 	auditH := handler.NewAuditHandler(db)
 	protected.GET("/audit/logs", auditH.List)
 
-	// DNS providers
+	// DNS providers (admin only for mutations)
 	dnsH := handler.NewDnsProviderHandler(db)
 	protected.GET("/dns-providers", dnsH.List)
 	protected.GET("/dns-providers/:id", dnsH.Get)
-	protected.POST("/dns-providers", dnsH.Create)
-	protected.PUT("/dns-providers/:id", dnsH.Update)
-	protected.DELETE("/dns-providers/:id", dnsH.Delete)
+	adminOnly.POST("/dns-providers", dnsH.Create)
+	adminOnly.PUT("/dns-providers/:id", dnsH.Update)
+	adminOnly.DELETE("/dns-providers/:id", dnsH.Delete)
 
 	// DNS Check
 	dnsCheckSvc := service.NewDnsCheckService(db)
@@ -204,16 +214,16 @@ func main() {
 	protected.POST("/templates/:id/create-host", tplH.CreateHost)
 	protected.POST("/hosts/:id/save-as-template", tplH.SaveAsTemplate)
 
-	// Settings
+	// Settings (admin only for mutations)
 	settingH := handler.NewSettingHandler(db)
 	protected.GET("/settings/all", settingH.GetAll)
-	protected.PUT("/settings", settingH.Update)
+	adminOnly.PUT("/settings", settingH.Update)
 
-	// Certificates
+	// Certificates (admin only for mutations)
 	certMgrH := handler.NewCertificateHandler(db, cfg)
 	protected.GET("/certificates", certMgrH.List)
-	protected.POST("/certificates", certMgrH.Upload)
-	protected.DELETE("/certificates/:id", certMgrH.Delete)
+	adminOnly.POST("/certificates", certMgrH.Upload)
+	adminOnly.DELETE("/certificates/:id", certMgrH.Delete)
 
 	// ============ Plugin System ============
 	pluginRouter := protected.Group("/plugins")
@@ -257,6 +267,21 @@ func initPlugins(db *gorm.DB, protectedRouter *gin.RouterGroup, publicRouter *gi
 	}
 	if err := pluginMgr.Register(fmplugin.New()); err != nil {
 		log.Printf("⚠️  Register filemanager plugin: %v", err)
+	}
+	if err := pluginMgr.Register(dbplugin.New()); err != nil {
+		log.Printf("⚠️  Register database plugin: %v", err)
+	}
+	if err := pluginMgr.Register(monitoringplugin.New()); err != nil {
+		log.Printf("⚠️  Register monitoring plugin: %v", err)
+	}
+	if err := pluginMgr.Register(backupplugin.New()); err != nil {
+		log.Printf("⚠️  Register backup plugin: %v", err)
+	}
+	if err := pluginMgr.Register(appstoreplugin.New()); err != nil {
+		log.Printf("⚠️  Register appstore plugin: %v", err)
+	}
+	if err := pluginMgr.Register(mcpplugin.New()); err != nil {
+		log.Printf("⚠️  Register mcpserver plugin: %v", err)
 	}
 	// Future:
 

@@ -6,6 +6,78 @@
 
 ---
 
+## [1.0.0] - 2026-03-01
+
+### 🎉 Web.Casa Pro — AI-First 服务器管理面板
+
+从 v0.5.1 (Lite) 到 v1.0.0 (Pro)，10 个插件全部就绪。
+
+### Added — Phase 0: 插件框架
+- 🆕 **Plugin System** — Go Interface + 编译时注册，生命周期管理，依赖拓扑排序 (Kahn)
+- 🆕 **EventBus** — 内存 pub/sub 事件总线 (含 wildcard)
+- 🆕 **ConfigStore** — 插件配置 KV 存储 (scoped prefix)
+- 🆕 **CoreAPI** — 核心 API 供插件调用 (CreateHost/ReloadCaddy/Settings)
+- 🆕 **Frontend Manifests** — 动态插件路由注入
+
+### Added — Phase 1: Docker 管理
+- 🆕 **Docker Compose Stacks** — Stack CRUD + 生命周期 (up/down/restart/pull)
+- 🆕 **Container Management** — 容器列表、启停、日志、资源监控
+- 🆕 **Image Management** — 镜像列表、拉取、清理、Docker Hub 搜索
+- 🆕 **Network & Volume** — 网络/卷 CRUD
+- 🆕 **WebSocket 实时日志** — 容器/Stack 日志流式推送
+
+### Added — Phase 2: 项目部署
+- 🆕 **Git 集成** — HTTPS/SSH Clone + Deploy Key 支持
+- 🆕 **框架自动检测** — 9 种框架预设 (Next.js/Nuxt/Vite/Remix/Express/Go/Laravel/Flask/Django)
+- 🆕 **构建流水线** — Clone → Install → Build + 实时日志
+- 🆕 **进程管理** — Systemd service 自动生成与管理
+- 🆕 **Webhook 自动部署** — Git push 触发自动构建
+- 🆕 **版本回滚** — 一键回滚到历史构建
+
+### Added — Phase 3: AI 助手
+- 🆕 **智能对话** — OpenAI-compatible LLM SSE 流式对话
+- 🆕 **错误诊断** — 日志分析 + AI 根因定位
+- 🆕 **Text-to-Compose** — 自然语言生成 Docker Compose
+- 🆕 **API Key 加密** — AES-256-GCM 安全存储
+
+### Added — Phase 4: 文件管理 + Web 终端
+- 🆕 **Web 文件管理器** — 树形导航 / 上传下载 / 压缩解压
+- 🆕 **在线代码编辑器** — CodeMirror 语法高亮
+- 🆕 **Web 终端** — xterm.js + PTY 多标签终端
+
+### Added — Phase 5: 数据库管理
+- 🆕 **数据库实例管理** — MySQL / PostgreSQL / MariaDB / Redis 一键创建
+- 🆕 **Database/User CRUD** — 数据库和用户增删改查
+- 🆕 **SQL 查询控制台** — Web 端 SQL 执行 + 结果表格
+- 🆕 **SQLite 浏览器** — 本地 .db 文件浏览 + 只读查询
+
+### Added — Phase 6: 备份 + 系统监控
+- 🆕 **Kopia 备份** — 支持 Local / S3 / WebDAV / SFTP 多目标
+- 🆕 **定时备份** — Cron 调度 + 保留策略
+- 🆕 **系统监控** — CPU/内存/磁盘/网络实时图表
+- 🆕 **容器监控** — Docker 容器资源使用
+- 🆕 **WebSocket 实时指标** — 60 秒采集 + 实时推送
+- 🆕 **告警规则** — 阈值告警 + Webhook/Email 通知
+
+### Added — Phase 7: 应用商店
+- 🆕 **应用市场** — Runtipi 兼容应用源，一键安装 Docker 应用
+- 🆕 **应用管理** — 启停、更新、卸载已安装应用
+- 🆕 **多源支持** — 官方源 + 自定义源
+- 🆕 **项目模板** — 从模板快速创建部署项目
+
+### Added — Phase 8: MCP Server + API Token
+- 🆕 **MCP Server** — Model Context Protocol Streamable HTTP 端点，18 个工具
+- 🆕 **API Token** — `wc_` 前缀长期令牌认证 (SHA-256 哈希存储)
+- 🆕 **IDE 集成** — Cursor / Windsurf / Claude Code 直接操控面板
+
+### Added — Phase 9: 体验打磨
+- 🆕 **导航精简** — 侧边栏从 13 项减至 8 项
+- 🆕 **Settings 整合** — 监控 + 备份合并到设置页 Tab
+- 🆕 **Dashboard 增强** — Docker/部署项目统计卡片
+- 🔧 **i18n 修复** — BackupManager 22+ 个键名修正，硬编码字符串消除
+
+---
+
 ## [0.5.1] - 2026-02-23
 
 ### Fixed

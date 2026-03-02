@@ -68,6 +68,30 @@ func (s *HostService) Get(id uint) (*model.Host, error) {
 
 // Create creates a new host and applies the configuration
 func (s *HostService) Create(req *model.HostCreateRequest) (*model.Host, error) {
+	// Validate domain for Caddyfile safety
+	if err := caddy.ValidateDomain(req.Domain); err != nil {
+		return nil, fmt.Errorf("invalid domain: %w", err)
+	}
+
+	// Validate upstreams
+	for _, u := range req.Upstreams {
+		if err := caddy.ValidateUpstream(u.Address); err != nil {
+			return nil, fmt.Errorf("invalid upstream '%s': %w", u.Address, err)
+		}
+	}
+
+	// Validate access rule IPs
+	for _, r := range req.AccessRules {
+		if err := caddy.ValidateIPRange(r.IPRange); err != nil {
+			return nil, fmt.Errorf("invalid access rule IP: %w", err)
+		}
+	}
+
+	// Validate custom directives
+	if err := caddy.SanitizeCustomDirectives(req.CustomDirectives); err != nil {
+		return nil, fmt.Errorf("invalid custom directives: %w", err)
+	}
+
 	var count int64
 	s.db.Model(&model.Host{}).Where("domain = ?", req.Domain).Count(&count)
 	if count > 0 {
@@ -192,6 +216,30 @@ func (s *HostService) Update(id uint, req *model.HostCreateRequest) (*model.Host
 	host, err := s.Get(id)
 	if err != nil {
 		return nil, err
+	}
+
+	// Validate domain for Caddyfile safety
+	if err := caddy.ValidateDomain(req.Domain); err != nil {
+		return nil, fmt.Errorf("invalid domain: %w", err)
+	}
+
+	// Validate upstreams
+	for _, u := range req.Upstreams {
+		if err := caddy.ValidateUpstream(u.Address); err != nil {
+			return nil, fmt.Errorf("invalid upstream '%s': %w", u.Address, err)
+		}
+	}
+
+	// Validate access rule IPs
+	for _, r := range req.AccessRules {
+		if err := caddy.ValidateIPRange(r.IPRange); err != nil {
+			return nil, fmt.Errorf("invalid access rule IP: %w", err)
+		}
+	}
+
+	// Validate custom directives
+	if err := caddy.SanitizeCustomDirectives(req.CustomDirectives); err != nil {
+		return nil, fmt.Errorf("invalid custom directives: %w", err)
 	}
 
 	var count int64

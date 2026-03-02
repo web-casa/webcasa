@@ -2,9 +2,9 @@ import { useState, useEffect } from 'react'
 import { Box, Card, Flex, Grid, Heading, Text, Badge, Spinner, Separator, Tooltip } from '@radix-ui/themes'
 import {
     Globe, Activity, Shield, Server, ArrowRightLeft, Lock,
-    ShieldCheck, ShieldOff, KeyRound, Monitor, Cpu,
+    ShieldCheck, ShieldOff, KeyRound, Monitor, Cpu, Container, Rocket,
 } from 'lucide-react'
-import { dashboardAPI } from '../api/index.js'
+import { dashboardAPI, dockerAPI, deployAPI, pluginAPI } from '../api/index.js'
 import { useTranslation } from 'react-i18next'
 
 function StatCard({ icon: Icon, label, value, color = 'green', loading, tooltip }) {
@@ -68,6 +68,8 @@ export default function Dashboard() {
     const { t } = useTranslation()
     const [stats, setStats] = useState(null)
     const [loading, setLoading] = useState(true)
+    const [dockerInfo, setDockerInfo] = useState(null)
+    const [deployInfo, setDeployInfo] = useState(null)
 
     useEffect(() => {
         async function fetchData() {
@@ -79,6 +81,37 @@ export default function Dashboard() {
             } finally {
                 setLoading(false)
             }
+
+            // Fetch plugin stats (non-blocking)
+            try {
+                const pluginsRes = await pluginAPI.list()
+                const plugins = pluginsRes.data?.plugins || []
+                const enabled = (id) => plugins.some(p => p.id === id && p.enabled)
+
+                if (enabled('docker')) {
+                    try {
+                        const [infoRes, stacksRes] = await Promise.all([
+                            dockerAPI.info(),
+                            dockerAPI.listStacks(),
+                        ])
+                        setDockerInfo({
+                            containers: infoRes.data?.containers_running ?? 0,
+                            stacks: (stacksRes.data?.stacks || []).length,
+                        })
+                    } catch { /* Docker not available */ }
+                }
+
+                if (enabled('deploy')) {
+                    try {
+                        const res = await deployAPI.listProjects()
+                        const projects = res.data?.projects || []
+                        setDeployInfo({
+                            total: projects.length,
+                            running: projects.filter(p => p.status === 'running').length,
+                        })
+                    } catch { /* Deploy not available */ }
+                }
+            } catch { /* Plugins API not available */ }
         }
         fetchData()
     }, [])
@@ -201,6 +234,44 @@ export default function Dashboard() {
                     <InfoRow label={t('dashboard.platform')} value={`${system.go_os || '-'}/${system.go_arch || '-'}`} />
                 </Card>
             </Grid>
+
+            {/* Plugin Stats Row — shown only when data available */}
+            {(dockerInfo || deployInfo) && (
+                <Grid columns={{ initial: '1', sm: '2', md: '4' }} gap="4" mb="5">
+                    {dockerInfo && (
+                        <>
+                            <StatCard
+                                icon={Container}
+                                label={t('dashboard.docker_stacks')}
+                                value={dockerInfo.stacks}
+                                color="cyan"
+                            />
+                            <StatCard
+                                icon={Container}
+                                label={t('dashboard.containers_running')}
+                                value={dockerInfo.containers}
+                                color="cyan"
+                            />
+                        </>
+                    )}
+                    {deployInfo && (
+                        <>
+                            <StatCard
+                                icon={Rocket}
+                                label={t('dashboard.deploy_projects')}
+                                value={deployInfo.total}
+                                color="amber"
+                            />
+                            <StatCard
+                                icon={Rocket}
+                                label={t('dashboard.deploy_running')}
+                                value={deployInfo.running}
+                                color="amber"
+                            />
+                        </>
+                    )}
+                </Grid>
+            )}
         </Box>
     )
 }

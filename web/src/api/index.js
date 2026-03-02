@@ -257,6 +257,99 @@ export const fileManagerAPI = {
     },
 }
 
+// ============ Database (plugin) ============
+export const databaseAPI = {
+    engines: () => api.get('/plugins/database/engines'),
+
+    listInstances: () => api.get('/plugins/database/instances'),
+    getInstance: (id) => api.get(`/plugins/database/instances/${id}`),
+    createInstance: (data) => api.post('/plugins/database/instances', data),
+    deleteInstance: (id) => api.delete(`/plugins/database/instances/${id}`),
+    startInstance: (id) => api.post(`/plugins/database/instances/${id}/start`),
+    stopInstance: (id) => api.post(`/plugins/database/instances/${id}/stop`),
+    restartInstance: (id) => api.post(`/plugins/database/instances/${id}/restart`),
+    instanceLogs: (id, tail) => api.get(`/plugins/database/instances/${id}/logs`, { params: { tail } }),
+    connectionInfo: (id) => api.get(`/plugins/database/instances/${id}/connection`),
+    rootPassword: (id) => api.get(`/plugins/database/instances/${id}/password`),
+
+    listDatabases: (id) => api.get(`/plugins/database/instances/${id}/databases`),
+    createDatabase: (id, data) => api.post(`/plugins/database/instances/${id}/databases`, data),
+    deleteDatabase: (id, dbname) => api.delete(`/plugins/database/instances/${id}/databases/${dbname}`),
+
+    listUsers: (id) => api.get(`/plugins/database/instances/${id}/users`),
+    createUser: (id, data) => api.post(`/plugins/database/instances/${id}/users`, data),
+    deleteUser: (id, username) => api.delete(`/plugins/database/instances/${id}/users/${username}`),
+
+    sqliteTables: (path) => api.get('/plugins/database/sqlite/tables', { params: { path } }),
+    sqliteSchema: (path, table) => api.get('/plugins/database/sqlite/schema', { params: { path, table } }),
+    sqliteQuery: (path, query, limit) => api.post('/plugins/database/sqlite/query', { path, query, limit }),
+
+    executeQuery: (id, data) => api.post(`/plugins/database/instances/${id}/query`, data, { timeout: 35000 }),
+
+    instanceLogsWsUrl: (id) => {
+        const proto = window.location.protocol === 'https:' ? 'wss:' : 'ws:'
+        const token = localStorage.getItem('token')
+        return `${proto}//${window.location.host}/api/plugins/database/instances/${id}/logs/ws?tail=100&token=${token}`
+    },
+}
+
+// ============ Monitoring (plugin) ============
+export const monitoringAPI = {
+    getCurrent: () => api.get('/plugins/monitoring/metrics/current'),
+    getHistory: (period) => api.get('/plugins/monitoring/metrics/history', { params: { period } }),
+    getContainers: () => api.get('/plugins/monitoring/metrics/containers'),
+    metricsWsUrl: () => {
+        const proto = window.location.protocol === 'https:' ? 'wss:' : 'ws:'
+        const token = localStorage.getItem('token')
+        return `${proto}//${window.location.host}/api/plugins/monitoring/metrics/ws?token=${token}`
+    },
+    listAlertRules: () => api.get('/plugins/monitoring/alerts'),
+    createAlertRule: (data) => api.post('/plugins/monitoring/alerts', data),
+    updateAlertRule: (id, data) => api.put(`/plugins/monitoring/alerts/${id}`, data),
+    deleteAlertRule: (id) => api.delete(`/plugins/monitoring/alerts/${id}`),
+    listAlertHistory: (limit) => api.get('/plugins/monitoring/alerts/history', { params: { limit } }),
+}
+
+// ============ Backup (plugin) ============
+export const backupAPI = {
+    getConfig: () => api.get('/plugins/backup/config'),
+    updateConfig: (data) => api.put('/plugins/backup/config', data),
+    testConnection: () => api.post('/plugins/backup/config/test', {}, { timeout: 60000 }),
+    listSnapshots: () => api.get('/plugins/backup/snapshots'),
+    createSnapshot: () => api.post('/plugins/backup/snapshots', {}, { timeout: 600000 }),
+    restoreSnapshot: (id) => api.post(`/plugins/backup/snapshots/${id}/restore`, {}, { timeout: 600000 }),
+    deleteSnapshot: (id) => api.delete(`/plugins/backup/snapshots/${id}`),
+    getStatus: () => api.get('/plugins/backup/status'),
+    listLogs: (params) => api.get('/plugins/backup/logs', { params }),
+}
+
+// ============ App Store (plugin) ============
+export const appstoreAPI = {
+    // Catalog
+    listApps: (params) => api.get('/plugins/appstore/apps', { params }),
+    getApp: (id) => api.get(`/plugins/appstore/apps/${id}`),
+    appLogoUrl: (id) => `/api/plugins/appstore/apps/${id}/logo`,
+    listCategories: () => api.get('/plugins/appstore/categories'),
+    // Sources
+    listSources: () => api.get('/plugins/appstore/sources'),
+    addSource: (data) => api.post('/plugins/appstore/sources', data),
+    syncSource: (id) => api.post(`/plugins/appstore/sources/${id}/sync`),
+    removeSource: (id) => api.delete(`/plugins/appstore/sources/${id}`),
+    // Installed
+    listInstalled: () => api.get('/plugins/appstore/installed'),
+    getInstalled: (id) => api.get(`/plugins/appstore/installed/${id}`),
+    install: (data) => api.post('/plugins/appstore/install', data, { timeout: 300000 }),
+    startApp: (id) => api.post(`/plugins/appstore/installed/${id}/start`),
+    stopApp: (id) => api.post(`/plugins/appstore/installed/${id}/stop`),
+    updateApp: (id) => api.post(`/plugins/appstore/installed/${id}/update`, {}, { timeout: 300000 }),
+    uninstall: (id, removeData) => api.delete(`/plugins/appstore/installed/${id}`, { params: { remove_data: removeData } }),
+    checkUpdates: () => api.get('/plugins/appstore/updates'),
+    // Templates
+    listTemplates: (params) => api.get('/plugins/appstore/templates', { params }),
+    getTemplate: (id) => api.get(`/plugins/appstore/templates/${id}`),
+    deployTemplate: (data) => api.post('/plugins/appstore/templates/deploy', data),
+}
+
 // ============ Plugins ============
 export const pluginAPI = {
     list: () => api.get('/plugins'),
@@ -272,6 +365,13 @@ export const dnsProviderAPI = {
     create: (data) => api.post('/dns-providers', data),
     update: (id, data) => api.put(`/dns-providers/${id}`, data),
     delete: (id) => api.delete(`/dns-providers/${id}`),
+}
+
+// ============ MCP Server / API Tokens ============
+export const mcpAPI = {
+    listTokens: () => api.get('/plugins/mcpserver/tokens'),
+    createToken: (data) => api.post('/plugins/mcpserver/tokens', data),
+    deleteToken: (id) => api.delete(`/plugins/mcpserver/tokens/${id}`),
 }
 
 export default api

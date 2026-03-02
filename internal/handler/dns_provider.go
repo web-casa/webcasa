@@ -41,7 +41,7 @@ func (h *DnsProviderHandler) List(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"providers": providers, "total": len(providers)})
 }
 
-// Get returns a single DNS provider
+// Get returns a single DNS provider (with config secrets masked)
 func (h *DnsProviderHandler) Get(c *gin.Context) {
 	id, _ := strconv.Atoi(c.Param("id"))
 	var p model.DnsProvider
@@ -49,6 +49,7 @@ func (h *DnsProviderHandler) Get(c *gin.Context) {
 		c.JSON(http.StatusNotFound, gin.H{"error": "DNS provider not found"})
 		return
 	}
+	p.Config = "***"
 	c.JSON(http.StatusOK, p)
 }
 

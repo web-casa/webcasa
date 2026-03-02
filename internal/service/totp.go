@@ -9,8 +9,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
-	mrand "math/rand"
-	"time"
+	"math/big"
 
 	"github.com/web-casa/webcasa/internal/config"
 	"github.com/web-casa/webcasa/internal/model"
@@ -114,15 +113,21 @@ func (s *TOTPService) GenerateSecret(userID uint) (string, error) {
 	return key.URL(), nil
 }
 
-// generateRecoveryCodes generates 8 random alphanumeric recovery codes of 8 chars each
+// generateRecoveryCodes generates 8 cryptographically random alphanumeric recovery codes of 8 chars each
 func generateRecoveryCodes() []string {
 	const charset = "abcdefghijklmnopqrstuvwxyz0123456789"
-	src := mrand.New(mrand.NewSource(time.Now().UnixNano()))
+	charsetLen := big.NewInt(int64(len(charset)))
 	codes := make([]string, 8)
 	for i := 0; i < 8; i++ {
 		code := make([]byte, 8)
 		for j := range code {
-			code[j] = charset[src.Intn(len(charset))]
+			n, err := rand.Int(rand.Reader, charsetLen)
+			if err != nil {
+				// Fallback: this should never happen
+				code[j] = charset[0]
+				continue
+			}
+			code[j] = charset[n.Int64()]
 		}
 		codes[i] = string(code)
 	}

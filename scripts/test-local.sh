@@ -28,6 +28,10 @@ IMAGE_NAME="webcasa-test"
 CONTAINER_NAME="webcasa-test-$$"
 HOST_PORT=39921
 PASS=0
+
+# cd to project root (parent of scripts/)
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+cd "$SCRIPT_DIR/.."
 FAIL=0
 TOTAL=0
 
