@@ -629,7 +629,7 @@ export default function DatabaseDetail() {
                         <Flex direction="column" gap="3">
                             {/* Host */}
                             <ConnectionRow
-                                label="Host"
+                                label={t('common.host')}
                                 value={host}
                                 onCopy={() => copyToClipboard(host)}
                                 t={t}
@@ -902,7 +902,7 @@ export default function DatabaseDetail() {
                                     onClick={toggleLiveStream}
                                 >
                                     <Radio size={14} />
-                                    {liveStreaming ? 'Live' : 'Live'}
+                                    {liveStreaming ? t('docker.live') : t('docker.live')}
                                 </Button>
                                 <Button size="1" variant="soft" onClick={downloadLogs}>
                                     <Download size={14} /> {t('database.download_logs')}

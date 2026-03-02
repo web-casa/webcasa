@@ -76,6 +76,16 @@
 - 🆕 **Dashboard 增强** — Docker/部署项目统计卡片
 - 🔧 **i18n 修复** — BackupManager 22+ 个键名修正，硬编码字符串消除
 
+### Security — 安全加固
+- 🔒 **插件路由 AdminRouter** — 所有写操作路由需 JWT + admin 角色验证
+- 🔒 **API Token RBAC** — RequireAdmin 对 API Token 用户同样校验数据库角色
+- 🔒 **MCP Token 权限执行** — 18 个 MCP Tool 全部检查 `scope:action` 权限 (hosts:read, docker:write, etc.)
+- 🔒 **静态文件路径遍历防护** — filepath.Abs + strings.HasPrefix 容器化检查
+- 🔒 **CORS 同源判断** — 比对完整 scheme + host:port，非仅主机名
+- 🔒 **AI 会话隔离** — 对话按 user_id 隔离，防止跨用户访问
+- 🔒 **WebSocket Origin 校验** — url.Parse 严格比对 u.Host == r.Host
+- 🔒 **App Store Logo 防符号链接** — os.Lstat + EvalSymlinks 防文件泄露
+
 ---
 
 ## [0.5.1] - 2026-02-23
