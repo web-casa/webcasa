@@ -226,6 +226,12 @@ echo -e "\n  --- Plugin System ---"
 PLUGIN_COUNT=$(auth_get "/api/plugins" | jq '.plugins | length')
 assert "Plugin list >= 4" "$([ "$PLUGIN_COUNT" -ge 4 ]; echo $?)"
 
+# Enable core plugins (only AI is enabled by default on fresh install)
+for pid in docker deploy filemanager monitoring backup; do
+    curl -sf -X POST "$API/api/plugins/$pid/enable" \
+        -H "Authorization: Bearer $TOKEN" > /dev/null 2>&1 || true
+done
+
 MANIFEST_COUNT=$(auth_get "/api/plugins/frontend-manifests" | jq '. | length')
 assert "Frontend manifests >= 4" "$([ "$MANIFEST_COUNT" -ge 4 ]; echo $?)"
 

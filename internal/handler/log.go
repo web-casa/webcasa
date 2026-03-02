@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net/http"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -141,4 +142,43 @@ func tailFile(filePath string, n int, search string) ([]string, error) {
 	}
 
 	return allLines, nil
+}
+
+// GetSystemLog returns the WebCasa application system log
+func (h *LogHandler) GetSystemLog(c *gin.Context) {
+	linesStr := c.DefaultQuery("lines", "200")
+	search := c.DefaultQuery("search", "")
+
+	lines, _ := strconv.Atoi(linesStr)
+	if lines <= 0 || lines > 5000 {
+		lines = 200
+	}
+
+	// Try journalctl first (systemd service)
+	cmd := exec.Command("journalctl", "-u", "webcasa", "--no-pager", "-n", strconv.Itoa(lines), "--output", "short-iso")
+	output, err := cmd.Output()
+	if err == nil {
+		content := strings.Split(strings.TrimSpace(string(output)), "\n")
+		if search != "" {
+			var filtered []string
+			for _, line := range content {
+				if strings.Contains(strings.ToLower(line), strings.ToLower(search)) {
+					filtered = append(filtered, line)
+				}
+			}
+			content = filtered
+		}
+		c.JSON(http.StatusOK, gin.H{"lines": content, "source": "journalctl", "total": len(content)})
+		return
+	}
+
+	// Fallback: read from webcasa.log file
+	logFile := filepath.Join(h.cfg.LogDir, "webcasa.log")
+	content, err := tailFile(logFile, lines, search)
+	if err != nil {
+		c.JSON(http.StatusOK, gin.H{"lines": []string{}, "source": "file", "error": "System log not found"})
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{"lines": content, "source": "file", "total": len(content)})
 }

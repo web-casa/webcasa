@@ -29,6 +29,36 @@ func NewKopiaClient(dataDir string, logger *slog.Logger) *KopiaClient {
 
 // ── Repository Operations ──
 
+// KopiaStatus represents the availability of the Kopia CLI.
+type KopiaStatus struct {
+	Available           bool              `json:"available"`
+	Version             string            `json:"version,omitempty"`
+	InstallInstructions map[string]string `json:"install_instructions,omitempty"`
+}
+
+// kopiaInstallInstructions provides install commands per OS family.
+var kopiaInstallInstructions = map[string]string{
+	"debian":  "curl -s https://kopia.io/signing-key | sudo gpg --dearmor -o /etc/apt/keyrings/kopia-keyring.gpg && echo 'deb [signed-by=/etc/apt/keyrings/kopia-keyring.gpg] http://packages.kopia.io/apt/ stable main' | sudo tee /etc/apt/sources.list.d/kopia.list && sudo apt update && sudo apt install -y kopia",
+	"rhel":    "sudo rpm --import https://kopia.io/signing-key && sudo dnf install -y https://github.com/kopia/kopia/releases/latest/download/kopia-*.rpm",
+	"generic": "Visit https://kopia.io/docs/installation/ for installation instructions",
+}
+
+// CheckKopia checks if the Kopia CLI is available in PATH.
+func (k *KopiaClient) CheckKopia() KopiaStatus {
+	cmd := exec.Command("kopia", "--version")
+	output, err := cmd.Output()
+	if err != nil {
+		return KopiaStatus{
+			Available:           false,
+			InstallInstructions: kopiaInstallInstructions,
+		}
+	}
+	return KopiaStatus{
+		Available: true,
+		Version:   strings.TrimSpace(string(output)),
+	}
+}
+
 // InitRepository initialises a new Kopia repository at the specified target.
 func (k *KopiaClient) InitRepository(ctx context.Context, cfg *BackupConfig) error {
 	args := []string{"repository", "create"}

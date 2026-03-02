@@ -62,6 +62,11 @@ func (h *Handler) GetConfig(c *gin.Context) {
 	c.JSON(http.StatusOK, h.svc.GetConfig())
 }
 
+// GetPresets returns available AI provider presets.
+func (h *Handler) GetPresets(c *gin.Context) {
+	c.JSON(http.StatusOK, ProviderPresets)
+}
+
 // UpdateConfig saves the AI configuration.
 func (h *Handler) UpdateConfig(c *gin.Context) {
 	var cfg AIConfig

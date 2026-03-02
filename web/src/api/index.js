@@ -93,6 +93,7 @@ export const logAPI = {
     get: (params) => api.get('/logs', { params }),
     files: () => api.get('/logs/files'),
     downloadUrl: (type) => `/api/logs/download?type=${type}`,
+    system: (params) => api.get('/logs/system', { params }),
 }
 
 // ============ Config ============
@@ -223,6 +224,7 @@ export const aiAPI = {
     getConfig: () => api.get('/plugins/ai/config'),
     updateConfig: (data) => api.put('/plugins/ai/config', data),
     testConnection: () => api.post('/plugins/ai/config/test'),
+    getPresets: () => api.get('/plugins/ai/presets'),
 
     // Conversations
     listConversations: () => api.get('/plugins/ai/conversations'),
@@ -314,6 +316,7 @@ export const monitoringAPI = {
 
 // ============ Backup (plugin) ============
 export const backupAPI = {
+    checkDependency: () => api.get('/plugins/backup/dependency-check'),
     getConfig: () => api.get('/plugins/backup/config'),
     updateConfig: (data) => api.put('/plugins/backup/config', data),
     testConnection: () => api.post('/plugins/backup/config/test', {}, { timeout: 60000 }),

@@ -19,6 +19,12 @@ func NewHandler(svc *Service) *Handler {
 
 // ── Config ──
 
+// CheckDependency returns the availability of the Kopia CLI.
+func (h *Handler) CheckDependency(c *gin.Context) {
+	status := h.svc.CheckDependency()
+	c.JSON(http.StatusOK, status)
+}
+
 // GetConfig returns the backup configuration.
 func (h *Handler) GetConfig(c *gin.Context) {
 	cfg, err := h.svc.GetConfig()

@@ -8,9 +8,11 @@ import (
 	"fmt"
 	"log/slog"
 	"os"
+	"strings"
 	"sync"
 	"time"
 
+	"github.com/web-casa/webcasa/internal/crypto"
 	pluginpkg "github.com/web-casa/webcasa/internal/plugin"
 	"gorm.io/gorm"
 )
@@ -25,6 +27,7 @@ type Service struct {
 	coreAPI pluginpkg.CoreAPI
 	logger  *slog.Logger
 	dataDir string
+	jwtSecret string // for encrypting deploy keys and GitHub App private keys
 
 	// Active log writers for in-progress builds (keyed by project ID)
 	mu         sync.RWMutex
@@ -33,10 +36,13 @@ type Service struct {
 	// Build locks per project to prevent concurrent builds
 	buildMu    sync.Mutex
 	buildLocks map[uint]bool
+
+	// GitHub App auth helper
+	ghApp *GitHubAppAuth
 }
 
 // NewService creates a new deploy service.
-func NewService(db *gorm.DB, coreAPI pluginpkg.CoreAPI, logger *slog.Logger, dataDir string) *Service {
+func NewService(db *gorm.DB, coreAPI pluginpkg.CoreAPI, logger *slog.Logger, dataDir string, jwtSecret string) *Service {
 	srcDir := fmt.Sprintf("%s/sources", dataDir)
 	os.MkdirAll(srcDir, 0755)
 
@@ -44,7 +50,7 @@ func NewService(db *gorm.DB, coreAPI pluginpkg.CoreAPI, logger *slog.Logger, dat
 	os.MkdirAll(logDir, 0755)
 
 	git := NewGitClient(srcDir)
-	return &Service{
+	svc := &Service{
 		db:         db,
 		git:        git,
 		builder:    NewBuilder(git, dataDir),
@@ -53,9 +59,16 @@ func NewService(db *gorm.DB, coreAPI pluginpkg.CoreAPI, logger *slog.Logger, dat
 		coreAPI:    coreAPI,
 		logger:     logger,
 		dataDir:    dataDir,
+		jwtSecret:  jwtSecret,
 		activeLogs: make(map[uint]*LogWriter),
 		buildLocks: make(map[uint]bool),
+		ghApp:      &GitHubAppAuth{},
 	}
+
+	// Migrate plaintext deploy keys to encrypted
+	svc.migrateDeployKeys()
+
+	return svc
 }
 
 // ListProjects returns all projects.
@@ -87,6 +100,9 @@ func (s *Service) GetProject(id uint) (*Project, error) {
 	if project.Status == "running" && !s.proc.IsRunning(project.ID) {
 		project.Status = "stopped"
 	}
+	// Populate transient fields
+	project.HasDeployKey = project.DeployKey != ""
+	project.HasGitHubKey = project.GitHubPrivateKey != ""
 	return &project, nil
 }
 
@@ -103,6 +119,29 @@ func (s *Service) CreateProject(project *Project) error {
 	if len(project.EnvVarList) > 0 {
 		data, _ := json.Marshal(project.EnvVarList)
 		project.EnvVars = string(data)
+	}
+
+	// Encrypt deploy key before saving
+	if project.DeployKey != "" {
+		enc, err := crypto.Encrypt(project.DeployKey, s.jwtSecret)
+		if err != nil {
+			return fmt.Errorf("encrypt deploy key: %w", err)
+		}
+		project.DeployKey = enc
+	}
+
+	// Encrypt GitHub App private key before saving
+	if project.GitHubPrivateKey != "" {
+		enc, err := crypto.Encrypt(project.GitHubPrivateKey, s.jwtSecret)
+		if err != nil {
+			return fmt.Errorf("encrypt github private key: %w", err)
+		}
+		project.GitHubPrivateKey = enc
+	}
+
+	// Default auth method
+	if project.AuthMethod == "" {
+		project.AuthMethod = "ssh_key"
 	}
 
 	// Assign port if not set
@@ -132,6 +171,29 @@ func (s *Service) UpdateProject(id uint, updates map[string]interface{}) error {
 			updates["env_vars"] = string(data)
 		}
 	}
+
+	// Encrypt deploy key if being updated
+	if dk, ok := updates["deploy_key"]; ok {
+		if keyStr, ok := dk.(string); ok && keyStr != "" {
+			enc, err := crypto.Encrypt(keyStr, s.jwtSecret)
+			if err != nil {
+				return fmt.Errorf("encrypt deploy key: %w", err)
+			}
+			updates["deploy_key"] = enc
+		}
+	}
+
+	// Encrypt GitHub App private key if being updated
+	if pk, ok := updates["github_private_key"]; ok {
+		if keyStr, ok := pk.(string); ok && keyStr != "" {
+			enc, err := crypto.Encrypt(keyStr, s.jwtSecret)
+			if err != nil {
+				return fmt.Errorf("encrypt github private key: %w", err)
+			}
+			updates["github_private_key"] = enc
+		}
+	}
+
 	return s.db.Model(&Project{}).Where("id = ?", id).Updates(updates).Error
 }
 
@@ -240,11 +302,33 @@ func (s *Service) runBuild(project *Project, deployment *Deployment, logWriter *
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Minute)
 	defer cancel()
 
+	// Resolve git credentials: decrypt deploy key or obtain GitHub App token.
+	authMethod, deployKey, httpsToken, credErr := s.GetGitCredentials(project)
+	if credErr != nil {
+		logWriter.Write([]byte(fmt.Sprintf("ERROR: Failed to resolve git credentials: %v\n", credErr)))
+		deployment.Status = "failed"
+		s.db.Save(deployment)
+		s.db.Model(&Project{}).Where("id = ?", project.ID).Updates(map[string]interface{}{
+			"status":    "error",
+			"error_msg": fmt.Sprintf("git credentials failed: %v", credErr),
+		})
+		return
+	}
+
+	// Prepare an in-memory copy of the project with resolved credentials.
+	buildProject := *project
+	if authMethod == "github_app" && httpsToken != "" {
+		buildProject.GitURL = ConvertToHTTPS(project.GitURL, httpsToken)
+		buildProject.DeployKey = "" // No SSH key needed for HTTPS
+	} else {
+		buildProject.DeployKey = deployKey // decrypted plaintext key
+	}
+
 	// Write .env file to project dir
 	projectDir := s.git.ProjectDir(project.ID)
 	GenerateEnvFile(projectDir, project.EnvVarList)
 
-	result := s.builder.Build(ctx, project, logWriter)
+	result := s.builder.Build(ctx, &buildProject, logWriter)
 
 	deployment.GitCommit = result.Commit
 	deployment.Duration = int(result.Duration.Seconds())
@@ -400,4 +484,82 @@ func (s *Service) HandleWebhook(token string) error {
 		return fmt.Errorf("project not found or auto-deploy disabled")
 	}
 	return s.Build(project.ID)
+}
+
+// DecryptDeployKey decrypts the project's stored deploy key.
+func (s *Service) DecryptDeployKey(project *Project) (string, error) {
+	if project.DeployKey == "" {
+		return "", nil
+	}
+	decrypted, err := crypto.Decrypt(project.DeployKey, s.jwtSecret)
+	if err != nil {
+		// Might be a plaintext key from before migration
+		if strings.HasPrefix(project.DeployKey, "-----") {
+			return project.DeployKey, nil
+		}
+		return "", fmt.Errorf("decrypt deploy key: %w", err)
+	}
+	return decrypted, nil
+}
+
+// GetGitCredentials resolves the appropriate git credentials for a project.
+// For ssh_key: returns decrypted deploy key (used via GIT_SSH_COMMAND).
+// For github_app: obtains a GitHub App installation token for HTTPS cloning.
+func (s *Service) GetGitCredentials(project *Project) (authMethod string, deployKey string, httpsToken string, err error) {
+	authMethod = project.AuthMethod
+	if authMethod == "" {
+		authMethod = "ssh_key"
+	}
+
+	switch authMethod {
+	case "github_app":
+		if project.GitHubAppID == 0 || project.GitHubInstallationID == 0 || project.GitHubPrivateKey == "" {
+			return authMethod, "", "", fmt.Errorf("GitHub App credentials incomplete")
+		}
+		// Decrypt GitHub App private key
+		pemKey, decErr := crypto.Decrypt(project.GitHubPrivateKey, s.jwtSecret)
+		if decErr != nil {
+			return authMethod, "", "", fmt.Errorf("decrypt GitHub App key: %w", decErr)
+		}
+		// Get installation token
+		token, tokenErr := s.ghApp.GetCloneToken(project.GitHubAppID, pemKey, project.GitHubInstallationID)
+		if tokenErr != nil {
+			return authMethod, "", "", fmt.Errorf("get GitHub App token: %w", tokenErr)
+		}
+		return authMethod, "", token, nil
+
+	default: // ssh_key
+		dk, decErr := s.DecryptDeployKey(project)
+		if decErr != nil {
+			return authMethod, "", "", decErr
+		}
+		return authMethod, dk, "", nil
+	}
+}
+
+// migrateDeployKeys encrypts any plaintext deploy keys found in the database.
+func (s *Service) migrateDeployKeys() {
+	if s.jwtSecret == "" {
+		return
+	}
+
+	var projects []Project
+	s.db.Where("deploy_key != ''").Find(&projects)
+
+	migrated := 0
+	for _, p := range projects {
+		// Check if the key looks like plaintext (starts with SSH key prefix)
+		if strings.HasPrefix(p.DeployKey, "-----") {
+			enc, err := crypto.Encrypt(p.DeployKey, s.jwtSecret)
+			if err != nil {
+				s.logger.Error("migrate deploy key failed", "project", p.ID, "error", err)
+				continue
+			}
+			s.db.Model(&Project{}).Where("id = ?", p.ID).Update("deploy_key", enc)
+			migrated++
+		}
+	}
+	if migrated > 0 {
+		s.logger.Info("migrated plaintext deploy keys to encrypted", "count", migrated)
+	}
 }

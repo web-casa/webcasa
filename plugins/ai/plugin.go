@@ -69,6 +69,7 @@ func (p *Plugin) Init(ctx *pluginpkg.Context) error {
 
 	// Config (read + admin mutations)
 	r.GET("/config", p.handler.GetConfig)
+	r.GET("/presets", p.handler.GetPresets)
 	a.PUT("/config", p.handler.UpdateConfig)
 	a.POST("/config/test", p.handler.TestConnection)
 

@@ -42,7 +42,7 @@ func (b *WSBroadcaster) RemoveClient(conn *websocket.Conn) {
 // Broadcast sends a metrics update to all connected WebSocket clients.
 func (b *WSBroadcaster) Broadcast(snap *MetricSnapshot, containers []ContainerMetric) {
 	payload := map[string]interface{}{
-		"system":     snap,
+		"metrics":    snap,
 		"containers": containers,
 	}
 

@@ -11,7 +11,7 @@ type Project struct {
 	Domain        string    `gorm:"size:255" json:"domain"`
 	GitURL        string    `gorm:"size:512" json:"git_url"`
 	GitBranch     string    `gorm:"size:128;default:main" json:"git_branch"`
-	DeployKey     string    `gorm:"type:text" json:"-"` // SSH deploy key (private), never exposed
+	DeployKey     string    `gorm:"type:text" json:"-"` // SSH deploy key (private), encrypted, never exposed
 	Framework     string    `gorm:"size:64" json:"framework"`   // nextjs, nuxt, vite, go, laravel, custom
 	BuildCommand  string    `gorm:"size:512" json:"build_command"`
 	StartCommand  string    `gorm:"size:512" json:"start_command"`
@@ -24,11 +24,20 @@ type Project struct {
 	HostID        uint      `gorm:"default:0" json:"host_id"` // associated reverse proxy host
 	EnvVars       string    `gorm:"type:text" json:"-"`        // JSON-encoded env vars (encrypted)
 	ErrorMsg      string    `gorm:"type:text" json:"error_msg"`
+
+	// GitHub App authentication fields
+	AuthMethod           string `gorm:"size:32;default:ssh_key" json:"auth_method"` // ssh_key | github_app
+	GitHubAppID          int64  `gorm:"default:0" json:"github_app_id"`
+	GitHubPrivateKey     string `gorm:"type:text" json:"-"`     // encrypted PEM, never exposed
+	GitHubInstallationID int64  `gorm:"default:0" json:"github_installation_id"`
+
 	CreatedAt     time.Time `json:"created_at"`
 	UpdatedAt     time.Time `json:"updated_at"`
 
 	// Transient fields (not stored)
 	EnvVarList []EnvVar `gorm:"-" json:"env_vars,omitempty"`
+	HasDeployKey bool   `gorm:"-" json:"has_deploy_key"`        // indicates if deploy key is set
+	HasGitHubKey bool   `gorm:"-" json:"has_github_private_key"` // indicates if GitHub App key is set
 }
 
 func (Project) TableName() string {

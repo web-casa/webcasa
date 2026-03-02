@@ -19,6 +19,7 @@ function formatDate(timestamp) {
 export default function BackupManager({ embedded }) {
     const { t } = useTranslation()
 
+    const [kopiaStatus, setKopiaStatus] = useState(null)
     const [config, setConfig] = useState({
         target_type: 'local',
         target: {},
@@ -41,6 +42,11 @@ export default function BackupManager({ embedded }) {
     const [restoring, setRestoring] = useState(false)
 
     const fetchAll = useCallback(async () => {
+        try {
+            const depRes = await backupAPI.checkDependency()
+            setKopiaStatus(depRes.data)
+        } catch { setKopiaStatus({ available: false }) }
+
         const [cfgRes, statusRes, snapRes, logRes] = await Promise.allSettled([
             backupAPI.getConfig(),
             backupAPI.getStatus(),
@@ -247,6 +253,30 @@ export default function BackupManager({ embedded }) {
 
     return (
         <Box>
+            {/* Kopia dependency warning */}
+            {kopiaStatus && !kopiaStatus.available && (
+                <Card mb="4" style={{ background: 'var(--orange-2)', border: '1px solid var(--orange-6)', padding: '16px 20px' }}>
+                    <Flex direction="column" gap="2">
+                        <Flex align="center" gap="2">
+                            <AlertCircle size={18} style={{ color: 'var(--orange-9)' }} />
+                            <Text size="3" weight="bold" style={{ color: 'var(--orange-11)' }}>{t('backup.kopia_not_installed')}</Text>
+                        </Flex>
+                        <Text size="2" style={{ color: 'var(--orange-11)' }}>{t('backup.kopia_install_hint')}</Text>
+                        {kopiaStatus.install_instructions && (
+                            <Box mt="1">
+                                <Text size="1" weight="bold" style={{ color: 'var(--orange-11)', display: 'block', marginBottom: 4 }}>Debian / Ubuntu:</Text>
+                                <code style={{ fontSize: 11, wordBreak: 'break-all', display: 'block', padding: '6px 8px', background: 'var(--orange-3)', borderRadius: 4, marginBottom: 8 }}>
+                                    {kopiaStatus.install_instructions.debian}
+                                </code>
+                                <Text size="1" weight="bold" style={{ color: 'var(--orange-11)', display: 'block', marginBottom: 4 }}>RHEL / CentOS / Rocky:</Text>
+                                <code style={{ fontSize: 11, wordBreak: 'break-all', display: 'block', padding: '6px 8px', background: 'var(--orange-3)', borderRadius: 4, marginBottom: 8 }}>
+                                    {kopiaStatus.install_instructions.rhel}
+                                </code>
+                            </Box>
+                        )}
+                    </Flex>
+                </Card>
+            )}
             {/* Header */}
             <Flex align="center" justify="between" mb="4">
                 {!embedded && (

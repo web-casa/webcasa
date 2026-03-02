@@ -163,28 +163,28 @@ export default function MonitoringDashboard({ embedded }) {
     const fetchHistory = useCallback(async (p) => {
         try {
             const res = await monitoringAPI.getHistory(p || period)
-            setHistory(Array.isArray(res.data) ? res.data : [])
+            setHistory(Array.isArray(res.data?.records) ? res.data.records : [])
         } catch (e) { console.error('monitoring history:', e) }
     }, [period])
 
     const fetchContainers = useCallback(async () => {
         try {
             const res = await monitoringAPI.getContainers()
-            setContainers(Array.isArray(res.data) ? res.data : [])
+            setContainers(Array.isArray(res.data?.containers) ? res.data.containers : [])
         } catch (e) { setContainers([]) }
     }, [])
 
     const fetchAlertRules = useCallback(async () => {
         try {
             const res = await monitoringAPI.listAlertRules()
-            setAlertRules(Array.isArray(res.data) ? res.data : [])
+            setAlertRules(Array.isArray(res.data?.rules) ? res.data.rules : [])
         } catch (e) { console.error('alert rules:', e) }
     }, [])
 
     const fetchAlertHistory = useCallback(async () => {
         try {
             const res = await monitoringAPI.listAlertHistory(100)
-            setAlertHistory(Array.isArray(res.data) ? res.data : [])
+            setAlertHistory(Array.isArray(res.data?.history) ? res.data.history : [])
         } catch (e) { console.error('alert history:', e) }
     }, [])
 

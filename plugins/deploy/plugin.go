@@ -1,6 +1,8 @@
 package deploy
 
 import (
+	"crypto/rand"
+	"encoding/hex"
 	"fmt"
 
 	pluginpkg "github.com/web-casa/webcasa/internal/plugin"
@@ -38,8 +40,25 @@ func (p *Plugin) Init(ctx *pluginpkg.Context) error {
 		return fmt.Errorf("migrate: %w", err)
 	}
 
+	// Get JWT secret for deploy key encryption (same pattern as AI plugin).
+	jwtSecret, _ := ctx.CoreAPI.GetSetting("jwt_secret")
+	if jwtSecret == "" {
+		jwtSecret = ctx.ConfigStore.Get("_encryption_key")
+		if jwtSecret == "" {
+			b := make([]byte, 32)
+			if _, err := rand.Read(b); err != nil {
+				return fmt.Errorf("generate encryption key: %w", err)
+			}
+			jwtSecret = hex.EncodeToString(b)
+			if err := ctx.ConfigStore.Set("_encryption_key", jwtSecret); err != nil {
+				return fmt.Errorf("persist encryption key: %w", err)
+			}
+			ctx.Logger.Warn("jwt_secret not set, generated a random encryption key for deploy plugin")
+		}
+	}
+
 	// Create service and handler
-	p.svc = NewService(ctx.DB, ctx.CoreAPI, ctx.Logger, ctx.DataDir)
+	p.svc = NewService(ctx.DB, ctx.CoreAPI, ctx.Logger, ctx.DataDir, jwtSecret)
 	p.handler = NewHandler(p.svc)
 
 	// Register API routes under /api/plugins/deploy/

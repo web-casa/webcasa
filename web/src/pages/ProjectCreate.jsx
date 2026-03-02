@@ -1,6 +1,6 @@
 import { useState, useEffect } from 'react'
-import { Box, Flex, Text, Button, Card, Heading, TextField, Select, Switch, TextArea, Separator } from '@radix-ui/themes'
-import { ArrowLeft, Rocket, Plus, Trash2, Loader2, Sparkles } from 'lucide-react'
+import { Box, Flex, Text, Button, Card, Heading, TextField, Select, Switch, TextArea, Separator, Callout } from '@radix-ui/themes'
+import { ArrowLeft, Rocket, Plus, Trash2, Loader2, Sparkles, Key, Github } from 'lucide-react'
 import { useNavigate } from 'react-router'
 import { deployAPI } from '../api/index.js'
 import { useTranslation } from 'react-i18next'
@@ -17,6 +17,10 @@ export default function ProjectCreate() {
         git_url: '',
         git_branch: 'main',
         deploy_key: '',
+        auth_method: 'ssh_key',
+        github_app_id: '',
+        github_private_key: '',
+        github_installation_id: '',
         framework: '',
         install_command: '',
         build_command: '',
@@ -70,7 +74,11 @@ export default function ProjectCreate() {
         setSubmitting(true)
         try {
             const envVars = form.env_vars.filter(e => e.key)
-            const res = await deployAPI.createProject({ ...form, env_vars: envVars })
+            const payload = { ...form, env_vars: envVars }
+            // Convert numeric fields
+            if (payload.github_app_id) payload.github_app_id = parseInt(payload.github_app_id) || 0
+            if (payload.github_installation_id) payload.github_installation_id = parseInt(payload.github_installation_id) || 0
+            const res = await deployAPI.createProject(payload)
             navigate(`/deploy/${res.data.id}`)
         } catch (e) {
             alert(e.response?.data?.error || t('common.operation_failed'))
@@ -112,11 +120,61 @@ export default function ProjectCreate() {
                             <Text size="2" weight="medium" mb="1">{t('deploy.git_branch')}</Text>
                             <TextField.Root placeholder="main" value={form.git_branch} onChange={e => updateForm('git_branch', e.target.value)} />
                         </label>
-                        <label>
-                            <Text size="2" weight="medium" mb="1">{t('deploy.deploy_key')}</Text>
-                            <Text size="1" color="gray">{t('deploy.deploy_key_hint')}</Text>
-                            <TextArea placeholder="-----BEGIN OPENSSH PRIVATE KEY-----" value={form.deploy_key} onChange={e => updateForm('deploy_key', e.target.value)} rows={3} style={{ fontFamily: 'monospace', fontSize: 12 }} />
-                        </label>
+
+                        <Separator />
+
+                        {/* Auth Method Selection */}
+                        <Text size="2" weight="medium">{t('deploy.auth_method')}</Text>
+                        <Flex gap="2">
+                            <Button
+                                variant={form.auth_method === 'ssh_key' ? 'solid' : 'outline'}
+                                size="2"
+                                onClick={() => updateForm('auth_method', 'ssh_key')}
+                            >
+                                <Key size={14} />
+                                {t('deploy.auth_ssh_key')}
+                            </Button>
+                            <Button
+                                variant={form.auth_method === 'github_app' ? 'solid' : 'outline'}
+                                size="2"
+                                onClick={() => updateForm('auth_method', 'github_app')}
+                            >
+                                <Github size={14} />
+                                {t('deploy.auth_github_app')}
+                            </Button>
+                        </Flex>
+
+                        {/* SSH Deploy Key */}
+                        {form.auth_method === 'ssh_key' && (
+                            <label>
+                                <Text size="2" weight="medium" mb="1">{t('deploy.deploy_key')}</Text>
+                                <Text size="1" color="gray">{t('deploy.deploy_key_hint')}</Text>
+                                <TextArea placeholder="-----BEGIN OPENSSH PRIVATE KEY-----" value={form.deploy_key} onChange={e => updateForm('deploy_key', e.target.value)} rows={3} style={{ fontFamily: 'monospace', fontSize: 12 }} />
+                                <Text size="1" color="gray">{t('deploy.deploy_key_encrypted')}</Text>
+                            </label>
+                        )}
+
+                        {/* GitHub App Auth */}
+                        {form.auth_method === 'github_app' && (
+                            <Flex direction="column" gap="3">
+                                <Callout.Root size="1">
+                                    <Callout.Text>{t('deploy.github_app_hint')}</Callout.Text>
+                                </Callout.Root>
+                                <label>
+                                    <Text size="2" weight="medium" mb="1">{t('deploy.github_app_id')} *</Text>
+                                    <TextField.Root type="number" placeholder="123456" value={form.github_app_id} onChange={e => updateForm('github_app_id', e.target.value)} />
+                                </label>
+                                <label>
+                                    <Text size="2" weight="medium" mb="1">{t('deploy.github_installation_id')} *</Text>
+                                    <TextField.Root type="number" placeholder="12345678" value={form.github_installation_id} onChange={e => updateForm('github_installation_id', e.target.value)} />
+                                </label>
+                                <label>
+                                    <Text size="2" weight="medium" mb="1">{t('deploy.github_private_key')} *</Text>
+                                    <Text size="1" color="gray">{t('deploy.github_private_key_hint')}</Text>
+                                    <TextArea placeholder="-----BEGIN RSA PRIVATE KEY-----" value={form.github_private_key} onChange={e => updateForm('github_private_key', e.target.value)} rows={4} style={{ fontFamily: 'monospace', fontSize: 12 }} />
+                                </label>
+                            </Flex>
+                        )}
                     </Flex>
                     <Flex justify="end" mt="4">
                         <Button onClick={() => setStep(2)} disabled={!form.name || !form.git_url}>

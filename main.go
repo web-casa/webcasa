@@ -190,6 +190,7 @@ func main() {
 	protected.GET("/logs", logH.GetLogs)
 	protected.GET("/logs/files", logH.ListLogFiles)
 	protected.GET("/logs/download", logH.Download)
+	protected.GET("/logs/system", logH.GetSystemLog)
 
 	// Config import/export (admin only)
 	exportH := handler.NewExportHandler(hostSvc)

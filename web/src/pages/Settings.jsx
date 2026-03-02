@@ -16,6 +16,7 @@ import { QRCodeSVG } from 'qrcode.react'
 import {
     caddyAPI, configAPI, settingAPI, authAPI, groupAPI, tagAPI,
     userAPI, logAPI, auditAPI, pluginAPI, aiAPI, dnsProviderAPI, certificateAPI, mcpAPI,
+    deployAPI, backupAPI,
 } from '../api/index.js'
 import { useAuthStore } from '../stores/auth.js'
 import { useTranslation } from 'react-i18next'
@@ -856,9 +857,15 @@ function LogsTab() {
                 <Tabs.List>
                     <Tabs.Trigger value="caddy"><FileText size={14} style={{ marginRight: 6 }} /> {t('log.caddy_logs')}</Tabs.Trigger>
                     <Tabs.Trigger value="audit"><ClipboardList size={14} style={{ marginRight: 6 }} /> {t('audit.title')}</Tabs.Trigger>
+                    <Tabs.Trigger value="deploy"><Package size={14} style={{ marginRight: 6 }} /> {t('log.deploy_logs')}</Tabs.Trigger>
+                    <Tabs.Trigger value="backup"><HardDrive size={14} style={{ marginRight: 6 }} /> {t('log.backup_logs')}</Tabs.Trigger>
+                    <Tabs.Trigger value="system"><Server size={14} style={{ marginRight: 6 }} /> {t('log.system_logs')}</Tabs.Trigger>
                 </Tabs.List>
                 <Tabs.Content value="caddy"><CaddyLogsPanel /></Tabs.Content>
                 <Tabs.Content value="audit"><AuditLogsPanel /></Tabs.Content>
+                <Tabs.Content value="deploy"><DeployLogsPanel /></Tabs.Content>
+                <Tabs.Content value="backup"><BackupLogsPanel /></Tabs.Content>
+                <Tabs.Content value="system"><SystemLogsPanel /></Tabs.Content>
             </Tabs.Root>
         </Box>
     )
@@ -1039,18 +1046,245 @@ function AuditLogsPanel() {
 }
 
 
+// ======================== Deploy Logs Panel ========================
+function DeployLogsPanel() {
+    const { t } = useTranslation()
+    const [projects, setProjects] = useState([])
+    const [selectedProject, setSelectedProject] = useState('')
+    const [deployments, setDeployments] = useState([])
+    const [logLines, setLogLines] = useState([])
+    const [loading, setLoading] = useState(false)
+    const [logLoading, setLogLoading] = useState(false)
+
+    useEffect(() => {
+        deployAPI.listProjects().then(res => {
+            const list = res.data?.projects || res.data || []
+            setProjects(Array.isArray(list) ? list : [])
+        }).catch(() => {})
+    }, [])
+
+    useEffect(() => {
+        if (!selectedProject) { setDeployments([]); setLogLines([]); return }
+        setLoading(true)
+        deployAPI.deployments(selectedProject).then(res => {
+            const list = res.data?.deployments || res.data || []
+            setDeployments(Array.isArray(list) ? list : [])
+        }).catch(() => setDeployments([])).finally(() => setLoading(false))
+    }, [selectedProject])
+
+    const viewLog = async (projectId, params) => {
+        setLogLoading(true)
+        try {
+            const res = await deployAPI.logs(projectId, params)
+            const content = res.data?.lines || res.data?.content || ''
+            setLogLines(typeof content === 'string' ? content.split('\n') : Array.isArray(content) ? content : [])
+        } catch { setLogLines([]) }
+        finally { setLogLoading(false) }
+    }
+
+    return (
+        <Box mt="4">
+            <Flex gap="3" align="end" mb="3">
+                <Box style={{ minWidth: 200 }}>
+                    <Text size="1" weight="medium" color="gray" style={{ display: 'block', marginBottom: 4 }}>{t('log.select_project')}</Text>
+                    <Select.Root value={selectedProject} onValueChange={setSelectedProject}>
+                        <Select.Trigger placeholder={t('log.select_project')} />
+                        <Select.Content>
+                            {projects.map(p => <Select.Item key={p.id} value={String(p.id)}>{p.name}</Select.Item>)}
+                        </Select.Content>
+                    </Select.Root>
+                </Box>
+            </Flex>
+            {selectedProject && (
+                <Card style={{ background: 'var(--cp-card)', border: '1px solid var(--cp-border)' }} mb="3">
+                    {loading ? <Flex justify="center" p="4"><Spinner size="2" /></Flex> : (
+                        <Table.Root size="1">
+                            <Table.Header>
+                                <Table.Row>
+                                    <Table.ColumnHeaderCell>#</Table.ColumnHeaderCell>
+                                    <Table.ColumnHeaderCell>{t('log.deploy_status')}</Table.ColumnHeaderCell>
+                                    <Table.ColumnHeaderCell>{t('log.deploy_commit')}</Table.ColumnHeaderCell>
+                                    <Table.ColumnHeaderCell>{t('log.deploy_time')}</Table.ColumnHeaderCell>
+                                    <Table.ColumnHeaderCell></Table.ColumnHeaderCell>
+                                </Table.Row>
+                            </Table.Header>
+                            <Table.Body>
+                                {deployments.map(d => (
+                                    <Table.Row key={d.id}>
+                                        <Table.Cell><Text size="2">#{d.build_num}</Text></Table.Cell>
+                                        <Table.Cell><Badge color={d.status === 'success' ? 'green' : d.status === 'building' ? 'yellow' : 'red'} size="1">{d.status}</Badge></Table.Cell>
+                                        <Table.Cell><Text size="1" color="gray">{d.git_commit || '-'}</Text></Table.Cell>
+                                        <Table.Cell><Text size="1" color="gray">{new Date(d.created_at).toLocaleString()}</Text></Table.Cell>
+                                        <Table.Cell><Button size="1" variant="ghost" onClick={() => viewLog(selectedProject, { build_num: d.build_num })}><FileText size={12} /> {t('log.view')}</Button></Table.Cell>
+                                    </Table.Row>
+                                ))}
+                                {deployments.length === 0 && <Table.Row><Table.Cell colSpan={5}><Text color="gray" size="2">{t('log.no_deployments')}</Text></Table.Cell></Table.Row>}
+                            </Table.Body>
+                        </Table.Root>
+                    )}
+                </Card>
+            )}
+            {logLines.length > 0 && (
+                <Card style={{ background: 'var(--cp-code-bg)', border: '1px solid var(--cp-border)', padding: 0 }}>
+                    <Flex justify="between" align="center" px="4" py="2" style={{ borderBottom: '1px solid var(--cp-border)' }}>
+                        <Text size="1" color="gray">{t('log.build_log')}</Text>
+                        <Badge variant="soft" size="1">{logLines.length} {t('log.lines')}</Badge>
+                    </Flex>
+                    <Box p="4" style={{ maxHeight: 400, overflow: 'auto' }}>
+                        {logLoading ? <Flex justify="center" p="4"><Spinner size="2" /></Flex> : (
+                            <div className="log-viewer">
+                                {logLines.map((line, i) => (
+                                    <div key={i} style={{ padding: '1px 0', borderBottom: '1px solid rgba(255,255,255,0.02)', display: 'flex', gap: 12 }}>
+                                        <span style={{ color: 'var(--cp-text-muted)', userSelect: 'none', minWidth: 40, textAlign: 'right' }}>{i + 1}</span>
+                                        <span style={{ color: 'var(--cp-text)' }}>{line}</span>
+                                    </div>
+                                ))}
+                            </div>
+                        )}
+                    </Box>
+                </Card>
+            )}
+        </Box>
+    )
+}
+
+
+// ======================== Backup Logs Panel ========================
+function BackupLogsPanel() {
+    const { t } = useTranslation()
+    const [logs, setLogs] = useState([])
+    const [loading, setLoading] = useState(true)
+
+    useEffect(() => {
+        backupAPI.listLogs().then(res => setLogs(res.data?.logs || []))
+            .catch(() => {}).finally(() => setLoading(false))
+    }, [])
+
+    const levelColors = { info: 'blue', warn: 'orange', error: 'red', success: 'green' }
+
+    return (
+        <Box mt="4">
+            <Card style={{ background: 'var(--cp-card)', border: '1px solid var(--cp-border)' }}>
+                {loading ? <Flex justify="center" p="6"><Spinner size="3" /></Flex> : (
+                    <Table.Root size="1">
+                        <Table.Header>
+                            <Table.Row>
+                                <Table.ColumnHeaderCell>{t('log.time')}</Table.ColumnHeaderCell>
+                                <Table.ColumnHeaderCell>{t('log.level')}</Table.ColumnHeaderCell>
+                                <Table.ColumnHeaderCell>{t('log.message')}</Table.ColumnHeaderCell>
+                            </Table.Row>
+                        </Table.Header>
+                        <Table.Body>
+                            {logs.map((log, i) => (
+                                <Table.Row key={log.id || i}>
+                                    <Table.Cell><Text size="1" color="gray">{new Date(log.created_at).toLocaleString()}</Text></Table.Cell>
+                                    <Table.Cell><Badge color={levelColors[log.level] || 'gray'} size="1">{(log.level || 'info').toUpperCase()}</Badge></Table.Cell>
+                                    <Table.Cell><Text size="2">{log.message}</Text></Table.Cell>
+                                </Table.Row>
+                            ))}
+                            {logs.length === 0 && <Table.Row><Table.Cell colSpan={3}><Text color="gray" size="2">{t('log.no_backup_logs')}</Text></Table.Cell></Table.Row>}
+                        </Table.Body>
+                    </Table.Root>
+                )}
+            </Card>
+        </Box>
+    )
+}
+
+
+// ======================== System Logs Panel ========================
+function SystemLogsPanel() {
+    const { t } = useTranslation()
+    const [logLines, setLogLines] = useState([])
+    const [lines, setLines] = useState('200')
+    const [search, setSearch] = useState('')
+    const [loading, setLoading] = useState(false)
+    const logEndRef = useRef(null)
+
+    const fetchLogs = async () => {
+        setLoading(true)
+        try {
+            const res = await logAPI.system({ lines, search })
+            setLogLines(res.data?.lines || [])
+            setTimeout(() => logEndRef.current?.scrollIntoView({ behavior: 'smooth' }), 100)
+        } catch { setLogLines([]) }
+        finally { setLoading(false) }
+    }
+
+    useEffect(() => { fetchLogs() }, [lines])
+
+    const handleSearch = (e) => { e.preventDefault(); fetchLogs() }
+
+    return (
+        <Box mt="4">
+            <Card style={{ background: 'var(--cp-card)', border: '1px solid var(--cp-border)' }} mb="4">
+                <Flex gap="3" align="end" wrap="wrap">
+                    <Flex direction="column" gap="1" style={{ minWidth: 100 }}>
+                        <Text size="1" weight="medium" color="gray">{t('log.lines')}</Text>
+                        <Select.Root value={lines} onValueChange={setLines}>
+                            <Select.Trigger />
+                            <Select.Content>
+                                {['100', '200', '500', '1000', '5000'].map(n => <Select.Item key={n} value={n}>{n}</Select.Item>)}
+                            </Select.Content>
+                        </Select.Root>
+                    </Flex>
+                    <form onSubmit={handleSearch} style={{ flex: 1, minWidth: 200 }}>
+                        <Flex direction="column" gap="1">
+                            <Text size="1" weight="medium" color="gray">{t('common.search')}</Text>
+                            <Flex gap="2">
+                                <TextField.Root style={{ flex: 1 }} placeholder={t('log.search_placeholder')} value={search} onChange={(e) => setSearch(e.target.value)} size="2">
+                                    <TextField.Slot><Search size={14} style={{ color: 'var(--cp-text-muted)' }} /></TextField.Slot>
+                                </TextField.Root>
+                                <Button type="submit" variant="soft" size="2">{t('log.filter')}</Button>
+                            </Flex>
+                        </Flex>
+                    </form>
+                    <Button variant="soft" size="1" onClick={fetchLogs} disabled={loading}>
+                        <RefreshCw size={14} className={loading ? 'animate-spin' : ''} /> {t('common.refresh')}
+                    </Button>
+                </Flex>
+            </Card>
+            <Card style={{ background: 'var(--cp-code-bg)', border: '1px solid var(--cp-border)', padding: 0 }}>
+                <Flex justify="between" align="center" px="4" py="2" style={{ borderBottom: '1px solid var(--cp-border)' }}>
+                    <Flex align="center" gap="2"><Server size={14} style={{ color: 'var(--cp-text-muted)' }} /><Text size="1" color="gray">{t('log.system_logs')}</Text></Flex>
+                    <Badge variant="soft" size="1">{t('log.lines_count', { count: logLines.length })}</Badge>
+                </Flex>
+                <Box p="4" style={{ maxHeight: 500, overflow: 'auto' }}>
+                    {logLines.length === 0 ? (
+                        <Flex justify="center" p="6"><Text size="2" color="gray">{loading ? t('common.loading') : t('log.no_logs')}</Text></Flex>
+                    ) : (
+                        <div className="log-viewer">
+                            {logLines.map((line, i) => (
+                                <div key={i} style={{ padding: '1px 0', borderBottom: '1px solid rgba(255,255,255,0.02)', display: 'flex', gap: 12 }}>
+                                    <span style={{ color: 'var(--cp-text-muted)', userSelect: 'none', minWidth: 40, textAlign: 'right' }}>{i + 1}</span>
+                                    <span style={{ color: 'var(--cp-text)' }}>{line}</span>
+                                </div>
+                            ))}
+                            <div ref={logEndRef} />
+                        </div>
+                    )}
+                </Box>
+            </Card>
+        </Box>
+    )
+}
+
+
 // ======================== AI Tab ========================
 function AITab({ showMessage }) {
     const { t } = useTranslation()
-    const [config, setConfig] = useState({ base_url: '', api_key: '', model: '' })
+    const [config, setConfig] = useState({ base_url: '', api_key: '', model: '', api_format: 'openai-chat' })
+    const [presets, setPresets] = useState({})
     const [loading, setLoading] = useState(true)
     const [saving, setSaving] = useState(false)
     const [testing, setTesting] = useState(false)
     const [testResult, setTestResult] = useState(null)
 
     useEffect(() => {
-        aiAPI.getConfig().then(res => setConfig(res.data || { base_url: '', api_key: '', model: '' }))
-            .catch(() => {}).finally(() => setLoading(false))
+        Promise.all([
+            aiAPI.getConfig().then(res => setConfig(res.data || { base_url: '', api_key: '', model: '', api_format: 'openai-chat' })),
+            aiAPI.getPresets().then(res => setPresets(res.data || {})).catch(() => {}),
+        ]).catch(() => {}).finally(() => setLoading(false))
     }, [])
 
     const handleSave = async () => {
@@ -1067,24 +1301,79 @@ function AITab({ showMessage }) {
         finally { setTesting(false) }
     }
 
+    const applyPreset = (key) => {
+        const p = presets[key]
+        if (!p) return
+        setConfig(prev => ({ ...prev, base_url: p.base_url, api_format: p.api_format, model: p.models?.[0] || '' }))
+        setTestResult(null)
+    }
+
+    // Find current preset's model list
+    const currentPresetModels = Object.values(presets).find(p => p.base_url === config.base_url)?.models || []
+
     if (loading) return <Flex justify="center" p="6"><Text>{t('common.loading')}</Text></Flex>
 
     return (
-        <Card mt="4" style={{ maxWidth: 600, background: 'var(--cp-card)', border: '1px solid var(--cp-border)' }}>
+        <Card mt="4" style={{ maxWidth: 680, background: 'var(--cp-card)', border: '1px solid var(--cp-border)' }}>
             <Flex direction="column" gap="4">
+                {/* Provider Presets */}
+                <Box>
+                    <Text size="2" weight="bold" mb="2" style={{ display: 'block' }}>{t('ai.provider_presets')}</Text>
+                    <Flex gap="2" wrap="wrap">
+                        {Object.entries(presets).map(([key, p]) => (
+                            <Button key={key} size="1" variant={config.base_url === p.base_url ? 'solid' : 'outline'}
+                                onClick={() => applyPreset(key)}>
+                                {p.name}
+                            </Button>
+                        ))}
+                    </Flex>
+                    <Text size="1" color="gray" mt="1" style={{ display: 'block' }}>{t('ai.preset_hint')}</Text>
+                </Box>
+                <Separator size="4" />
+                {/* API Format */}
+                <Box>
+                    <Text size="2" weight="bold" mb="1" style={{ display: 'block' }}>{t('ai.api_format')}</Text>
+                    <Select.Root value={config.api_format || 'openai-chat'} onValueChange={(v) => setConfig(prev => ({ ...prev, api_format: v }))}>
+                        <Select.Trigger style={{ width: '100%' }} />
+                        <Select.Content>
+                            <Select.Item value="openai-chat">OpenAI Chat Completions</Select.Item>
+                            <Select.Item value="anthropic-messages">Anthropic Messages</Select.Item>
+                            <Select.Item value="google-generativeai">Google Generative AI</Select.Item>
+                        </Select.Content>
+                    </Select.Root>
+                    <Text size="1" color="gray" mt="1" style={{ display: 'block' }}>{t('ai.api_format_hint')}</Text>
+                </Box>
+                {/* Base URL */}
                 <Box>
                     <Text size="2" weight="bold" mb="1" style={{ display: 'block' }}>{t('ai.base_url')}</Text>
                     <TextField.Root placeholder="https://api.openai.com" value={config.base_url} onChange={(e) => setConfig(prev => ({ ...prev, base_url: e.target.value }))} />
                     <Text size="1" color="gray" mt="1" style={{ display: 'block' }}>{t('ai.base_url_hint')}</Text>
                 </Box>
+                {/* API Key */}
                 <Box>
                     <Text size="2" weight="bold" mb="1" style={{ display: 'block' }}>{t('ai.api_key')}</Text>
                     <TextField.Root type="password" placeholder="sk-..." value={config.api_key} onChange={(e) => setConfig(prev => ({ ...prev, api_key: e.target.value }))} />
                     <Text size="1" color="gray" mt="1" style={{ display: 'block' }}>{t('ai.api_key_hint')}</Text>
                 </Box>
+                {/* Model */}
                 <Box>
                     <Text size="2" weight="bold" mb="1" style={{ display: 'block' }}>{t('ai.model')}</Text>
-                    <TextField.Root placeholder="gpt-4o / claude-3.5-sonnet / deepseek-chat" value={config.model} onChange={(e) => setConfig(prev => ({ ...prev, model: e.target.value }))} />
+                    {currentPresetModels.length > 0 ? (
+                        <Flex gap="2" align="center">
+                            <Select.Root value={currentPresetModels.includes(config.model) ? config.model : '_custom'} onValueChange={(v) => { if (v !== '_custom') setConfig(prev => ({ ...prev, model: v })) }}>
+                                <Select.Trigger style={{ flex: 1 }} />
+                                <Select.Content>
+                                    {currentPresetModels.map(m => <Select.Item key={m} value={m}>{m}</Select.Item>)}
+                                    <Select.Item value="_custom">{t('ai.custom_model')}</Select.Item>
+                                </Select.Content>
+                            </Select.Root>
+                            {!currentPresetModels.includes(config.model) && (
+                                <TextField.Root style={{ flex: 1 }} placeholder={t('ai.model_placeholder')} value={config.model} onChange={(e) => setConfig(prev => ({ ...prev, model: e.target.value }))} />
+                            )}
+                        </Flex>
+                    ) : (
+                        <TextField.Root placeholder="gpt-4o / claude-sonnet-4-20250514 / deepseek-chat" value={config.model} onChange={(e) => setConfig(prev => ({ ...prev, model: e.target.value }))} />
+                    )}
                     <Text size="1" color="gray" mt="1" style={{ display: 'block' }}>{t('ai.model_hint')}</Text>
                 </Box>
                 <Separator size="4" />

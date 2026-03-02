@@ -36,10 +36,15 @@ func NewService(db *gorm.DB, configStore *pluginpkg.ConfigStore, coreAPI pluginp
 func (s *Service) GetConfig() AIConfig {
 	encKey := s.configStore.Get("api_key")
 	apiKey, _ := Decrypt(encKey, s.jwtSecret)
+	apiFormat := s.configStore.Get("api_format")
+	if apiFormat == "" {
+		apiFormat = "openai-chat"
+	}
 	return AIConfig{
-		BaseURL: s.configStore.Get("base_url"),
-		APIKey:  MaskAPIKey(apiKey),
-		Model:   s.configStore.Get("model"),
+		BaseURL:   s.configStore.Get("base_url"),
+		APIKey:    MaskAPIKey(apiKey),
+		Model:     s.configStore.Get("model"),
+		APIFormat: apiFormat,
 	}
 }
 
@@ -58,6 +63,9 @@ func (s *Service) UpdateConfig(cfg AIConfig) error {
 			return fmt.Errorf("encrypt api key: %w", err)
 		}
 		s.configStore.Set("api_key", enc)
+	}
+	if cfg.APIFormat != "" {
+		s.configStore.Set("api_format", cfg.APIFormat)
 	}
 	return nil
 }
@@ -223,7 +231,8 @@ func (s *Service) getClient() (*LLMClient, error) {
 		return nil, fmt.Errorf("decrypt api key: %w", err)
 	}
 
-	return NewLLMClient(baseURL, apiKey, model), nil
+	apiFormat := s.configStore.Get("api_format")
+	return NewLLMClient(baseURL, apiKey, model, apiFormat), nil
 }
 
 func (s *Service) buildMessages(history []Message, pageContext string) []chatMessage {

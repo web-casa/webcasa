@@ -57,6 +57,11 @@ func (h *Handler) CreateProject(c *gin.Context) {
 		Port         int      `json:"port"`
 		AutoDeploy   bool     `json:"auto_deploy"`
 		EnvVars      []EnvVar `json:"env_vars"`
+		// GitHub App auth fields
+		AuthMethod           string `json:"auth_method"`
+		GitHubAppID          int64  `json:"github_app_id"`
+		GitHubPrivateKey     string `json:"github_private_key"`
+		GitHubInstallationID int64  `json:"github_installation_id"`
 	}
 	if err := c.ShouldBindJSON(&req); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
@@ -69,18 +74,22 @@ func (h *Handler) CreateProject(c *gin.Context) {
 	}
 
 	project := &Project{
-		Name:         req.Name,
-		Domain:       req.Domain,
-		GitURL:       req.GitURL,
-		GitBranch:    branch,
-		DeployKey:    req.DeployKey,
-		Framework:    req.Framework,
-		BuildCommand: req.BuildCommand,
-		StartCommand: req.StartCommand,
-		InstallCmd:   req.InstallCmd,
-		Port:         req.Port,
-		AutoDeploy:   req.AutoDeploy,
-		EnvVarList:   req.EnvVars,
+		Name:                 req.Name,
+		Domain:               req.Domain,
+		GitURL:               req.GitURL,
+		GitBranch:            branch,
+		DeployKey:            req.DeployKey,
+		Framework:            req.Framework,
+		BuildCommand:         req.BuildCommand,
+		StartCommand:         req.StartCommand,
+		InstallCmd:           req.InstallCmd,
+		Port:                 req.Port,
+		AutoDeploy:           req.AutoDeploy,
+		EnvVarList:           req.EnvVars,
+		AuthMethod:           req.AuthMethod,
+		GitHubAppID:          req.GitHubAppID,
+		GitHubPrivateKey:     req.GitHubPrivateKey,
+		GitHubInstallationID: req.GitHubInstallationID,
 	}
 
 	if err := h.svc.CreateProject(project); err != nil {
@@ -110,6 +119,8 @@ func (h *Handler) UpdateProject(c *gin.Context) {
 		"deploy_key": true, "framework": true, "build_command": true,
 		"start_command": true, "install_command": true, "port": true,
 		"auto_deploy": true, "env_vars": true,
+		"auth_method": true, "github_app_id": true,
+		"github_private_key": true, "github_installation_id": true,
 	}
 	filtered := make(map[string]interface{})
 	for k, v := range req {

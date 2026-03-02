@@ -43,6 +43,11 @@ func NewService(db *gorm.DB, dataDir string, logger *slog.Logger) *Service {
 	return svc
 }
 
+// CheckDependency returns the Kopia CLI availability status.
+func (s *Service) CheckDependency() KopiaStatus {
+	return s.kopia.CheckKopia()
+}
+
 // Start starts the scheduler and loads the current schedule from config.
 func (s *Service) Start() error {
 	s.scheduler.Start()
@@ -188,6 +193,10 @@ func (s *Service) UpdateConfig(req *UpdateConfigRequest) (*BackupConfig, error) 
 
 // TestConnection tests the backup target connection.
 func (s *Service) TestConnection() error {
+	if status := s.kopia.CheckKopia(); !status.Available {
+		return fmt.Errorf("Kopia is not installed. Please install it first: %s", kopiaInstallInstructions["generic"])
+	}
+
 	cfg, err := s.GetConfig()
 	if err != nil {
 		return err

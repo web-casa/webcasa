@@ -17,6 +17,17 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 
+# Ensure node/jq are in PATH (nvm may not be inherited under sudo)
+for p in /usr/local/bin /usr/bin "$HOME/.nvm/versions/node"/*/bin; do
+    [ -d "$p" ] && export PATH="$p:$PATH"
+done
+if [ -n "${SUDO_USER:-}" ]; then
+    SUDO_HOME=$(eval echo "~$SUDO_USER")
+    for p in "$SUDO_HOME/.nvm/versions/node"/*/bin; do
+        [ -d "$p" ] && export PATH="$p:$PATH"
+    done
+fi
+
 # Capture node path before potential sudo PATH change
 NODE_BIN="${NODE_BIN:-$(which node 2>/dev/null || echo "node")}"
 
@@ -321,6 +332,12 @@ FAKESC
     else
         fail "Plugin list: only $PLUGIN_COUNT plugins (expected >= 4)"
     fi
+
+    # Enable core plugins (only AI is enabled by default on fresh install)
+    for pid in docker deploy filemanager monitoring backup; do
+        docker exec "$CONTAINER" curl -sf -X POST "http://localhost:39921/api/plugins/$pid/enable" \
+            -H "Authorization: Bearer $TOKEN" > /dev/null 2>&1 || true
+    done
 
     # Frontend manifests
     local MANIFEST_COUNT

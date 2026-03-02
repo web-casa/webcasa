@@ -47,6 +47,7 @@ func (p *Plugin) Init(ctx *pluginpkg.Context) error {
 	a := ctx.AdminRouter  // admin-only
 
 	// Config (read + admin mutations)
+	r.GET("/dependency-check", p.handler.CheckDependency)
 	r.GET("/config", p.handler.GetConfig)
 	a.PUT("/config", p.handler.UpdateConfig)
 	a.POST("/config/test", p.handler.TestConnection)

@@ -50,7 +50,8 @@ type DiagnoseRequest struct {
 
 // AIConfig holds the AI provider configuration.
 type AIConfig struct {
-	BaseURL string `json:"base_url"`
-	APIKey  string `json:"api_key"` // masked in response
-	Model   string `json:"model"`
+	BaseURL   string `json:"base_url"`
+	APIKey    string `json:"api_key"` // masked in response
+	Model     string `json:"model"`
+	APIFormat string `json:"api_format"` // openai-chat | anthropic-messages | google-generativeai
 }
