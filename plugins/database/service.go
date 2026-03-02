@@ -2,6 +2,7 @@ package database
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"io"
 	"log/slog"
@@ -71,23 +72,27 @@ func (s *Service) CreateInstance(req *CreateInstanceRequest) (*Instance, error) 
 		return nil, fmt.Errorf("instance name %q already exists", req.Name)
 	}
 
-	// Allocate port.
+	// Allocate port — default to engine's standard port.
 	port := req.Port
 	if port == 0 {
-		var err error
-		port, err = s.allocatePort(req.Engine)
-		if err != nil {
-			return nil, err
-		}
+		port = engineInfo.Port
 	}
 
-	// Memory limit.
+	// Memory limit — default 0.5g.
 	memLimit := req.MemoryLimit
 	if memLimit == "" {
-		memLimit = "512m"
+		memLimit = "0.5g"
 	}
 
 	containerName := "webcasa-db-" + sanitizeName(req.Name)
+
+	// Serialize engine config to JSON.
+	var configJSON string
+	if req.Config != nil {
+		if data, err := json.Marshal(req.Config); err == nil {
+			configJSON = string(data)
+		}
+	}
 
 	inst := &Instance{
 		Name:          req.Name,
@@ -99,6 +104,7 @@ func (s *Service) CreateInstance(req *CreateInstanceRequest) (*Instance, error) 
 		DataDir:       filepath.Join(s.dataDir, "instances", sanitizeName(req.Name)),
 		ContainerName: containerName,
 		MemoryLimit:   memLimit,
+		Config:        configJSON,
 	}
 
 	// Create data directory.

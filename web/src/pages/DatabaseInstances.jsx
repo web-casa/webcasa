@@ -1,9 +1,10 @@
 import { useState, useEffect, useCallback, useRef } from 'react'
 import { Box, Flex, Grid, Card, Button, IconButton, Text, Heading, Badge, Dialog, TextField, Select, Switch, Callout, Separator, Tooltip } from '@radix-ui/themes'
-import { Database, Plus, Play, Square, RotateCcw, FileText, Link, Trash2, RefreshCw, AlertCircle, CheckCircle2, Sparkles } from 'lucide-react'
-import { databaseAPI } from '../api/index.js'
+import { Database, Plus, Play, Square, RotateCcw, FileText, Link, Trash2, RefreshCw, AlertCircle, CheckCircle2, Sparkles, ChevronDown, ChevronRight } from 'lucide-react'
+import { databaseAPI, dockerAPI } from '../api/index.js'
 import { useTranslation } from 'react-i18next'
 import { useNavigate } from 'react-router'
+import DockerRequired from '../components/DockerRequired.jsx'
 
 const statusColors = { running: 'green', stopped: 'gray', error: 'red', creating: 'orange' }
 const engineColors = { mysql: 'blue', postgres: 'indigo', mariadb: 'teal', redis: 'red' }
@@ -26,32 +27,39 @@ export default function DatabaseInstances() {
     const { t } = useTranslation()
     const navigate = useNavigate()
 
+    const [dockerStatus, setDockerStatus] = useState(null)
+    const [dockerChecking, setDockerChecking] = useState(true)
     const [instances, setInstances] = useState([])
     const [engines, setEngines] = useState([])
+    const [presets, setPresets] = useState({})
     const [loading, setLoading] = useState(true)
     const [dialogOpen, setDialogOpen] = useState(false)
     const [actionLoading, setActionLoading] = useState(null)
     const [message, setMessage] = useState(null)
+    const [showAdvanced, setShowAdvanced] = useState(false)
     const [form, setForm] = useState({
         name: '',
         engine: '',
         version: '',
         root_password: '',
         port: '',
-        memory_limit: '512m',
+        memory_limit: '0.5',
         auto_start: true,
+        config: {},
     })
     const [creating, setCreating] = useState(false)
     const refreshTimerRef = useRef(null)
 
     const fetchData = useCallback(async () => {
         try {
-            const [instRes, engRes] = await Promise.allSettled([
+            const [instRes, engRes, presetRes] = await Promise.allSettled([
                 databaseAPI.listInstances(),
                 databaseAPI.engines(),
+                databaseAPI.presets(),
             ])
             if (instRes.status === 'fulfilled') setInstances(instRes.value.data?.instances || [])
             if (engRes.status === 'fulfilled') setEngines(engRes.value.data?.engines || [])
+            if (presetRes.status === 'fulfilled') setPresets(presetRes.value.data?.presets || {})
         } catch { /* ignore */ } finally { setLoading(false) }
     }, [])
 
@@ -69,6 +77,19 @@ export default function DatabaseInstances() {
             if (refreshTimerRef.current) clearInterval(refreshTimerRef.current)
         }
     }, [instances, fetchData])
+
+    // Check Docker availability
+    const checkDocker = useCallback(async () => {
+        setDockerChecking(true)
+        try {
+            const res = await dockerAPI.status()
+            setDockerStatus(res.data)
+        } catch {
+            setDockerStatus({ installed: false, daemon_running: false })
+        } finally { setDockerChecking(false) }
+    }, [])
+
+    useEffect(() => { checkDocker() }, [checkDocker])
 
     const showMessage = (type, text) => {
         setMessage({ type, text })
@@ -104,24 +125,31 @@ export default function DatabaseInstances() {
             version: '',
             root_password: '',
             port: '',
-            memory_limit: '512m',
+            memory_limit: '0.5',
             auto_start: true,
+            config: {},
         })
+        setShowAdvanced(false)
     }
 
     const handleCreate = async () => {
         if (!form.name.trim() || !form.engine) return
         setCreating(true)
         try {
-            await databaseAPI.createInstance({
+            const payload = {
                 name: form.name.trim(),
                 engine: form.engine,
                 version: form.version,
                 root_password: form.root_password,
                 port: form.port ? parseInt(form.port, 10) : 0,
-                memory_limit: form.memory_limit,
+                memory_limit: form.memory_limit ? form.memory_limit + 'g' : '',
                 auto_start: form.auto_start,
-            })
+            }
+            // Only include config if there are any non-empty values
+            if (Object.keys(form.config).length > 0) {
+                payload.config = form.config
+            }
+            await databaseAPI.createInstance(payload)
             showMessage('success', t('database.instance_created'))
             setDialogOpen(false)
             resetForm()
@@ -146,12 +174,31 @@ export default function DatabaseInstances() {
             .join(', ') || '--'
     }
 
-    if (loading) {
+    if (dockerChecking || loading) {
         return (
             <Flex align="center" justify="center" style={{ minHeight: 200 }}>
                 <RefreshCw size={20} className="spin" />
                 <Text ml="2">{t('common.loading')}</Text>
             </Flex>
+        )
+    }
+
+    // Show Docker required screen if Docker is not available
+    if (dockerStatus && (!dockerStatus.installed || !dockerStatus.daemon_running)) {
+        return (
+            <Box>
+                <Flex align="center" gap="2" mb="4">
+                    <Database size={24} />
+                    <Heading size="5">{t('database.title')}</Heading>
+                </Flex>
+                <DockerRequired
+                    installed={dockerStatus.installed}
+                    daemonRunning={dockerStatus.daemon_running}
+                    error={dockerStatus.error}
+                    onRetry={checkDocker}
+                    extraMessage={t('database.docker_required')}
+                />
+            </Box>
         )
     }
 
@@ -365,6 +412,8 @@ export default function DatabaseInstances() {
                                             ...f,
                                             engine: eng.engine,
                                             version: eng.versions?.[0] || '',
+                                            port: String(eng.default_port || ''),
+                                            config: {},
                                         }))}
                                     >
                                         <Flex direction="column" gap="1">
@@ -462,12 +511,302 @@ export default function DatabaseInstances() {
                             <Text size="2" weight="bold" mb="1" style={{ display: 'block' }}>
                                 {t('database.memory_limit')}
                             </Text>
-                            <TextField.Root
-                                placeholder="512m"
-                                value={form.memory_limit}
-                                onChange={(e) => setForm((f) => ({ ...f, memory_limit: e.target.value }))}
-                            />
+                            <Flex align="center" gap="2">
+                                <TextField.Root
+                                    type="number"
+                                    step="0.1"
+                                    min="0.1"
+                                    placeholder="0.5"
+                                    value={form.memory_limit}
+                                    onChange={(e) => setForm((f) => ({ ...f, memory_limit: e.target.value }))}
+                                    style={{ flex: 1 }}
+                                />
+                                <Text size="2" color="gray">GB</Text>
+                            </Flex>
                         </Box>
+
+                        {/* Advanced Configuration — Collapsible */}
+                        {form.engine && (
+                            <Box>
+                                <Flex
+                                    align="center"
+                                    gap="1"
+                                    style={{ cursor: 'pointer', userSelect: 'none' }}
+                                    onClick={() => setShowAdvanced(!showAdvanced)}
+                                >
+                                    {showAdvanced ? <ChevronDown size={16} /> : <ChevronRight size={16} />}
+                                    <Text size="2" weight="bold">{t('database.advanced_config')}</Text>
+                                </Flex>
+
+                                {showAdvanced && (
+                                    <Box mt="3" p="3" style={{ border: '1px solid var(--cp-border)', borderRadius: 'var(--radius-2)' }}>
+                                        {/* Preset buttons */}
+                                        <Flex gap="2" mb="3" align="center">
+                                            <Text size="2" color="gray">{t('database.preset')}:</Text>
+                                            <Button
+                                                size="1"
+                                                variant="soft"
+                                                onClick={() => {
+                                                    const p = presets[form.engine]?.development
+                                                    if (p) setForm((f) => ({ ...f, config: { ...p } }))
+                                                }}
+                                            >
+                                                {t('database.preset_development')}
+                                            </Button>
+                                            <Button
+                                                size="1"
+                                                variant="soft"
+                                                color="orange"
+                                                onClick={() => {
+                                                    const p = presets[form.engine]?.production
+                                                    if (p) setForm((f) => ({ ...f, config: { ...p } }))
+                                                }}
+                                            >
+                                                {t('database.preset_production')}
+                                            </Button>
+                                        </Flex>
+
+                                        <Flex direction="column" gap="3">
+                                            {/* MySQL / MariaDB config */}
+                                            {(form.engine === 'mysql' || form.engine === 'mariadb') && (
+                                                <>
+                                                    <Flex gap="3" wrap="wrap">
+                                                        <Box style={{ flex: 1, minWidth: 180 }}>
+                                                            <Text size="1" color="gray" mb="1" style={{ display: 'block' }}>{t('database.innodb_buffer_pool')}</Text>
+                                                            <Flex align="center" gap="1">
+                                                                <TextField.Root
+                                                                    size="1"
+                                                                    placeholder="128"
+                                                                    value={form.config.innodb_buffer_pool_size?.replace(/[MGmg]/g, '') || ''}
+                                                                    onChange={(e) => setForm((f) => ({ ...f, config: { ...f.config, innodb_buffer_pool_size: e.target.value ? e.target.value + 'M' : '' } }))}
+                                                                    style={{ flex: 1 }}
+                                                                />
+                                                                <Text size="1" color="gray">MB</Text>
+                                                            </Flex>
+                                                        </Box>
+                                                        <Box style={{ flex: 1, minWidth: 180 }}>
+                                                            <Text size="1" color="gray" mb="1" style={{ display: 'block' }}>{t('database.max_connections')}</Text>
+                                                            <TextField.Root
+                                                                size="1"
+                                                                type="number"
+                                                                placeholder="151"
+                                                                value={form.config.max_connections || ''}
+                                                                onChange={(e) => setForm((f) => ({ ...f, config: { ...f.config, max_connections: e.target.value ? parseInt(e.target.value, 10) : undefined } }))}
+                                                            />
+                                                        </Box>
+                                                    </Flex>
+                                                    <Flex gap="3" wrap="wrap">
+                                                        <Box style={{ flex: 1, minWidth: 180 }}>
+                                                            <Text size="1" color="gray" mb="1" style={{ display: 'block' }}>{t('database.character_set')}</Text>
+                                                            <Select.Root
+                                                                size="1"
+                                                                value={form.config.character_set_server || 'utf8mb4'}
+                                                                onValueChange={(v) => setForm((f) => ({ ...f, config: { ...f.config, character_set_server: v } }))}
+                                                            >
+                                                                <Select.Trigger style={{ width: '100%' }} />
+                                                                <Select.Content>
+                                                                    <Select.Item value="utf8mb4">utf8mb4</Select.Item>
+                                                                    <Select.Item value="utf8">utf8</Select.Item>
+                                                                    <Select.Item value="latin1">latin1</Select.Item>
+                                                                </Select.Content>
+                                                            </Select.Root>
+                                                        </Box>
+                                                        <Box style={{ flex: 1, minWidth: 180 }}>
+                                                            <Text size="1" color="gray" mb="1" style={{ display: 'block' }}>{t('database.collation')}</Text>
+                                                            <Select.Root
+                                                                size="1"
+                                                                value={form.config.collation_server || 'utf8mb4_unicode_ci'}
+                                                                onValueChange={(v) => setForm((f) => ({ ...f, config: { ...f.config, collation_server: v } }))}
+                                                            >
+                                                                <Select.Trigger style={{ width: '100%' }} />
+                                                                <Select.Content>
+                                                                    <Select.Item value="utf8mb4_unicode_ci">utf8mb4_unicode_ci</Select.Item>
+                                                                    <Select.Item value="utf8mb4_general_ci">utf8mb4_general_ci</Select.Item>
+                                                                    <Select.Item value="utf8mb4_bin">utf8mb4_bin</Select.Item>
+                                                                    <Select.Item value="utf8_general_ci">utf8_general_ci</Select.Item>
+                                                                    <Select.Item value="latin1_swedish_ci">latin1_swedish_ci</Select.Item>
+                                                                </Select.Content>
+                                                            </Select.Root>
+                                                        </Box>
+                                                    </Flex>
+                                                    <Flex gap="3" wrap="wrap" align="end">
+                                                        <Flex align="center" gap="2" style={{ minWidth: 180 }}>
+                                                            <Switch
+                                                                size="1"
+                                                                checked={form.config.slow_query_log ?? true}
+                                                                onCheckedChange={(v) => setForm((f) => ({ ...f, config: { ...f.config, slow_query_log: v } }))}
+                                                            />
+                                                            <Text size="1">{t('database.slow_query_log')}</Text>
+                                                        </Flex>
+                                                        {(form.config.slow_query_log ?? true) && (
+                                                            <Box style={{ flex: 1, minWidth: 180 }}>
+                                                                <Text size="1" color="gray" mb="1" style={{ display: 'block' }}>{t('database.slow_query_time')}</Text>
+                                                                <Flex align="center" gap="1">
+                                                                    <TextField.Root
+                                                                        size="1"
+                                                                        type="number"
+                                                                        step="0.5"
+                                                                        min="0.1"
+                                                                        placeholder="2"
+                                                                        value={form.config.long_query_time || ''}
+                                                                        onChange={(e) => setForm((f) => ({ ...f, config: { ...f.config, long_query_time: e.target.value ? parseFloat(e.target.value) : undefined } }))}
+                                                                        style={{ flex: 1 }}
+                                                                    />
+                                                                    <Text size="1" color="gray">s</Text>
+                                                                </Flex>
+                                                            </Box>
+                                                        )}
+                                                    </Flex>
+                                                </>
+                                            )}
+
+                                            {/* PostgreSQL config */}
+                                            {form.engine === 'postgres' && (
+                                                <>
+                                                    <Flex gap="3" wrap="wrap">
+                                                        <Box style={{ flex: 1, minWidth: 180 }}>
+                                                            <Text size="1" color="gray" mb="1" style={{ display: 'block' }}>{t('database.shared_buffers')}</Text>
+                                                            <Flex align="center" gap="1">
+                                                                <TextField.Root
+                                                                    size="1"
+                                                                    placeholder="128"
+                                                                    value={form.config.shared_buffers?.replace(/MB/gi, '') || ''}
+                                                                    onChange={(e) => setForm((f) => ({ ...f, config: { ...f.config, shared_buffers: e.target.value ? e.target.value + 'MB' : '' } }))}
+                                                                    style={{ flex: 1 }}
+                                                                />
+                                                                <Text size="1" color="gray">MB</Text>
+                                                            </Flex>
+                                                        </Box>
+                                                        <Box style={{ flex: 1, minWidth: 180 }}>
+                                                            <Text size="1" color="gray" mb="1" style={{ display: 'block' }}>{t('database.max_connections')}</Text>
+                                                            <TextField.Root
+                                                                size="1"
+                                                                type="number"
+                                                                placeholder="100"
+                                                                value={form.config.max_connections || ''}
+                                                                onChange={(e) => setForm((f) => ({ ...f, config: { ...f.config, max_connections: e.target.value ? parseInt(e.target.value, 10) : undefined } }))}
+                                                            />
+                                                        </Box>
+                                                    </Flex>
+                                                    <Flex gap="3" wrap="wrap">
+                                                        <Box style={{ flex: 1, minWidth: 180 }}>
+                                                            <Text size="1" color="gray" mb="1" style={{ display: 'block' }}>{t('database.work_mem')}</Text>
+                                                            <Flex align="center" gap="1">
+                                                                <TextField.Root
+                                                                    size="1"
+                                                                    placeholder="4"
+                                                                    value={form.config.work_mem?.replace(/MB/gi, '') || ''}
+                                                                    onChange={(e) => setForm((f) => ({ ...f, config: { ...f.config, work_mem: e.target.value ? e.target.value + 'MB' : '' } }))}
+                                                                    style={{ flex: 1 }}
+                                                                />
+                                                                <Text size="1" color="gray">MB</Text>
+                                                            </Flex>
+                                                        </Box>
+                                                        <Box style={{ flex: 1, minWidth: 180 }}>
+                                                            <Text size="1" color="gray" mb="1" style={{ display: 'block' }}>{t('database.effective_cache_size')}</Text>
+                                                            <Flex align="center" gap="1">
+                                                                <TextField.Root
+                                                                    size="1"
+                                                                    placeholder="384"
+                                                                    value={form.config.effective_cache_size?.replace(/MB/gi, '') || ''}
+                                                                    onChange={(e) => setForm((f) => ({ ...f, config: { ...f.config, effective_cache_size: e.target.value ? e.target.value + 'MB' : '' } }))}
+                                                                    style={{ flex: 1 }}
+                                                                />
+                                                                <Text size="1" color="gray">MB</Text>
+                                                            </Flex>
+                                                        </Box>
+                                                    </Flex>
+                                                    <Flex gap="3" wrap="wrap">
+                                                        <Box style={{ flex: 1, minWidth: 180 }}>
+                                                            <Text size="1" color="gray" mb="1" style={{ display: 'block' }}>{t('database.wal_level')}</Text>
+                                                            <Select.Root
+                                                                size="1"
+                                                                value={form.config.wal_level || 'replica'}
+                                                                onValueChange={(v) => setForm((f) => ({ ...f, config: { ...f.config, wal_level: v } }))}
+                                                            >
+                                                                <Select.Trigger style={{ width: '100%' }} />
+                                                                <Select.Content>
+                                                                    <Select.Item value="replica">replica</Select.Item>
+                                                                    <Select.Item value="logical">logical</Select.Item>
+                                                                    <Select.Item value="minimal">minimal</Select.Item>
+                                                                </Select.Content>
+                                                            </Select.Root>
+                                                        </Box>
+                                                        <Box style={{ flex: 1, minWidth: 180 }}>
+                                                            <Text size="1" color="gray" mb="1" style={{ display: 'block' }}>{t('database.log_slow_queries')}</Text>
+                                                            <TextField.Root
+                                                                size="1"
+                                                                type="number"
+                                                                placeholder="2000"
+                                                                value={form.config.log_min_duration_statement ?? ''}
+                                                                onChange={(e) => setForm((f) => ({ ...f, config: { ...f.config, log_min_duration_statement: e.target.value !== '' ? parseInt(e.target.value, 10) : undefined } }))}
+                                                            />
+                                                            <Text size="1" color="gray">{t('database.log_slow_queries_hint')}</Text>
+                                                        </Box>
+                                                    </Flex>
+                                                </>
+                                            )}
+
+                                            {/* Redis config */}
+                                            {form.engine === 'redis' && (
+                                                <>
+                                                    <Flex gap="3" wrap="wrap">
+                                                        <Box style={{ flex: 1, minWidth: 180 }}>
+                                                            <Text size="1" color="gray" mb="1" style={{ display: 'block' }}>{t('database.maxmemory')}</Text>
+                                                            <Flex align="center" gap="1">
+                                                                <TextField.Root
+                                                                    size="1"
+                                                                    placeholder="256"
+                                                                    value={form.config.maxmemory?.replace(/mb/gi, '') || ''}
+                                                                    onChange={(e) => setForm((f) => ({ ...f, config: { ...f.config, maxmemory: e.target.value ? e.target.value + 'mb' : '' } }))}
+                                                                    style={{ flex: 1 }}
+                                                                />
+                                                                <Text size="1" color="gray">MB</Text>
+                                                            </Flex>
+                                                        </Box>
+                                                        <Box style={{ flex: 1, minWidth: 180 }}>
+                                                            <Text size="1" color="gray" mb="1" style={{ display: 'block' }}>{t('database.maxmemory_policy')}</Text>
+                                                            <Select.Root
+                                                                size="1"
+                                                                value={form.config.maxmemory_policy || 'noeviction'}
+                                                                onValueChange={(v) => setForm((f) => ({ ...f, config: { ...f.config, maxmemory_policy: v } }))}
+                                                            >
+                                                                <Select.Trigger style={{ width: '100%' }} />
+                                                                <Select.Content>
+                                                                    <Select.Item value="noeviction">{t('database.policy_noeviction')}</Select.Item>
+                                                                    <Select.Item value="allkeys-lru">{t('database.policy_allkeys_lru')}</Select.Item>
+                                                                    <Select.Item value="volatile-lru">{t('database.policy_volatile_lru')}</Select.Item>
+                                                                    <Select.Item value="allkeys-random">{t('database.policy_allkeys_random')}</Select.Item>
+                                                                    <Select.Item value="volatile-ttl">{t('database.policy_volatile_ttl')}</Select.Item>
+                                                                </Select.Content>
+                                                            </Select.Root>
+                                                        </Box>
+                                                    </Flex>
+                                                    <Flex gap="3" wrap="wrap">
+                                                        <Flex align="center" gap="2" style={{ minWidth: 180 }}>
+                                                            <Switch
+                                                                size="1"
+                                                                checked={form.config.appendonly ?? false}
+                                                                onCheckedChange={(v) => setForm((f) => ({ ...f, config: { ...f.config, appendonly: v } }))}
+                                                            />
+                                                            <Text size="1">{t('database.appendonly')}</Text>
+                                                        </Flex>
+                                                        <Flex align="center" gap="2" style={{ minWidth: 180 }}>
+                                                            <Switch
+                                                                size="1"
+                                                                checked={form.config.save !== '' && form.config.save !== undefined}
+                                                                onCheckedChange={(v) => setForm((f) => ({ ...f, config: { ...f.config, save: v ? '3600 1 300 100' : '' } }))}
+                                                            />
+                                                            <Text size="1">{t('database.rdb_save')}</Text>
+                                                        </Flex>
+                                                    </Flex>
+                                                </>
+                                            )}
+                                        </Flex>
+                                    </Box>
+                                )}
+                            </Box>
+                        )}
 
                         {/* Auto Start Switch */}
                         <Flex align="center" gap="2">

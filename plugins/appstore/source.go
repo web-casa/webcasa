@@ -1,6 +1,7 @@
 package appstore
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"log/slog"
@@ -8,6 +9,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 
 	"gorm.io/gorm"
@@ -18,11 +20,15 @@ type SourceManager struct {
 	db      *gorm.DB
 	dataDir string // data/plugins/appstore/
 	logger  *slog.Logger
+
+	// Sync progress subscribers (sourceID → channels).
+	subsMu sync.Mutex
+	subs   map[uint][]chan string
 }
 
 // NewSourceManager creates a SourceManager.
 func NewSourceManager(db *gorm.DB, dataDir string, logger *slog.Logger) *SourceManager {
-	return &SourceManager{db: db, dataDir: dataDir, logger: logger}
+	return &SourceManager{db: db, dataDir: dataDir, logger: logger, subs: make(map[uint][]chan string)}
 }
 
 // ListSources returns all configured sources.
@@ -87,6 +93,11 @@ func (sm *SourceManager) RemoveSource(id uint) error {
 
 // SyncSource clones or pulls a Git repo and parses all apps/templates within it.
 func (sm *SourceManager) SyncSource(sourceID uint) error {
+	return sm.SyncSourceWithContext(context.Background(), sourceID)
+}
+
+// SyncSourceWithContext is like SyncSource but accepts a context for cancellation.
+func (sm *SourceManager) SyncSourceWithContext(ctx context.Context, sourceID uint) error {
 	var src AppSource
 	if err := sm.db.First(&src, sourceID).Error; err != nil {
 		return err
@@ -98,18 +109,25 @@ func (sm *SourceManager) SyncSource(sourceID uint) error {
 		"sync_error":  "",
 	})
 
+	sm.emitProgress(sourceID, "Starting sync for source: "+src.Name)
+
 	srcDir := sm.SourceDir(sourceID)
 
-	// Clone or pull
-	if err := sm.gitSync(src.URL, src.Branch, srcDir); err != nil {
+	// Clone or pull (with 5-minute timeout)
+	sm.emitProgress(sourceID, "Cloning/pulling git repository...")
+	if err := sm.gitSync(ctx, src.URL, src.Branch, srcDir); err != nil {
+		errMsg := err.Error()
 		sm.db.Model(&src).Updates(map[string]interface{}{
 			"sync_status": "error",
-			"sync_error":  err.Error(),
+			"sync_error":  errMsg,
 		})
+		sm.emitProgress(sourceID, "ERROR: "+errMsg)
 		return fmt.Errorf("git sync: %w", err)
 	}
+	sm.emitProgress(sourceID, "Git sync completed")
 
 	// Parse based on kind
+	sm.emitProgress(sourceID, "Parsing applications...")
 	var syncErr error
 	switch src.Kind {
 	case "template":
@@ -123,16 +141,18 @@ func (sm *SourceManager) SyncSource(sourceID uint) error {
 			"sync_status": "error",
 			"sync_error":  syncErr.Error(),
 		})
+		sm.emitProgress(sourceID, "ERROR: "+syncErr.Error())
 		return syncErr
 	}
 
 	now := time.Now()
 	sm.db.Model(&src).Updates(map[string]interface{}{
-		"sync_status": "synced",
-		"sync_error":  "",
+		"sync_status":  "synced",
+		"sync_error":   "",
 		"last_sync_at": &now,
 	})
 
+	sm.emitProgress(sourceID, "Sync completed successfully")
 	sm.logger.Info("source synced", "source_id", sourceID, "name", src.Name)
 	return nil
 }
@@ -165,14 +185,20 @@ func (sm *SourceManager) SourceDir(sourceID uint) string {
 	return filepath.Join(sm.dataDir, "sources", fmt.Sprintf("%d", sourceID))
 }
 
-// gitSync clones or pulls a Git repo.
-func (sm *SourceManager) gitSync(url, branch, dir string) error {
+// gitSync clones or pulls a Git repo with a 5-minute timeout.
+func (sm *SourceManager) gitSync(ctx context.Context, url, branch, dir string) error {
+	ctx, cancel := context.WithTimeout(ctx, 5*time.Minute)
+	defer cancel()
+
 	if _, err := os.Stat(filepath.Join(dir, ".git")); err == nil {
 		// Already cloned — pull
-		cmd := exec.Command("git", "pull", "--ff-only")
+		cmd := exec.CommandContext(ctx, "git", "pull", "--ff-only")
 		cmd.Dir = dir
 		output, err := cmd.CombinedOutput()
 		if err != nil {
+			if ctx.Err() != nil {
+				return fmt.Errorf("git pull timed out after 5 minutes")
+			}
 			return fmt.Errorf("git pull: %s", strings.TrimSpace(string(output)))
 		}
 		return nil
@@ -182,9 +208,12 @@ func (sm *SourceManager) gitSync(url, branch, dir string) error {
 	if err := os.MkdirAll(filepath.Dir(dir), 0755); err != nil {
 		return err
 	}
-	cmd := exec.Command("git", "clone", "--depth", "1", "--branch", branch, url, dir)
+	cmd := exec.CommandContext(ctx, "git", "clone", "--depth", "1", "--branch", branch, url, dir)
 	output, err := cmd.CombinedOutput()
 	if err != nil {
+		if ctx.Err() != nil {
+			return fmt.Errorf("git clone timed out after 5 minutes")
+		}
 		return fmt.Errorf("git clone: %s", strings.TrimSpace(string(output)))
 	}
 	return nil
@@ -316,6 +345,45 @@ func (sm *SourceManager) syncTemplates(sourceID uint, repoPath string) error {
 
 	sm.logger.Info("synced templates", "source_id", sourceID, "count", len(templates))
 	return nil
+}
+
+// SubscribeSync returns a channel that receives progress messages for a source sync.
+func (sm *SourceManager) SubscribeSync(sourceID uint) chan string {
+	ch := make(chan string, 64)
+	sm.subsMu.Lock()
+	sm.subs[sourceID] = append(sm.subs[sourceID], ch)
+	sm.subsMu.Unlock()
+	return ch
+}
+
+// UnsubscribeSync removes a subscriber channel.
+func (sm *SourceManager) UnsubscribeSync(sourceID uint, ch chan string) {
+	sm.subsMu.Lock()
+	defer sm.subsMu.Unlock()
+	channels := sm.subs[sourceID]
+	for i, c := range channels {
+		if c == ch {
+			sm.subs[sourceID] = append(channels[:i], channels[i+1:]...)
+			close(ch)
+			return
+		}
+	}
+}
+
+// emitProgress sends a progress message to all subscribers of a source.
+func (sm *SourceManager) emitProgress(sourceID uint, msg string) {
+	sm.subsMu.Lock()
+	channels := make([]chan string, len(sm.subs[sourceID]))
+	copy(channels, sm.subs[sourceID])
+	sm.subsMu.Unlock()
+
+	for _, ch := range channels {
+		select {
+		case ch <- msg:
+		default:
+			// Drop message if subscriber is slow
+		}
+	}
 }
 
 // SeedOfficialSources creates default sources if none exist.

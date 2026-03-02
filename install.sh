@@ -18,6 +18,7 @@
 #    --no-docker     Skip Docker group setup
 #    --port PORT     Set panel port (default: 39921)
 #    --from-source   Build from source instead of downloading pre-built binary
+#    --pro           Install Pro edition (requires RHEL-based OS 9/10)
 #    -y, --yes       Non-interactive mode (skip prompts)
 # ============================================================================
 
@@ -46,6 +47,7 @@ UNINSTALL=false
 PURGE=false
 NON_INTERACTIVE=false
 FROM_SOURCE=false
+PRO_MODE=false
 
 # ==================== Colors ====================
 RED='\033[0;31m'
@@ -129,6 +131,43 @@ detect_os() {
     info "Detected OS: ${BOLD}$OS_NAME${NC} ($OS_FAMILY/$ARCH)"
 }
 
+# ==================== Pro Edition OS Check ====================
+check_pro_os() {
+    step "Checking Pro edition OS requirements"
+
+    case "$OS_ID" in
+        rocky|rockylinux|almalinux|alma|centos|rhel|redhat|ol)
+            local MAJOR="${OS_VERSION_ID%%.*}"
+            if [[ "$MAJOR" -lt 9 ]]; then
+                fatal "Pro edition requires ${OS_NAME} 9+. Detected version: ${OS_VERSION_ID}\n  Supported: Rocky/AlmaLinux/CentOS Stream/RHEL/Oracle Linux 9 or 10\n  For other OS, install Lite edition (without --pro flag)"
+            fi
+            ;;
+        anolis)
+            local MAJOR="${OS_VERSION_ID%%.*}"
+            if [[ "$MAJOR" -lt 9 ]]; then
+                fatal "Pro edition requires openAnolis 9+. Detected version: ${OS_VERSION_ID}"
+            fi
+            ;;
+        alinux)
+            local MAJOR="${OS_VERSION_ID%%.*}"
+            if [[ "$MAJOR" -lt 3 ]]; then
+                fatal "Pro edition requires Alibaba Cloud Linux 3+. Detected version: ${OS_VERSION_ID}"
+            fi
+            ;;
+        opencloudos)
+            local MAJOR="${OS_VERSION_ID%%.*}"
+            if [[ "$MAJOR" -lt 9 ]]; then
+                fatal "Pro edition requires openCloudOS 9+. Detected version: ${OS_VERSION_ID}"
+            fi
+            ;;
+        *)
+            fatal "Pro edition requires a RHEL-based OS.\n  Supported: Rocky Linux 9/10, AlmaLinux 9/10, CentOS Stream 9/10,\n             RHEL 9/10, Oracle Linux 9/10, openAnolis 9+,\n             Alibaba Cloud Linux 3+, openCloudOS 9+\n  Detected: ${OS_NAME} (${OS_ID})\n  For other OS, install Lite edition (without --pro flag)"
+            ;;
+    esac
+
+    success "OS check passed: ${OS_NAME} is supported for Pro edition"
+}
+
 # ==================== Parse Arguments ====================
 parse_args() {
     while [[ $# -gt 0 ]]; do
@@ -139,6 +178,7 @@ parse_args() {
             --no-docker)    SKIP_DOCKER_GROUP=true; shift ;;
             --port)         PANEL_PORT="$2"; shift 2 ;;
             --from-source)  FROM_SOURCE=true; shift ;;
+            --pro)          PRO_MODE=true; shift ;;
             -y|--yes)       NON_INTERACTIVE=true; shift ;;
             -h|--help)      usage; exit 0 ;;
             *)              warn "Unknown option: $1"; shift ;;
@@ -160,14 +200,20 @@ Options:
   --no-docker      Skip Docker group setup
   --port PORT      Set panel port (default: 39921)
   --from-source    Build from source (requires Go + Node.js)
+  --pro            Install Pro edition (RHEL-based OS 9/10 only)
   -y, --yes        Non-interactive mode (skip prompts)
   -h, --help       Show this help
 
-Supported OS:
+Supported OS (Lite):
   Ubuntu 20.04+, Debian 11+, CentOS Stream 8+,
   AlmaLinux 8+, Rocky Linux 8+, Fedora 38+,
   openAnolis, Alibaba Cloud Linux, openEuler,
   openCloudOS, Kylin (银河麒麟)
+
+Supported OS (Pro — --pro flag):
+  Rocky Linux 9/10, AlmaLinux 9/10, CentOS Stream 9/10,
+  RHEL 9/10, Oracle Linux 9/10, openAnolis 9+,
+  Alibaba Cloud Linux 3+, openCloudOS 9+
 
 Features (Pro):
   Reverse Proxy Management, File Manager, Web Terminal,
@@ -801,6 +847,11 @@ main() {
     parse_args "$@"
     check_root
     detect_os
+
+    # Pro edition: enforce RHEL-based OS 9/10
+    if $PRO_MODE; then
+        check_pro_os
+    fi
 
     # Auto-detect piped input (curl | bash)
     if [[ ! -t 0 ]]; then

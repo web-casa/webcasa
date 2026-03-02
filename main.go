@@ -267,10 +267,18 @@ func main() {
 	adminPluginRouter := adminOnly.Group("/plugins")
 	publicPluginRouter := api.Group("/plugins") // public routes (no JWT) for webhooks etc.
 	pluginMgr := initPlugins(db, pluginRouter, adminPluginRouter, publicPluginRouter, hostSvc, caddyMgr, cfg)
+
+	// Guard middleware blocks API requests to disabled plugins.
+	pluginRouter.Use(pluginMgr.PluginGuardMiddleware())
+	adminPluginRouter.Use(pluginMgr.PluginGuardMiddleware())
+	publicPluginRouter.Use(pluginMgr.PluginGuardMiddleware())
+
 	pluginH := handler.NewPluginHandler(pluginMgr)
 	protected.GET("/plugins", pluginH.List)
 	adminOnly.POST("/plugins/:id/enable", pluginH.Enable)
 	adminOnly.POST("/plugins/:id/disable", pluginH.Disable)
+	adminOnly.POST("/plugins/:id/sidebar", pluginH.SetSidebarVisibility)
+	adminOnly.POST("/plugins/:id/install", pluginH.Install)
 	protected.GET("/plugins/frontend-manifests", pluginH.FrontendManifests)
 
 	// ============ Frontend Static Files ============

@@ -90,7 +90,7 @@ func (p *stubPlugin) Stop() error            { p.stopCalled = true; return nil }
 // ── tests ──
 
 func TestRegisterAndList(t *testing.T) {
-	mgr, _ := setupTestManager(t)
+	mgr, db := setupTestManager(t)
 
 	p := newStubPlugin("hello", nil, 0)
 	if err := mgr.Register(p); err != nil {
@@ -102,6 +102,10 @@ func TestRegisterAndList(t *testing.T) {
 		t.Fatal("expected error for duplicate registration")
 	}
 
+	// Pre-enable the plugin in DB (only "ai" is auto-enabled on fresh installs).
+	enabled := true
+	db.Create(&PluginState{ID: "hello", Enabled: &enabled})
+
 	list := mgr.List()
 	if len(list) != 1 {
 		t.Fatalf("expected 1 plugin, got %d", len(list))
@@ -110,15 +114,19 @@ func TestRegisterAndList(t *testing.T) {
 		t.Fatalf("expected id=hello, got %s", list[0].ID)
 	}
 	if !list[0].Enabled {
-		t.Fatal("expected plugin to be enabled by default")
+		t.Fatal("expected plugin to be enabled")
 	}
 }
 
 func TestInitStartStop(t *testing.T) {
-	mgr, _ := setupTestManager(t)
+	mgr, db := setupTestManager(t)
 
 	p := newStubPlugin("test", nil, 0)
 	mgr.Register(p)
+
+	// Pre-enable the plugin so InitAll + StartAll will process it.
+	enabled := true
+	db.Create(&PluginState{ID: "test", Enabled: &enabled})
 
 	if err := mgr.InitAll(); err != nil {
 		t.Fatal(err)
@@ -210,8 +218,16 @@ func TestEnableDisable(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if p.initCalled {
-		t.Fatal("disabled plugin should not have been initialised")
+	// With the new guard middleware approach, disabled plugins ARE initialised
+	// (routes registered, DB migrated) but their API requests are blocked by
+	// the PluginGuardMiddleware. So initCalled should be true.
+	if !p.initCalled {
+		t.Fatal("disabled plugin should still be initialised (routes registered)")
+	}
+
+	// But Start should NOT have been called (disabled).
+	if p.startCalled {
+		t.Fatal("disabled plugin should not have been started")
 	}
 
 	if err := mgr.Enable("test"); err != nil {

@@ -70,6 +70,7 @@ func (p *Plugin) Init(ctx *pluginpkg.Context) error {
 	r.GET("/sources", p.handler.ListSources)
 	a.POST("/sources", p.handler.AddSource)
 	a.POST("/sources/:id/sync", p.handler.SyncSource)
+	r.GET("/sources/:id/sync/stream", p.handler.SyncSourceStream)
 	a.DELETE("/sources/:id", p.handler.RemoveSource)
 
 	// Installed apps (read + admin mutations)

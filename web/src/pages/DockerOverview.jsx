@@ -3,12 +3,15 @@ import { Box, Flex, Text, Card, Badge, Heading, Button, Separator, Dialog, TextA
 import { Container, Play, Square, RefreshCw, Trash2, FileText, Plus, Download, Server, Search, Radio, Upload } from 'lucide-react'
 import { dockerAPI } from '../api/index.js'
 import { useTranslation } from 'react-i18next'
+import DockerRequired from '../components/DockerRequired.jsx'
 // Docker — Compose Stacks management (simplified view)
 
 const statusColors = { running: 'green', stopped: 'gray', partial: 'orange', error: 'red', unknown: 'gray' }
 
 export default function DockerOverview() {
     const { t } = useTranslation()
+    const [dockerStatus, setDockerStatus] = useState(null)
+    const [dockerChecking, setDockerChecking] = useState(true)
     const [stacks, setStacks] = useState([])
     const [info, setInfo] = useState(null)
     const [loading, setLoading] = useState(true)
@@ -33,6 +36,19 @@ export default function DockerOverview() {
     }, [])
 
     useEffect(() => { fetchData() }, [fetchData])
+
+    // Check Docker availability first
+    const checkDocker = useCallback(async () => {
+        setDockerChecking(true)
+        try {
+            const res = await dockerAPI.status()
+            setDockerStatus(res.data)
+        } catch {
+            setDockerStatus({ installed: false, daemon_running: false })
+        } finally { setDockerChecking(false) }
+    }, [])
+
+    useEffect(() => { checkDocker() }, [checkDocker])
 
     const doAction = async (id, action, label) => {
         setActionLoading(`${id}-${action}`)
@@ -101,8 +117,26 @@ export default function DockerOverview() {
         ? logs.split('\n').filter(line => line.toLowerCase().includes(logFilter.toLowerCase())).join('\n')
         : logs
 
-    if (loading) {
+    if (dockerChecking || loading) {
         return <Flex align="center" justify="center" style={{ minHeight: 200 }}><RefreshCw size={20} className="spin" /><Text ml="2">{t('common.loading')}</Text></Flex>
+    }
+
+    // Show Docker required screen if Docker is not available
+    if (dockerStatus && (!dockerStatus.installed || !dockerStatus.daemon_running)) {
+        return (
+            <Box>
+                <Flex align="center" gap="2" mb="4">
+                    <Container size={24} />
+                    <Heading size="5">Docker</Heading>
+                </Flex>
+                <DockerRequired
+                    installed={dockerStatus.installed}
+                    daemonRunning={dockerStatus.daemon_running}
+                    error={dockerStatus.error}
+                    onRetry={checkDocker}
+                />
+            </Box>
+        )
     }
 
     return (

@@ -51,6 +51,7 @@ func (p *Plugin) Init(ctx *pluginpkg.Context) error {
 
 	// Engines (read)
 	r.GET("/engines", p.handler.ListEngines)
+	r.GET("/presets", p.handler.GetPresets)
 
 	// Instances (read + admin mutations)
 	r.GET("/instances", p.handler.ListInstances)

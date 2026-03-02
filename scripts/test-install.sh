@@ -7,6 +7,7 @@
 #    bash scripts/test-install.sh              # Test all distros
 #    bash scripts/test-install.sh ubuntu       # Test specific distro
 #    bash scripts/test-install.sh debian alma  # Test multiple
+#    bash scripts/test-install.sh --pro alma   # Test Pro mode (RHEL-based only)
 #
 #  Available distros: ubuntu, debian, alma, rocky, fedora
 # ============================================================================
@@ -30,6 +31,7 @@ NC='\033[0m'
 PASS_COUNT=0
 FAIL_COUNT=0
 SKIP_COUNT=0
+PRO_FLAG=""
 
 pass() { echo -e "  ${GREEN}PASS${NC} $1"; PASS_COUNT=$((PASS_COUNT+1)); }
 fail() { echo -e "  ${RED}FAIL${NC} $1"; FAIL_COUNT=$((FAIL_COUNT+1)); }
@@ -103,7 +105,7 @@ run_install_test() {
     HOST_PORT=$(docker port "$CONTAINER" 39921 | head -1 | cut -d: -f2)
     API="http://localhost:${HOST_PORT}"
 
-    echo -e "${YELLOW}[1/5] Running install.sh --from-source -y ...${NC}"
+    echo -e "${YELLOW}[1/5] Running install.sh --from-source -y ${PRO_FLAG}...${NC}"
 
     # Run install script inside container (skip systemctl since no systemd in Docker)
     # We create a fake systemctl that simulates success
@@ -125,12 +127,12 @@ FAKESC
 
     # Run install script (redirect systemctl, override start_service)
     local INSTALL_EXIT=0
-    docker exec "$CONTAINER" bash -c '
+    docker exec "$CONTAINER" bash -c "
         cd /src
         # Patch start_service to just record and not fail
         # The fake systemctl handles it
-        bash install.sh --from-source -y --no-caddy 2>&1
-    ' || INSTALL_EXIT=$?
+        bash install.sh --from-source -y --no-caddy ${PRO_FLAG} 2>&1
+    " || INSTALL_EXIT=$?
 
     if [[ $INSTALL_EXIT -ne 0 ]]; then
         fail "install.sh exited with code $INSTALL_EXIT"
@@ -376,6 +378,17 @@ main() {
     echo -e "${CYAN}${BOLD}============================================${NC}"
 
     cd "$PROJECT_DIR"
+
+    # Parse --pro flag
+    local ARGS=()
+    for arg in "$@"; do
+        if [[ "$arg" == "--pro" ]]; then
+            PRO_FLAG="--pro"
+        else
+            ARGS+=("$arg")
+        fi
+    done
+    set -- "${ARGS[@]+"${ARGS[@]}"}"
 
     # Determine which distros to test
     local DISTROS=()

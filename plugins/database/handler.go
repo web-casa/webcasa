@@ -29,6 +29,11 @@ func (h *Handler) ListEngines(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"engines": SupportedEngines})
 }
 
+// GetPresets returns preset configurations for each engine.
+func (h *Handler) GetPresets(c *gin.Context) {
+	c.JSON(http.StatusOK, gin.H{"presets": EnginePresets})
+}
+
 // ── Instances ──
 
 // ListInstances returns all instances.

@@ -1,6 +1,8 @@
 package appstore
 
 import (
+	"context"
+	"fmt"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -179,6 +181,80 @@ func (h *Handler) SyncSource(c *gin.Context) {
 	}()
 
 	c.JSON(http.StatusOK, gin.H{"message": "Sync started"})
+}
+
+// SyncSourceStream triggers a sync and streams progress via SSE.
+// GET /api/plugins/appstore/sources/:id/sync/stream
+func (h *Handler) SyncSourceStream(c *gin.Context) {
+	id, err := parseID(c)
+	if err != nil {
+		return
+	}
+
+	// SSE headers
+	c.Header("Content-Type", "text/event-stream")
+	c.Header("Cache-Control", "no-cache")
+	c.Header("Connection", "keep-alive")
+	c.Header("X-Accel-Buffering", "no")
+	c.Writer.Flush()
+
+	writeSSE := func(data string) {
+		fmt.Fprintf(c.Writer, "data: %s\n\n", data)
+		c.Writer.Flush()
+	}
+
+	writeEvent := func(event, data string) {
+		fmt.Fprintf(c.Writer, "event: %s\ndata: %s\n\n", event, data)
+		c.Writer.Flush()
+	}
+
+	// Subscribe to progress
+	ch := h.svc.sources.SubscribeSync(id)
+	defer h.svc.sources.UnsubscribeSync(id, ch)
+
+	// Start sync in background with cancellable context
+	ctx, cancel := context.WithCancel(c.Request.Context())
+	defer cancel()
+
+	syncDone := make(chan error, 1)
+	go func() {
+		syncDone <- h.svc.sources.SyncSourceWithContext(ctx, id)
+	}()
+
+	writeSSE("Sync started...")
+
+	for {
+		select {
+		case msg, ok := <-ch:
+			if !ok {
+				return
+			}
+			writeSSE(msg)
+		case err := <-syncDone:
+			// Drain remaining messages
+			for {
+				select {
+				case msg, ok := <-ch:
+					if !ok {
+						goto done
+					}
+					writeSSE(msg)
+				default:
+					goto done
+				}
+			}
+		done:
+			if err != nil {
+				writeEvent("error", err.Error())
+			} else {
+				writeEvent("done", "ok")
+			}
+			return
+		case <-c.Request.Context().Done():
+			cancel()
+			return
+		}
+	}
 }
 
 // RemoveSource deletes a custom source.

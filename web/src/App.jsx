@@ -24,6 +24,7 @@ import BackupManager from './pages/BackupManager.jsx'
 import AppStore from './pages/AppStore.jsx'
 import AppDetail from './pages/AppDetail.jsx'
 import TemplateMarket from './pages/TemplateMarket.jsx'
+import PluginsPage from './pages/PluginsPage.jsx'
 
 function ProtectedRoute({ children }) {
     const token = useAuthStore((s) => s.token)
@@ -72,6 +73,7 @@ export default function App() {
                     <Route path="store" element={<AppStore />} />
                     <Route path="store/app/:id" element={<AppDetail />} />
                     <Route path="store/templates" element={<TemplateMarket />} />
+                    <Route path="plugins" element={<PluginsPage />} />
 
                     {/* Redirects: old standalone pages → Settings */}
                     <Route path="logs" element={<Navigate to="/settings" replace />} />
@@ -80,7 +82,6 @@ export default function App() {
                     <Route path="dns" element={<Navigate to="/settings" replace />} />
                     <Route path="certificates" element={<Navigate to="/settings" replace />} />
                     <Route path="templates" element={<Navigate to="/settings" replace />} />
-                    <Route path="plugins" element={<Navigate to="/settings" replace />} />
                     <Route path="ai/config" element={<Navigate to="/settings" replace />} />
                     <Route path="docker/containers" element={<Navigate to="/docker" replace />} />
                     <Route path="docker/images" element={<Navigate to="/docker" replace />} />

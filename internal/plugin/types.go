@@ -79,7 +79,8 @@ type CreateHostRequest struct {
 // PluginInfo is the serialisable representation returned by the management API.
 type PluginInfo struct {
 	Metadata
-	Enabled bool `json:"enabled"`
+	Enabled       bool `json:"enabled"`
+	ShowInSidebar bool `json:"show_in_sidebar"`
 }
 
 // FrontendManifest declares the routes and menu items a plugin contributes to

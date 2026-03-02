@@ -1,6 +1,7 @@
 import { NavLink, Outlet, useNavigate, useLocation } from 'react-router'
 import { Box, Flex, Text, DropdownMenu, Separator } from '@radix-ui/themes'
-import { useState, useEffect, useCallback } from 'react'
+import { useState, useEffect, useCallback, useMemo } from 'react'
+import * as LucideIcons from 'lucide-react'
 import {
     LayoutDashboard,
     Globe,
@@ -13,28 +14,33 @@ import {
     Languages,
     Menu,
     X,
-    Container,
-    Rocket,
-    FolderOpen,
-    Database,
-    Store,
+    Puzzle,
+    Box as BoxIcon,
 } from 'lucide-react'
 import { useAuthStore } from '../stores/auth.js'
 import { useThemeStore } from '../stores/theme.js'
+import { usePluginNavStore } from '../stores/pluginNav.js'
 import { dashboardAPI } from '../api/index.js'
 import { useTranslation } from 'react-i18next'
 import logoImg from '../assets/logo.png'
 
-const navItems = [
+// Fixed navigation items (always shown)
+const fixedNavItems = [
     { to: '/', icon: LayoutDashboard, labelKey: 'nav.dashboard', end: true },
     { to: '/hosts', icon: Globe, labelKey: 'nav.hosts' },
-    { to: '/docker', icon: Container, labelKey: 'nav.docker' },
-    { to: '/deploy', icon: Rocket, labelKey: 'nav.deploy' },
-    { to: '/files', icon: FolderOpen, labelKey: 'nav.files' },
-    { to: '/database', icon: Database, labelKey: 'nav.database' },
-    { to: '/store', icon: Store, labelKey: 'nav.store' },
+]
+
+const bottomFixedNavItems = [
+    { to: '/plugins', icon: Puzzle, labelKey: 'nav.plugins' },
     { to: '/settings', icon: Settings, labelKey: 'nav.settings' },
 ]
+
+// Resolve lucide icon name to component
+function resolveIcon(iconName) {
+    if (!iconName) return BoxIcon
+    const component = LucideIcons[iconName]
+    return component || BoxIcon
+}
 
 function SidebarLink({ to, icon: Icon, label, end, onClick }) {
     return (
@@ -51,6 +57,7 @@ export default function Layout() {
     const { t, i18n } = useTranslation()
     const { user, logout } = useAuthStore()
     const { theme, toggle: toggleTheme } = useThemeStore()
+    const { navItems: pluginNavItems, refresh: refreshPluginNav } = usePluginNavStore()
     const [version, setVersion] = useState('')
     const [isMobile, setIsMobile] = useState(() =>
         typeof window !== 'undefined' && window.matchMedia('(max-width: 767px)').matches
@@ -63,6 +70,11 @@ export default function Layout() {
         const next = currentLang === 'zh' ? 'en' : 'zh'
         i18n.changeLanguage(next)
     }
+
+    // Load plugin nav items on mount
+    useEffect(() => {
+        refreshPluginNav()
+    }, [])
 
     // Listen for viewport changes
     useEffect(() => {
@@ -80,6 +92,15 @@ export default function Layout() {
             setVersion(res.data?.system?.panel_version || '')
         }).catch(() => { })
     }, [])
+
+    // Build dynamic nav items from plugin manifests
+    const dynamicNavItems = useMemo(() => {
+        return pluginNavItems.map((item) => ({
+            to: item.to,
+            icon: resolveIcon(item.icon),
+            label: currentLang === 'zh' && item.labelZh ? item.labelZh : item.label,
+        }))
+    }, [pluginNavItems, currentLang])
 
     // Close sidebar on navigation (mobile)
     const handleNavClick = useCallback(() => {
@@ -117,7 +138,37 @@ export default function Layout() {
             {/* Nav items */}
             <Box style={{ flex: 1, padding: '8px 12px', overflowY: 'auto' }}>
                 <Flex direction="column" gap="1" mt="2">
-                    {navItems.map((item) => (
+                    {/* Fixed top items */}
+                    {fixedNavItems.map((item) => (
+                        <SidebarLink
+                            key={item.to}
+                            to={item.to}
+                            icon={item.icon}
+                            label={t(item.labelKey)}
+                            end={item.end}
+                            onClick={handleNavClick}
+                        />
+                    ))}
+
+                    {/* Dynamic plugin items */}
+                    {dynamicNavItems.length > 0 && (
+                        <>
+                            <Separator size="4" my="1" style={{ background: 'var(--cp-border)', opacity: 0.5 }} />
+                            {dynamicNavItems.map((item) => (
+                                <SidebarLink
+                                    key={item.to}
+                                    to={item.to}
+                                    icon={item.icon}
+                                    label={item.label}
+                                    onClick={handleNavClick}
+                                />
+                            ))}
+                        </>
+                    )}
+
+                    {/* Fixed bottom items */}
+                    <Separator size="4" my="1" style={{ background: 'var(--cp-border)', opacity: 0.5 }} />
+                    {bottomFixedNavItems.map((item) => (
                         <SidebarLink
                             key={item.to}
                             to={item.to}

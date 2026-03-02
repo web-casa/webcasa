@@ -3,9 +3,11 @@ package plugin
 import (
 	"fmt"
 	"log/slog"
+	"net/http"
 	"os"
 	"path/filepath"
 	"sort"
+	"strings"
 	"sync"
 
 	"github.com/gin-gonic/gin"
@@ -18,6 +20,7 @@ type Manager struct {
 	plugins  map[string]Plugin   // id → plugin
 	contexts map[string]*Context // id → context
 	order    []string            // topological load order
+	disabled sync.Map            // id → true for disabled plugins (runtime guard)
 
 	db           *gorm.DB
 	router       *gin.RouterGroup // /api/plugins (protected)
@@ -71,7 +74,9 @@ func (m *Manager) Register(p Plugin) error {
 }
 
 // InitAll resolves dependencies, runs migrations, and calls Init on every
-// enabled plugin in topological order.
+// registered plugin in topological order. Disabled plugins are still initialised
+// (routes registered, DB migrated) but marked in the disabled map so that the
+// guard middleware blocks their API requests at runtime.
 func (m *Manager) InitAll() error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -88,14 +93,17 @@ func (m *Manager) InitAll() error {
 		return fmt.Errorf("migrate plugin_states: %w", err)
 	}
 
-	// 3. Init each plugin.
+	// 3. Seed default states on fresh installs.
+	m.seedDefaultStates()
+
+	// 4. Init each plugin (all plugins, including disabled).
 	for _, id := range m.order {
 		p := m.plugins[id]
 		meta := p.Metadata()
+		enabled := m.isEnabled(id)
 
-		if !m.isEnabled(id) {
-			m.logger.Info("plugin disabled, skipping", "id", id)
-			continue
+		if !enabled {
+			m.disabled.Store(id, true)
 		}
 
 		// Prepare plugin data directory.
@@ -123,9 +131,18 @@ func (m *Manager) InitAll() error {
 		m.contexts[id] = ctx
 
 		if err := p.Init(ctx); err != nil {
-			return fmt.Errorf("init plugin %q (v%s): %w", id, meta.Version, err)
+			if enabled {
+				return fmt.Errorf("init plugin %q (v%s): %w", id, meta.Version, err)
+			}
+			// Disabled plugins failing Init is non-fatal; just log and skip.
+			m.logger.Warn("init failed for disabled plugin", "id", id, "err", err)
+			continue
 		}
-		m.logger.Info("plugin initialised", "id", id)
+		if enabled {
+			m.logger.Info("plugin initialised", "id", id)
+		} else {
+			m.logger.Info("plugin initialised (disabled)", "id", id)
+		}
 	}
 
 	return nil
@@ -176,33 +193,68 @@ func (m *Manager) List() []PluginInfo {
 	for _, id := range m.sortedIDs() {
 		p := m.plugins[id]
 		list = append(list, PluginInfo{
-			Metadata: p.Metadata(),
-			Enabled:  m.isEnabled(id),
+			Metadata:      p.Metadata(),
+			Enabled:       m.isEnabled(id),
+			ShowInSidebar: m.isSidebarVisible(id),
 		})
 	}
 	return list
 }
 
-// Enable enables a plugin (takes effect on next restart for now).
+// Enable enables a plugin. Takes effect immediately: updates the disabled map
+// and starts the plugin's background tasks.
 func (m *Manager) Enable(id string) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
-	if _, ok := m.plugins[id]; !ok {
+	p, ok := m.plugins[id]
+	if !ok {
 		return fmt.Errorf("plugin %q not found", id)
 	}
-	return m.setState(id, true)
+
+	if err := m.setState(id, true); err != nil {
+		return err
+	}
+
+	// Remove from disabled map so guard middleware allows requests.
+	m.disabled.Delete(id)
+
+	// Start the plugin's background tasks.
+	if err := p.Start(); err != nil {
+		m.logger.Error("failed to start plugin on enable", "id", id, "err", err)
+		// Non-fatal: plugin is enabled but Start failed.
+	} else {
+		m.logger.Info("plugin enabled and started", "id", id)
+	}
+	return nil
 }
 
-// Disable disables a plugin (takes effect on next restart for now).
+// Disable disables a plugin. Takes effect immediately: stops the plugin and
+// blocks its API routes via the guard middleware.
 func (m *Manager) Disable(id string) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
-	if _, ok := m.plugins[id]; !ok {
+	p, ok := m.plugins[id]
+	if !ok {
 		return fmt.Errorf("plugin %q not found", id)
 	}
-	return m.setState(id, false)
+
+	// Stop background tasks first.
+	if err := p.Stop(); err != nil {
+		m.logger.Error("failed to stop plugin on disable", "id", id, "err", err)
+	}
+
+	// Mark as disabled in memory (guard middleware blocks immediately).
+	m.disabled.Store(id, true)
+
+	// Persist to DB.
+	if err := m.setState(id, false); err != nil {
+		return err
+	}
+
+	m.logger.Info("plugin disabled", "id", id)
+	return nil
 }
 
 // FrontendManifests collects manifests from all enabled plugins that implement
@@ -227,10 +279,11 @@ func (m *Manager) FrontendManifests() []FrontendManifest {
 // Internal helpers
 // ──────────────────────────────────────────────────
 
-// PluginState persists enabled/disabled state per plugin.
+// PluginState persists enabled/disabled and sidebar visibility state per plugin.
 type PluginState struct {
-	ID      string `gorm:"primaryKey;size:64"`
-	Enabled *bool  `gorm:"default:true"`
+	ID            string `gorm:"primaryKey;size:64"`
+	Enabled       *bool  `gorm:"default:true"`
+	ShowInSidebar *bool  `gorm:"default:true"`
 }
 
 func (PluginState) TableName() string { return "plugin_states" }
@@ -238,18 +291,93 @@ func (PluginState) TableName() string { return "plugin_states" }
 func (m *Manager) isEnabled(id string) bool {
 	var state PluginState
 	if err := m.db.Where("id = ?", id).First(&state).Error; err != nil {
-		return true // enabled by default if no record exists
+		// No record — only AI plugin enabled by default on fresh installs.
+		return id == "ai"
 	}
 	if state.Enabled == nil {
-		return true
+		return id == "ai"
 	}
 	return *state.Enabled
+}
+
+func (m *Manager) isSidebarVisible(id string) bool {
+	var state PluginState
+	if err := m.db.Where("id = ?", id).First(&state).Error; err != nil {
+		return true // visible by default
+	}
+	if state.ShowInSidebar == nil {
+		return true
+	}
+	return *state.ShowInSidebar
+}
+
+// SetSidebarVisible sets whether a plugin appears in the sidebar.
+func (m *Manager) SetSidebarVisible(id string, visible bool) error {
+	if _, ok := m.plugins[id]; !ok {
+		return fmt.Errorf("plugin %q not found", id)
+	}
+	return m.db.Where("id = ?", id).
+		Assign(map[string]interface{}{"show_in_sidebar": visible}).
+		FirstOrCreate(&PluginState{ID: id}).Error
 }
 
 func (m *Manager) setState(id string, enabled bool) error {
 	return m.db.Where("id = ?", id).
 		Assign(PluginState{ID: id, Enabled: &enabled}).
 		FirstOrCreate(&PluginState{}).Error
+}
+
+// seedDefaultStates creates default plugin_states rows on fresh installs.
+// Only AI is enabled by default; all others are disabled.
+func (m *Manager) seedDefaultStates() {
+	var count int64
+	m.db.Model(&PluginState{}).Count(&count)
+	if count > 0 {
+		return // existing install — respect current state
+	}
+
+	m.logger.Info("fresh install detected, seeding default plugin states")
+	enabled := true
+	disabled := false
+	for id := range m.plugins {
+		if id == "ai" {
+			m.db.Create(&PluginState{ID: id, Enabled: &enabled})
+		} else {
+			m.db.Create(&PluginState{ID: id, Enabled: &disabled})
+		}
+	}
+}
+
+// PluginGuardMiddleware returns a Gin middleware that blocks requests to
+// disabled plugins. Apply this to the plugin router groups.
+func (m *Manager) PluginGuardMiddleware() gin.HandlerFunc {
+	return func(c *gin.Context) {
+		// Path format: /api/plugins/{pluginID}/...
+		// The router group already strips the prefix up to /plugins/, so we
+		// need to extract from the full URL path.
+		pluginID := extractPluginID(c.Request.URL.Path)
+		if pluginID != "" {
+			if _, isDisabled := m.disabled.Load(pluginID); isDisabled {
+				c.JSON(http.StatusNotFound, gin.H{"error": "Plugin not available"})
+				c.Abort()
+				return
+			}
+		}
+		c.Next()
+	}
+}
+
+// extractPluginID extracts the plugin ID from a URL path like
+// /api/plugins/{id}/... Returns empty string if not found.
+func extractPluginID(path string) string {
+	parts := strings.Split(strings.TrimPrefix(path, "/"), "/")
+	// Look for "plugins" segment, then the next segment is the ID.
+	for i, p := range parts {
+		if p == "plugins" && i+1 < len(parts) {
+			return parts[i+1]
+		}
+	}
+	return ""
 }
 
 // topoSort returns plugin IDs in dependency order using Kahn's algorithm.
@@ -313,9 +441,4 @@ func (m *Manager) sortedIDs() []string {
 	}
 	sort.Strings(ids)
 	return ids
-}
-
-// migratePluginState ensures every registered plugin has a state row.
-func init() {
-	// PluginState uses gorm tag defaults, nothing else needed here.
 }

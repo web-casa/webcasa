@@ -1,6 +1,6 @@
-import { useState, useEffect, useCallback } from 'react'
+import { useState, useEffect, useCallback, useRef } from 'react'
 import { Box, Flex, Heading, Text, Card, Button, TextField, Badge, Tabs, Dialog, Select, Separator, IconButton, Tooltip } from '@radix-ui/themes'
-import { Store, Search, RefreshCw, Settings2, Plus, Trash2, Play, Square, ArrowUpCircle, ExternalLink, Package } from 'lucide-react'
+import { Store, Search, RefreshCw, Settings2, Plus, Trash2, Play, Square, ArrowUpCircle, ExternalLink, Package, Copy, Check } from 'lucide-react'
 import { useNavigate } from 'react-router'
 import { appstoreAPI } from '../api/index.js'
 import { useTranslation } from 'react-i18next'
@@ -22,6 +22,12 @@ export default function AppStore() {
     const [sources, setSources] = useState([])
     const [newSource, setNewSource] = useState({ name: '', url: '', branch: 'main' })
     const [actionLoading, setActionLoading] = useState({})
+    const [syncDialog, setSyncDialog] = useState(false)
+    const [syncLogs, setSyncLogs] = useState([])
+    const [syncDone, setSyncDone] = useState(false)
+    const [syncError, setSyncError] = useState(false)
+    const [syncCopied, setSyncCopied] = useState(false)
+    const syncLogsEndRef = useRef(null)
 
     const pageSize = 24
 
@@ -105,15 +111,53 @@ export default function AppStore() {
         } catch { /* ignore */ }
     }
 
-    const handleSyncSource = async (id) => {
-        setActionLoading(prev => ({ ...prev, [`sync-${id}`]: true }))
-        try {
-            await appstoreAPI.syncSource(id)
-            await fetchSources()
-            // Re-fetch apps after sync
-            setTimeout(() => { fetchApps(); fetchCategories() }, 3000)
-        } catch { /* ignore */ }
-        finally { setActionLoading(prev => ({ ...prev, [`sync-${id}`]: false })) }
+    const handleSyncSource = (id) => {
+        setSyncLogs([])
+        setSyncDone(false)
+        setSyncError(false)
+        setSyncDialog(true)
+
+        const token = localStorage.getItem('token')
+        fetch(appstoreAPI.syncSourceStreamUrl(id), {
+            headers: { 'Authorization': `Bearer ${token}` },
+        }).then(async (response) => {
+            const reader = response.body.getReader()
+            const decoder = new TextDecoder()
+            let buffer = ''
+
+            while (true) {
+                const { done, value } = await reader.read()
+                if (done) break
+                buffer += decoder.decode(value, { stream: true })
+
+                const lines = buffer.split('\n')
+                buffer = lines.pop() || ''
+
+                for (const line of lines) {
+                    if (line.startsWith('data: ')) {
+                        setSyncLogs((prev) => [...prev, line.slice(6)])
+                    } else if (line.startsWith('event: done')) {
+                        setSyncDone(true)
+                    } else if (line.startsWith('event: error')) {
+                        setSyncError(true)
+                    }
+                }
+            }
+
+            setSyncDone((prev) => prev || true)
+            fetchSources()
+            fetchApps()
+            fetchCategories()
+        }).catch((err) => {
+            setSyncLogs((prev) => [...prev, `ERROR: ${err.message}`])
+            setSyncError(true)
+        })
+    }
+
+    const handleCopySyncLogs = () => {
+        navigator.clipboard.writeText(syncLogs.join('\n'))
+        setSyncCopied(true)
+        setTimeout(() => setSyncCopied(false), 2000)
     }
 
     const handleRemoveSource = async (id) => {
@@ -409,6 +453,59 @@ export default function AppStore() {
                     <Flex justify="end" mt="4">
                         <Dialog.Close>
                             <Button variant="soft">{t('common.close')}</Button>
+                        </Dialog.Close>
+                    </Flex>
+                </Dialog.Content>
+            </Dialog.Root>
+
+            {/* Sync Log Dialog */}
+            <Dialog.Root open={syncDialog} onOpenChange={(open) => { if (!open) setSyncDialog(false) }}>
+                <Dialog.Content maxWidth="600px">
+                    <Dialog.Title>
+                        {syncError ? t('appstore.sync_error') : syncDone ? t('appstore.synced') : t('appstore.syncing')}
+                    </Dialog.Title>
+                    <Box
+                        style={{
+                            background: 'var(--cp-surface)',
+                            border: '1px solid var(--cp-border)',
+                            borderRadius: 8,
+                            padding: 12,
+                            maxHeight: 300,
+                            overflowY: 'auto',
+                            fontFamily: 'monospace',
+                            fontSize: '0.8rem',
+                            lineHeight: 1.6,
+                        }}
+                    >
+                        {syncLogs.map((log, i) => (
+                            <Text
+                                key={i}
+                                size="1"
+                                style={{
+                                    display: 'block',
+                                    color: log.startsWith('ERROR') ? 'var(--red-11)' : 'var(--cp-text)',
+                                    whiteSpace: 'pre-wrap',
+                                    wordBreak: 'break-all',
+                                }}
+                            >
+                                {log}
+                            </Text>
+                        ))}
+                        {!syncDone && !syncError && (
+                            <Flex align="center" gap="1" mt="1">
+                                <RefreshCw size={12} className="spin" />
+                                <Text size="1" color="gray">{t('appstore.syncing')}</Text>
+                            </Flex>
+                        )}
+                        <div ref={syncLogsEndRef} />
+                    </Box>
+                    <Flex justify="between" mt="3">
+                        <Button variant="soft" size="1" onClick={handleCopySyncLogs}>
+                            {syncCopied ? <Check size={14} /> : <Copy size={14} />}
+                            {t('plugins.copy_logs')}
+                        </Button>
+                        <Dialog.Close>
+                            <Button variant="solid" size="1">{t('common.close')}</Button>
                         </Dialog.Close>
                     </Flex>
                 </Dialog.Content>

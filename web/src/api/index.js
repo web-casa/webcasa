@@ -152,6 +152,7 @@ export const certificateAPI = {
 export const dockerAPI = {
     // System
     info: () => api.get('/plugins/docker/info'),
+    status: () => api.get('/plugins/docker/status'),
 
     // Stacks
     listStacks: () => api.get('/plugins/docker/stacks'),
@@ -260,6 +261,7 @@ export const fileManagerAPI = {
 // ============ Database (plugin) ============
 export const databaseAPI = {
     engines: () => api.get('/plugins/database/engines'),
+    presets: () => api.get('/plugins/database/presets'),
 
     listInstances: () => api.get('/plugins/database/instances'),
     getInstance: (id) => api.get(`/plugins/database/instances/${id}`),
@@ -334,6 +336,7 @@ export const appstoreAPI = {
     listSources: () => api.get('/plugins/appstore/sources'),
     addSource: (data) => api.post('/plugins/appstore/sources', data),
     syncSource: (id) => api.post(`/plugins/appstore/sources/${id}/sync`),
+    syncSourceStreamUrl: (id) => `/api/plugins/appstore/sources/${id}/sync/stream`,
     removeSource: (id) => api.delete(`/plugins/appstore/sources/${id}`),
     // Installed
     listInstalled: () => api.get('/plugins/appstore/installed'),
@@ -356,6 +359,8 @@ export const pluginAPI = {
     enable: (id) => api.post(`/plugins/${id}/enable`),
     disable: (id) => api.post(`/plugins/${id}/disable`),
     frontendManifests: () => api.get('/plugins/frontend-manifests'),
+    setSidebarVisible: (id, visible) => api.post(`/plugins/${id}/sidebar`, { visible }),
+    installUrl: (id) => `/api/plugins/${id}/install`,
 }
 
 // ============ DNS Providers ============

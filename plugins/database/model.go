@@ -12,6 +12,106 @@ const (
 	EngineRedis    EngineType = "redis"
 )
 
+// EngineConfig holds tuneable configuration parameters for a database instance.
+// Fields are engine-specific: only the relevant ones are used per engine type.
+type EngineConfig struct {
+	// MySQL / MariaDB
+	InnoDBBufferPoolSize string  `json:"innodb_buffer_pool_size,omitempty"` // e.g. "128M"
+	MaxConnections       int     `json:"max_connections,omitempty"`
+	CharacterSetServer   string  `json:"character_set_server,omitempty"`    // e.g. "utf8mb4"
+	CollationServer      string  `json:"collation_server,omitempty"`        // e.g. "utf8mb4_unicode_ci"
+	SlowQueryLog         *bool   `json:"slow_query_log,omitempty"`
+	LongQueryTime        float64 `json:"long_query_time,omitempty"` // seconds
+
+	// PostgreSQL
+	SharedBuffers           string `json:"shared_buffers,omitempty"`             // e.g. "128MB"
+	WorkMem                 string `json:"work_mem,omitempty"`                   // e.g. "4MB"
+	EffectiveCacheSize      string `json:"effective_cache_size,omitempty"`        // e.g. "384MB"
+	WalLevel                string `json:"wal_level,omitempty"`                  // replica / logical / minimal
+	LogMinDurationStatement *int   `json:"log_min_duration_statement,omitempty"` // ms, -1=off
+
+	// Redis
+	MaxMemory       string `json:"maxmemory,omitempty"`        // e.g. "256mb"
+	MaxMemoryPolicy string `json:"maxmemory_policy,omitempty"` // e.g. "noeviction"
+	AppendOnly      *bool  `json:"appendonly,omitempty"`
+	Save            string `json:"save,omitempty"` // e.g. "3600 1 300 100" or "" to disable
+}
+
+// EnginePresets provides development and production preset configurations.
+var EnginePresets = map[EngineType]map[string]EngineConfig{
+	EngineMySQL: {
+		"development": {
+			InnoDBBufferPoolSize: "128M",
+			MaxConnections:       50,
+			CharacterSetServer:   "utf8mb4",
+			CollationServer:      "utf8mb4_unicode_ci",
+			SlowQueryLog:         boolPtr(true),
+			LongQueryTime:        2,
+		},
+		"production": {
+			InnoDBBufferPoolSize: "1G",
+			MaxConnections:       200,
+			CharacterSetServer:   "utf8mb4",
+			CollationServer:      "utf8mb4_unicode_ci",
+			SlowQueryLog:         boolPtr(true),
+			LongQueryTime:        1,
+		},
+	},
+	EngineMariaDB: {
+		"development": {
+			InnoDBBufferPoolSize: "128M",
+			MaxConnections:       50,
+			CharacterSetServer:   "utf8mb4",
+			CollationServer:      "utf8mb4_unicode_ci",
+			SlowQueryLog:         boolPtr(true),
+			LongQueryTime:        2,
+		},
+		"production": {
+			InnoDBBufferPoolSize: "1G",
+			MaxConnections:       200,
+			CharacterSetServer:   "utf8mb4",
+			CollationServer:      "utf8mb4_unicode_ci",
+			SlowQueryLog:         boolPtr(true),
+			LongQueryTime:        1,
+		},
+	},
+	EnginePostgres: {
+		"development": {
+			SharedBuffers:           "64MB",
+			MaxConnections:          50,
+			WorkMem:                 "2MB",
+			EffectiveCacheSize:      "192MB",
+			WalLevel:                "replica",
+			LogMinDurationStatement: intPtr(2000),
+		},
+		"production": {
+			SharedBuffers:           "512MB",
+			MaxConnections:          200,
+			WorkMem:                 "8MB",
+			EffectiveCacheSize:      "1536MB",
+			WalLevel:                "replica",
+			LogMinDurationStatement: intPtr(1000),
+		},
+	},
+	EngineRedis: {
+		"development": {
+			MaxMemory:       "128mb",
+			MaxMemoryPolicy: "noeviction",
+			AppendOnly:      boolPtr(false),
+			Save:            "3600 1 300 100",
+		},
+		"production": {
+			MaxMemory:       "1gb",
+			MaxMemoryPolicy: "noeviction",
+			AppendOnly:      boolPtr(true),
+			Save:            "3600 1 300 100 60 10000",
+		},
+	},
+}
+
+func boolPtr(b bool) *bool { return &b }
+func intPtr(i int) *int    { return &i }
+
 // EngineInfo describes a supported engine with available versions.
 type EngineInfo struct {
 	Engine   EngineType `json:"engine"`
@@ -23,10 +123,10 @@ type EngineInfo struct {
 
 // SupportedEngines lists all available database engines.
 var SupportedEngines = []EngineInfo{
+	{Engine: EngineMariaDB, Name: "MariaDB", Versions: []string{"11.8", "11.4", "10.11"}, Default: "11.8", Port: 3306},
 	{Engine: EngineMySQL, Name: "MySQL", Versions: []string{"8.4", "8.0"}, Default: "8.4", Port: 3306},
-	{Engine: EnginePostgres, Name: "PostgreSQL", Versions: []string{"17", "16", "15"}, Default: "16", Port: 5432},
-	{Engine: EngineMariaDB, Name: "MariaDB", Versions: []string{"11", "10.11"}, Default: "11", Port: 3306},
-	{Engine: EngineRedis, Name: "Redis", Versions: []string{"7"}, Default: "7", Port: 6379},
+	{Engine: EnginePostgres, Name: "PostgreSQL", Versions: []string{"18", "17", "16", "15", "14"}, Default: "17", Port: 5432},
+	{Engine: EngineRedis, Name: "Redis", Versions: []string{"8.6", "8.4", "7.4", "6.2"}, Default: "8.6", Port: 6379},
 }
 
 // Instance represents a Docker-managed database server instance.
@@ -40,7 +140,8 @@ type Instance struct {
 	RootPassword  string     `gorm:"size:256" json:"-"`
 	DataDir       string     `gorm:"size:512" json:"data_dir"`
 	ContainerName string     `gorm:"size:128" json:"container_name"`
-	MemoryLimit   string     `gorm:"size:32;default:512m" json:"memory_limit"`
+	MemoryLimit   string     `gorm:"size:32;default:0.5g" json:"memory_limit"`
+	Config        string     `gorm:"type:text" json:"config"`
 	CreatedAt     time.Time  `json:"created_at"`
 	UpdatedAt     time.Time  `json:"updated_at"`
 }
@@ -82,8 +183,9 @@ type CreateInstanceRequest struct {
 	Version      string     `json:"version"`
 	Port         int        `json:"port"`
 	RootPassword string     `json:"root_password" binding:"required"`
-	MemoryLimit  string     `json:"memory_limit"`
-	AutoStart    bool       `json:"auto_start"`
+	MemoryLimit  string        `json:"memory_limit"`
+	AutoStart    bool          `json:"auto_start"`
+	Config       *EngineConfig `json:"config,omitempty"`
 }
 
 // CreateDatabaseRequest is the input for creating a logical database.
