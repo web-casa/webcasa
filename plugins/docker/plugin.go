@@ -197,9 +197,12 @@ func (p *Plugin) installDocker(c *gin.Context) {
 	writeSSE("Downloading EasyDocker install script...")
 
 	// Build command: download and run EasyDocker with non-interactive flags.
-	args := []string{"-c", "curl -sSL https://raw.githubusercontent.com/web-casa/easydocker/main/docker.sh | bash -s -- -y"}
+	// --mode install: skip the interactive mode selection menu
+	// -y: skip all confirmation prompts
+	// --mirror: select mirror (none by default, or user-specified)
+	args := []string{"-c", "curl -sSL https://raw.githubusercontent.com/web-casa/easydocker/main/docker.sh | bash -s -- --mode install -y"}
 	if req.Mirror != "" {
-		args[1] = fmt.Sprintf("curl -sSL https://raw.githubusercontent.com/web-casa/easydocker/main/docker.sh | bash -s -- -y --mirror %s", req.Mirror)
+		args[1] = fmt.Sprintf("curl -sSL https://raw.githubusercontent.com/web-casa/easydocker/main/docker.sh | bash -s -- --mode install -y --mirror %s", req.Mirror)
 	}
 
 	cmd := exec.Command("bash", args...)
