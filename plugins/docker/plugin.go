@@ -2,10 +2,12 @@ package docker
 
 import (
 	"bufio"
+	"context"
 	"fmt"
 	"net/http"
 	"os/exec"
 	"strings"
+	"time"
 
 	"github.com/gin-gonic/gin"
 	pluginpkg "github.com/web-casa/webcasa/internal/plugin"
@@ -144,20 +146,71 @@ func (p *Plugin) requireDocker() gin.HandlerFunc {
 	}
 }
 
+// tryReconnect attempts to connect to the Docker daemon and update the plugin state.
+// Returns true if the daemon is reachable.
+func (p *Plugin) tryReconnect() bool {
+	socketPath := "/var/run/docker.sock"
+	client, err := NewClient(socketPath)
+	if err != nil {
+		return false
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	if err := client.Ping(ctx); err != nil {
+		client.Close()
+		return false
+	}
+	// Update plugin state
+	p.client = client
+	p.dockerAvailable = true
+	p.dockerError = ""
+	if p.svc != nil {
+		p.svc.client = client
+	}
+	if p.handler != nil {
+		p.handler.client = client
+	}
+	return true
+}
+
 // dockerStatus returns the current Docker availability status.
+// It performs a live check: if the cached state says Docker is unavailable
+// but the binary is installed, it tries to reconnect.
 func (p *Plugin) dockerStatus(c *gin.Context) {
 	installed := false
-	daemonRunning := p.dockerAvailable
 	version := ""
-	errMsg := p.dockerError
 
 	// Check if docker binary is installed.
 	if path, err := exec.LookPath("docker"); err == nil && path != "" {
 		installed = true
-		// Try to get version.
 		if out, err := exec.Command("docker", "--version").Output(); err == nil {
-			version = string(out)
+			version = strings.TrimSpace(string(out))
 		}
+	}
+
+	daemonRunning := p.dockerAvailable
+
+	// Live check: if Docker binary is present but cached state says not available,
+	// try to reconnect now. This handles the case where Docker was installed
+	// after the plugin started.
+	if installed && !daemonRunning {
+		daemonRunning = p.tryReconnect()
+	}
+
+	// Also verify that a cached "available" state is still valid.
+	if daemonRunning && p.client != nil {
+		ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+		defer cancel()
+		if err := p.client.Ping(ctx); err != nil {
+			daemonRunning = false
+			p.dockerAvailable = false
+			p.dockerError = err.Error()
+		}
+	}
+
+	errMsg := ""
+	if !daemonRunning {
+		errMsg = p.dockerError
 	}
 
 	c.JSON(http.StatusOK, gin.H{
@@ -192,6 +245,12 @@ func (p *Plugin) installDocker(c *gin.Context) {
 	writeEvent := func(event, data string) {
 		fmt.Fprintf(c.Writer, "event: %s\ndata: %s\n\n", event, data)
 		c.Writer.Flush()
+	}
+
+	// Quick check: if Docker and Compose are already installed and daemon is running,
+	// just reconnect the plugin and skip the EasyDocker script entirely.
+	if p.checkDockerAlreadyReady(writeSSE, writeEvent) {
+		return
 	}
 
 	writeSSE("Downloading EasyDocker install script...")
@@ -253,23 +312,59 @@ func (p *Plugin) installDocker(c *gin.Context) {
 	writeSSE("Docker installation completed successfully!")
 
 	// Try to reconnect to Docker daemon after installation.
-	socketPath := "/var/run/docker.sock"
-	if client, err := NewClient(socketPath); err == nil {
-		p.client = client
-		p.dockerAvailable = true
-		p.dockerError = ""
-		if p.svc != nil {
-			p.svc.client = client
-		}
-		if p.handler != nil {
-			p.handler.client = client
-		}
+	if p.tryReconnect() {
 		writeSSE("Docker daemon connected successfully!")
 	} else {
 		writeSSE("Docker installed but daemon connection pending. Please start Docker if needed.")
 	}
 
 	writeEvent("done", "ok")
+}
+
+// checkDockerAlreadyReady checks if Docker and Docker Compose are already
+// installed and the daemon is running. If so, it reconnects the plugin and
+// returns true (the caller should return immediately). This avoids running
+// the EasyDocker script unnecessarily.
+func (p *Plugin) checkDockerAlreadyReady(writeSSE func(string), writeEvent func(string, string)) bool {
+	// Check docker binary
+	dockerPath, err := exec.LookPath("docker")
+	if err != nil || dockerPath == "" {
+		return false
+	}
+
+	// Check docker compose (plugin mode: "docker compose version")
+	composeOut, err := exec.Command("docker", "compose", "version").CombinedOutput()
+	if err != nil {
+		return false
+	}
+
+	// Check daemon is running by trying to connect
+	if !p.tryReconnect() {
+		// Daemon binary exists but isn't running — try to start it
+		writeSSE("Docker is installed but not running. Starting Docker service...")
+		if startErr := exec.Command("systemctl", "start", "docker").Run(); startErr != nil {
+			return false // couldn't start, let EasyDocker handle it
+		}
+		// Wait a moment and retry
+		time.Sleep(2 * time.Second)
+		if !p.tryReconnect() {
+			return false
+		}
+	}
+
+	// Docker + Compose are installed and daemon is running
+	dockerVer := ""
+	if out, err := exec.Command("docker", "--version").Output(); err == nil {
+		dockerVer = strings.TrimSpace(string(out))
+	}
+	composeVer := strings.TrimSpace(string(composeOut))
+
+	writeSSE("Docker is already installed and running!")
+	writeSSE(fmt.Sprintf("  %s", dockerVer))
+	writeSSE(fmt.Sprintf("  %s", composeVer))
+	writeSSE("No installation needed.")
+	writeEvent("done", "ok")
+	return true
 }
 
 // stripANSI removes ANSI escape sequences from a string.
