@@ -12,14 +12,16 @@
 #    bash install.sh
 #
 #  Options:
-#    --uninstall     Remove WebCasa (keeps data by default)
-#    --purge         Remove WebCasa and all data
-#    --no-caddy      Skip Caddy installation
-#    --no-docker     Skip Docker group setup
-#    --port PORT     Set panel port (default: 39921)
-#    --from-source   Build from source instead of downloading pre-built binary
-#    --pro           Install Pro edition (requires RHEL-based OS 9/10)
-#    -y, --yes       Non-interactive mode (skip prompts)
+#    --uninstall             Remove WebCasa (keeps data by default)
+#    --purge                 Remove WebCasa and all data
+#    --no-caddy              Skip Caddy installation
+#    --no-docker             Skip Docker group setup
+#    --port PORT             Set panel port (default: 39921)
+#    --from-source           Build from source instead of downloading pre-built binary
+#    --upgrade               Upgrade to latest version (pre-built binary)
+#    --upgrade-from-source   Upgrade to latest version (build from source)
+#    --pro                   Install Pro edition (requires RHEL-based OS 9/10)
+#    -y, --yes               Non-interactive mode (skip prompts)
 # ============================================================================
 
 set -euo pipefail
@@ -48,6 +50,8 @@ PURGE=false
 NON_INTERACTIVE=false
 FROM_SOURCE=false
 PRO_MODE=false
+UPGRADE=false
+UPGRADE_FROM_SOURCE=false
 
 # ==================== Colors ====================
 RED='\033[0;31m'
@@ -178,6 +182,8 @@ parse_args() {
             --no-docker)    SKIP_DOCKER_GROUP=true; shift ;;
             --port)         PANEL_PORT="$2"; shift 2 ;;
             --from-source)  FROM_SOURCE=true; shift ;;
+            --upgrade)      UPGRADE=true; shift ;;
+            --upgrade-from-source) UPGRADE_FROM_SOURCE=true; FROM_SOURCE=true; shift ;;
             --pro)          PRO_MODE=true; shift ;;
             -y|--yes)       NON_INTERACTIVE=true; shift ;;
             -h|--help)      usage; exit 0 ;;
@@ -199,8 +205,10 @@ Options:
   --no-caddy       Skip Caddy installation
   --no-docker      Skip Docker group setup
   --port PORT      Set panel port (default: 39921)
-  --from-source    Build from source (requires Go + Node.js)
-  --pro            Install Pro edition (RHEL-based OS 9/10 only)
+  --from-source              Build from source (requires Go + Node.js)
+  --upgrade                  Upgrade to latest version (pre-built binary)
+  --upgrade-from-source      Upgrade to latest version (build from source)
+  --pro                      Install Pro edition (RHEL-based OS 9/10 only)
   -y, --yes        Non-interactive mode (skip prompts)
   -h, --help       Show this help
 
@@ -830,6 +838,92 @@ print_summary() {
     echo ""
 }
 
+# ==================== Upgrade ====================
+do_upgrade() {
+    local BUILD_MODE="$1" # "prebuilt" or "source"
+
+    # Verify WebCasa is installed
+    if [[ ! -f "$INSTALL_DIR/webcasa" ]]; then
+        fatal "WebCasa is not installed. Run install.sh without --upgrade first."
+    fi
+
+    # Show current version
+    local CURRENT_VERSION
+    CURRENT_VERSION=$("$INSTALL_DIR/webcasa" --version 2>/dev/null || echo "unknown")
+    info "Current version: ${CURRENT_VERSION}"
+    info "Target version:  ${WEBCASA_VERSION}"
+
+    if [[ "$CURRENT_VERSION" == "$WEBCASA_VERSION" ]]; then
+        warn "Already running v${WEBCASA_VERSION}."
+        if ! $NON_INTERACTIVE; then
+            read -p "   Continue anyway? [y/N]: " CONFIRM || true
+            [[ "$CONFIRM" =~ ^[yY] ]] || { info "Upgrade cancelled."; exit 0; }
+        fi
+    fi
+
+    # Stop service
+    step "Stopping WebCasa service"
+    if systemctl is-active --quiet webcasa 2>/dev/null; then
+        systemctl stop webcasa
+        success "Service stopped"
+    else
+        info "Service is not running"
+    fi
+
+    # Backup current binary
+    if [[ -f "$INSTALL_DIR/webcasa" ]]; then
+        cp -f "$INSTALL_DIR/webcasa" "$INSTALL_DIR/webcasa.bak"
+        info "Backed up current binary to webcasa.bak"
+    fi
+
+    # Build or download new version
+    if [[ "$BUILD_MODE" == "source" ]]; then
+        install_from_source
+    else
+        install_prebuilt
+    fi
+
+    # Update systemd service in case it changed
+    setup_systemd
+
+    # Restart service
+    step "Starting WebCasa service"
+    systemctl start webcasa
+    sleep 2
+
+    if systemctl is-active --quiet webcasa; then
+        # Remove backup on success
+        rm -f "$INSTALL_DIR/webcasa.bak"
+        success "WebCasa upgraded to v${WEBCASA_VERSION}!"
+    else
+        # Rollback on failure
+        error "WebCasa failed to start after upgrade!"
+        if [[ -f "$INSTALL_DIR/webcasa.bak" ]]; then
+            warn "Rolling back to previous version..."
+            mv -f "$INSTALL_DIR/webcasa.bak" "$INSTALL_DIR/webcasa"
+            systemctl start webcasa
+            if systemctl is-active --quiet webcasa; then
+                success "Rollback successful. Previous version restored."
+            else
+                fatal "Rollback failed. Check logs: journalctl -u webcasa -n 50 --no-pager"
+            fi
+        fi
+        exit 1
+    fi
+
+    echo ""
+    echo -e "${GREEN}${BOLD}╔══════════════════════════════════════════════════════════════╗${NC}"
+    echo -e "${GREEN}${BOLD}║            Web.Casa Upgrade Complete!                    ║${NC}"
+    echo -e "${GREEN}${BOLD}╚══════════════════════════════════════════════════════════════╝${NC}"
+    echo ""
+    echo -e "  ${BOLD}Version:${NC}  ${CURRENT_VERSION} → ${WEBCASA_VERSION}"
+    echo -e "  ${BOLD}Binary:${NC}   ${INSTALL_DIR}/webcasa"
+    echo -e "  ${BOLD}Status:${NC}   $(systemctl is-active webcasa)"
+    echo ""
+
+    exit 0
+}
+
 # ==================== Main ====================
 main() {
     echo -e "${GREEN}${BOLD}"
@@ -860,6 +954,14 @@ main() {
 
     if $UNINSTALL; then
         do_uninstall
+    fi
+
+    # Upgrade mode: skip full install, only replace binary + frontend
+    if $UPGRADE_FROM_SOURCE; then
+        do_upgrade "source"
+    fi
+    if $UPGRADE; then
+        do_upgrade "prebuilt"
     fi
 
     # Interactive port prompt
