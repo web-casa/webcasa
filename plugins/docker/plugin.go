@@ -222,17 +222,29 @@ func (p *Plugin) installDocker(c *gin.Context) {
 	}
 
 	// Stream output line by line.
+	rebootDetected := false
 	scanner := bufio.NewScanner(stdout)
 	for scanner.Scan() {
 		line := scanner.Text()
 		// Strip ANSI color codes for cleaner SSE output.
 		clean := stripANSI(line)
 		if clean != "" {
+			// Detect reboot signal from EasyDocker script
+			if strings.Contains(strings.ToLower(clean), "reboot") {
+				rebootDetected = true
+			}
 			writeSSE(clean)
 		}
 	}
 
 	if err := cmd.Wait(); err != nil {
+		// If a reboot was detected, this is expected — the script triggers a reboot
+		// which kills the process. This is not a real failure.
+		if rebootDetected {
+			writeSSE("Server is rebooting to load new kernel modules...")
+			writeEvent("reboot", "ok")
+			return
+		}
 		writeSSE("ERROR: Installation failed: " + err.Error())
 		writeEvent("error", "Installation failed: "+err.Error())
 		return

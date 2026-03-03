@@ -1,6 +1,6 @@
 import { useState, useRef } from 'react'
-import { Box, Flex, Text, Card, Button, Code, ScrollArea, Select } from '@radix-ui/themes'
-import { Container, RefreshCw, AlertTriangle, Download, Terminal } from 'lucide-react'
+import { Box, Flex, Text, Card, Button, Code, ScrollArea, Select, Callout } from '@radix-ui/themes'
+import { Container, RefreshCw, AlertTriangle, Download, Terminal, Copy, Check, RotateCcw } from 'lucide-react'
 import { useTranslation } from 'react-i18next'
 import { dockerAPI } from '../api'
 
@@ -10,11 +10,34 @@ export default function DockerRequired({ installed, daemonRunning, error, onRetr
     const [installLog, setInstallLog] = useState([])
     const [installDone, setInstallDone] = useState(false)
     const [installError, setInstallError] = useState(null)
+    const [needsReboot, setNeedsReboot] = useState(false)
     const [mirror, setMirror] = useState('none')
+    const [copied, setCopied] = useState(false)
     const logEndRef = useRef(null)
 
     const scrollToBottom = () => {
         logEndRef.current?.scrollIntoView({ behavior: 'smooth' })
+    }
+
+    const handleCopyLogs = async () => {
+        const text = installLog.join('\n')
+        try {
+            await navigator.clipboard.writeText(text)
+            setCopied(true)
+            setTimeout(() => setCopied(false), 2000)
+        } catch {
+            // Fallback for non-HTTPS contexts
+            const textarea = document.createElement('textarea')
+            textarea.value = text
+            textarea.style.position = 'fixed'
+            textarea.style.opacity = '0'
+            document.body.appendChild(textarea)
+            textarea.select()
+            document.execCommand('copy')
+            document.body.removeChild(textarea)
+            setCopied(true)
+            setTimeout(() => setCopied(false), 2000)
+        }
     }
 
     const handleInstall = async () => {
@@ -22,6 +45,7 @@ export default function DockerRequired({ installed, daemonRunning, error, onRetr
         setInstallLog([])
         setInstallDone(false)
         setInstallError(null)
+        setNeedsReboot(false)
 
         try {
             const token = localStorage.getItem('token')
@@ -37,6 +61,7 @@ export default function DockerRequired({ installed, daemonRunning, error, onRetr
             const reader = response.body.getReader()
             const decoder = new TextDecoder()
             let buffer = ''
+            let detectedReboot = false
 
             while (true) {
                 const { done, value } = await reader.read()
@@ -49,17 +74,40 @@ export default function DockerRequired({ installed, daemonRunning, error, onRetr
                 for (const line of lines) {
                     if (line.startsWith('data: ')) {
                         const data = line.slice(6)
+                        // Detect reboot signal from EasyDocker script
+                        if (data.includes('Rebooting') || data.includes('reboot')) {
+                            detectedReboot = true
+                        }
                         setInstallLog(prev => [...prev, data])
                         setTimeout(scrollToBottom, 50)
                     } else if (line.startsWith('event: done')) {
                         setInstallDone(true)
+                    } else if (line.startsWith('event: reboot')) {
+                        detectedReboot = true
+                        setNeedsReboot(true)
                     } else if (line.startsWith('event: error')) {
                         setInstallError(true)
                     }
                 }
             }
+
+            // If stream ended cleanly after reboot detection
+            if (detectedReboot && !installDone) {
+                setNeedsReboot(true)
+            }
         } catch (err) {
-            setInstallError(err.message)
+            // Check if we detected a reboot before the connection dropped
+            // The log state is updated asynchronously, so check the ref pattern
+            setInstallLog(prev => {
+                const hasReboot = prev.some(l => l.includes('Rebooting') || l.includes('reboot'))
+                if (hasReboot) {
+                    setNeedsReboot(true)
+                    setInstallError(null)
+                } else {
+                    setInstallError(err.message)
+                }
+                return prev
+            })
         } finally {
             setInstalling(false)
         }
@@ -73,6 +121,18 @@ export default function DockerRequired({ installed, daemonRunning, error, onRetr
                     <Terminal size={20} />
                     <Text size="4" weight="bold">{t('docker.installing')}</Text>
                 </Flex>
+
+                {needsReboot && (
+                    <Callout.Root color="orange" mb="3">
+                        <Callout.Icon>
+                            <RotateCcw size={16} />
+                        </Callout.Icon>
+                        <Callout.Text>
+                            {t('docker.reboot_required')}
+                        </Callout.Text>
+                    </Callout.Root>
+                )}
+
                 <ScrollArea style={{
                     height: 360,
                     background: 'var(--gray-2)',
@@ -89,18 +149,30 @@ export default function DockerRequired({ installed, daemonRunning, error, onRetr
                     ))}
                     <div ref={logEndRef} />
                 </ScrollArea>
-                <Flex gap="2" mt="3" justify="end">
-                    {installDone && !installError && (
-                        <Button onClick={onRetry}>
-                            <RefreshCw size={16} />
-                            {t('docker.check_again')}
-                        </Button>
-                    )}
-                    {installError && (
-                        <Button variant="soft" color="red" onClick={handleInstall}>
-                            {t('docker.retry_install')}
-                        </Button>
-                    )}
+                <Flex gap="2" mt="3" justify="between">
+                    <Button variant="soft" color="gray" onClick={handleCopyLogs} disabled={installLog.length === 0}>
+                        {copied ? <Check size={16} /> : <Copy size={16} />}
+                        {copied ? t('docker.copied') : t('docker.copy_logs')}
+                    </Button>
+                    <Flex gap="2">
+                        {installDone && !installError && (
+                            <Button onClick={onRetry}>
+                                <RefreshCw size={16} />
+                                {t('docker.check_again')}
+                            </Button>
+                        )}
+                        {needsReboot && (
+                            <Button onClick={onRetry}>
+                                <RefreshCw size={16} />
+                                {t('docker.check_again')}
+                            </Button>
+                        )}
+                        {installError && !needsReboot && (
+                            <Button variant="soft" color="red" onClick={handleInstall}>
+                                {t('docker.retry_install')}
+                            </Button>
+                        )}
+                    </Flex>
                 </Flex>
             </Card>
         )
