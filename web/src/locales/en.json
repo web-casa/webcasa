@@ -642,6 +642,8 @@
         "copy_logs": "Copy Logs",
         "copied": "Copied",
         "reboot_required": "Docker has been installed but requires a server reboot to load the new kernel modules. Please reboot the server and then return to this page.",
+        "install_success": "Docker Installed Successfully",
+        "install_success_desc": "Docker has been installed and the daemon is running. Click \"Check Again\" to continue.",
         "advanced_mode": "Advanced",
         "create_stack": "Create Stack",
         "server_version": "Docker Version",

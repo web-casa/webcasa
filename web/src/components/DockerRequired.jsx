@@ -14,38 +14,67 @@ export default function DockerRequired({ installed, daemonRunning, error, onRetr
     const [mirror, setMirror] = useState('none')
     const [copied, setCopied] = useState(false)
     const logEndRef = useRef(null)
+    // Keep a mutable ref of the log lines so the copy and catch handlers always
+    // see the latest data, avoiding stale-closure issues with React state.
+    const logLinesRef = useRef([])
 
     const scrollToBottom = () => {
         logEndRef.current?.scrollIntoView({ behavior: 'smooth' })
     }
 
-    const handleCopyLogs = async () => {
-        const text = installLog.join('\n')
+    const handleCopyLogs = () => {
+        const text = logLinesRef.current.join('\n')
+        if (!text) return
+
+        // Use the modern clipboard API when available (HTTPS / localhost)
+        if (navigator.clipboard && typeof navigator.clipboard.writeText === 'function') {
+            navigator.clipboard.writeText(text).then(() => {
+                setCopied(true)
+                setTimeout(() => setCopied(false), 2000)
+            }).catch(() => {
+                fallbackCopy(text)
+            })
+        } else {
+            fallbackCopy(text)
+        }
+    }
+
+    const fallbackCopy = (text) => {
         try {
-            await navigator.clipboard.writeText(text)
-            setCopied(true)
-            setTimeout(() => setCopied(false), 2000)
-        } catch {
-            // Fallback for non-HTTPS contexts
             const textarea = document.createElement('textarea')
             textarea.value = text
+            // Must be visible for execCommand to work in some browsers
             textarea.style.position = 'fixed'
-            textarea.style.opacity = '0'
+            textarea.style.left = '0'
+            textarea.style.top = '0'
+            textarea.style.width = '2em'
+            textarea.style.height = '2em'
+            textarea.style.opacity = '0.01'
             document.body.appendChild(textarea)
+            textarea.focus()
             textarea.select()
             document.execCommand('copy')
             document.body.removeChild(textarea)
             setCopied(true)
             setTimeout(() => setCopied(false), 2000)
+        } catch {
+            // Last resort: open a window with the text so the user can copy manually
+            const win = window.open('', '_blank', 'width=600,height=400')
+            if (win) {
+                win.document.write(`<pre style="white-space:pre-wrap">${text.replace(/</g, '&lt;')}</pre>`)
+            }
         }
     }
 
     const handleInstall = async () => {
         setInstalling(true)
         setInstallLog([])
+        logLinesRef.current = []
         setInstallDone(false)
         setInstallError(null)
         setNeedsReboot(false)
+
+        let detectedReboot = false
 
         try {
             const token = localStorage.getItem('token')
@@ -61,7 +90,6 @@ export default function DockerRequired({ installed, daemonRunning, error, onRetr
             const reader = response.body.getReader()
             const decoder = new TextDecoder()
             let buffer = ''
-            let detectedReboot = false
 
             while (true) {
                 const { done, value } = await reader.read()
@@ -75,9 +103,10 @@ export default function DockerRequired({ installed, daemonRunning, error, onRetr
                     if (line.startsWith('data: ')) {
                         const data = line.slice(6)
                         // Detect reboot signal from EasyDocker script
-                        if (data.includes('Rebooting') || data.includes('reboot')) {
+                        if (data.toLowerCase().includes('reboot')) {
                             detectedReboot = true
                         }
+                        logLinesRef.current = [...logLinesRef.current, data]
                         setInstallLog(prev => [...prev, data])
                         setTimeout(scrollToBottom, 50)
                     } else if (line.startsWith('event: done')) {
@@ -92,25 +121,31 @@ export default function DockerRequired({ installed, daemonRunning, error, onRetr
             }
 
             // If stream ended cleanly after reboot detection
-            if (detectedReboot && !installDone) {
+            if (detectedReboot) {
                 setNeedsReboot(true)
             }
-        } catch (err) {
-            // Check if we detected a reboot before the connection dropped
-            // The log state is updated asynchronously, so check the ref pattern
-            setInstallLog(prev => {
-                const hasReboot = prev.some(l => l.includes('Rebooting') || l.includes('reboot'))
+        } catch {
+            // Connection dropped — check if it was due to a server reboot
+            if (detectedReboot) {
+                setNeedsReboot(true)
+                setInstallError(null)
+            } else {
+                // Check log lines for reboot signals
+                const hasReboot = logLinesRef.current.some(l => l.toLowerCase().includes('reboot'))
                 if (hasReboot) {
                     setNeedsReboot(true)
-                    setInstallError(null)
                 } else {
-                    setInstallError(err.message)
+                    setInstallError('network_error')
                 }
-                return prev
-            })
+            }
         } finally {
             setInstalling(false)
         }
+    }
+
+    // After successful install, reload the entire page to reset all plugin state
+    const handlePostInstallCheck = () => {
+        window.location.reload()
     }
 
     // Show install progress view
@@ -119,7 +154,11 @@ export default function DockerRequired({ installed, daemonRunning, error, onRetr
             <Card style={{ padding: 32, maxWidth: 720, margin: '40px auto' }}>
                 <Flex align="center" gap="2" mb="3">
                     <Terminal size={20} />
-                    <Text size="4" weight="bold">{t('docker.installing')}</Text>
+                    <Text size="4" weight="bold">
+                        {installDone && !installError
+                            ? t('docker.install_success')
+                            : t('docker.installing')}
+                    </Text>
                 </Flex>
 
                 {needsReboot && (
@@ -129,6 +168,17 @@ export default function DockerRequired({ installed, daemonRunning, error, onRetr
                         </Callout.Icon>
                         <Callout.Text>
                             {t('docker.reboot_required')}
+                        </Callout.Text>
+                    </Callout.Root>
+                )}
+
+                {installDone && !installError && !needsReboot && (
+                    <Callout.Root color="green" mb="3">
+                        <Callout.Icon>
+                            <Check size={16} />
+                        </Callout.Icon>
+                        <Callout.Text>
+                            {t('docker.install_success_desc')}
                         </Callout.Text>
                     </Callout.Root>
                 )}
@@ -155,14 +205,8 @@ export default function DockerRequired({ installed, daemonRunning, error, onRetr
                         {copied ? t('docker.copied') : t('docker.copy_logs')}
                     </Button>
                     <Flex gap="2">
-                        {installDone && !installError && (
-                            <Button onClick={onRetry}>
-                                <RefreshCw size={16} />
-                                {t('docker.check_again')}
-                            </Button>
-                        )}
-                        {needsReboot && (
-                            <Button onClick={onRetry}>
+                        {(installDone || needsReboot) && !installError && (
+                            <Button onClick={handlePostInstallCheck}>
                                 <RefreshCw size={16} />
                                 {t('docker.check_again')}
                             </Button>
