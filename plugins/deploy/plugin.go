@@ -67,7 +67,7 @@ func (p *Plugin) Init(ctx *pluginpkg.Context) error {
 
 	// Frameworks presets (read)
 	r.GET("/frameworks", p.handler.GetFrameworks)
-	r.GET("/detect", p.handler.DetectFramework)
+	a.GET("/detect", p.handler.DetectFramework) // admin only — triggers git clone
 
 	// Projects CRUD (read + admin mutations)
 	r.GET("/projects", p.handler.ListProjects)
@@ -75,6 +75,9 @@ func (p *Plugin) Init(ctx *pluginpkg.Context) error {
 	r.GET("/projects/:id", p.handler.GetProject)
 	a.PUT("/projects/:id", p.handler.UpdateProject)
 	a.DELETE("/projects/:id", p.handler.DeleteProject)
+
+	// Webhook info (admin only — token is sensitive)
+	a.GET("/projects/:id/webhook", p.handler.GetWebhookInfo)
 
 	// Project actions (admin)
 	a.POST("/projects/:id/build", p.handler.BuildProject)

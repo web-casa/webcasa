@@ -1,8 +1,11 @@
 package docker
 
 import (
+	"bufio"
+	"fmt"
 	"net/http"
 	"os/exec"
+	"strings"
 
 	"github.com/gin-gonic/gin"
 	pluginpkg "github.com/web-casa/webcasa/internal/plugin"
@@ -72,6 +75,9 @@ func (p *Plugin) Init(ctx *pluginpkg.Context) error {
 
 	// Docker status endpoint (always available, even if Docker is not installed).
 	r.GET("/status", p.dockerStatus)
+
+	// Docker install endpoint (admin only, SSE streaming).
+	a.POST("/install", p.installDocker)
 
 	// System (read)
 	r.GET("/info", p.requireDocker(), p.handler.Info)
@@ -160,6 +166,119 @@ func (p *Plugin) dockerStatus(c *gin.Context) {
 		"version":        version,
 		"error":          errMsg,
 	})
+}
+
+// installDocker runs the EasyDocker script (https://github.com/web-casa/easydocker)
+// and streams the output to the client via SSE.
+func (p *Plugin) installDocker(c *gin.Context) {
+	// Parse optional mirror parameter.
+	var req struct {
+		Mirror string `json:"mirror"` // none | public | custom domain
+	}
+	_ = c.ShouldBindJSON(&req)
+
+	// Set SSE headers.
+	c.Header("Content-Type", "text/event-stream")
+	c.Header("Cache-Control", "no-cache")
+	c.Header("Connection", "keep-alive")
+	c.Header("X-Accel-Buffering", "no")
+	c.Writer.Flush()
+
+	writeSSE := func(data string) {
+		fmt.Fprintf(c.Writer, "data: %s\n\n", data)
+		c.Writer.Flush()
+	}
+
+	writeEvent := func(event, data string) {
+		fmt.Fprintf(c.Writer, "event: %s\ndata: %s\n\n", event, data)
+		c.Writer.Flush()
+	}
+
+	writeSSE("Downloading EasyDocker install script...")
+
+	// Build command: download and run EasyDocker with non-interactive flags.
+	args := []string{"-c", "curl -sSL https://raw.githubusercontent.com/web-casa/easydocker/main/docker.sh | bash -s -- -y"}
+	if req.Mirror != "" {
+		args[1] = fmt.Sprintf("curl -sSL https://raw.githubusercontent.com/web-casa/easydocker/main/docker.sh | bash -s -- -y --mirror %s", req.Mirror)
+	}
+
+	cmd := exec.Command("bash", args...)
+	// Merge stdout and stderr.
+	stdout, err := cmd.StdoutPipe()
+	if err != nil {
+		writeSSE("ERROR: " + err.Error())
+		writeEvent("error", err.Error())
+		return
+	}
+	cmd.Stderr = cmd.Stdout
+
+	if err := cmd.Start(); err != nil {
+		writeSSE("ERROR: " + err.Error())
+		writeEvent("error", err.Error())
+		return
+	}
+
+	// Stream output line by line.
+	scanner := bufio.NewScanner(stdout)
+	for scanner.Scan() {
+		line := scanner.Text()
+		// Strip ANSI color codes for cleaner SSE output.
+		clean := stripANSI(line)
+		if clean != "" {
+			writeSSE(clean)
+		}
+	}
+
+	if err := cmd.Wait(); err != nil {
+		writeSSE("ERROR: Installation failed: " + err.Error())
+		writeEvent("error", "Installation failed: "+err.Error())
+		return
+	}
+
+	writeSSE("Docker installation completed successfully!")
+
+	// Try to reconnect to Docker daemon after installation.
+	socketPath := "/var/run/docker.sock"
+	if client, err := NewClient(socketPath); err == nil {
+		p.client = client
+		p.dockerAvailable = true
+		p.dockerError = ""
+		if p.svc != nil {
+			p.svc.client = client
+		}
+		if p.handler != nil {
+			p.handler.client = client
+		}
+		writeSSE("Docker daemon connected successfully!")
+	} else {
+		writeSSE("Docker installed but daemon connection pending. Please start Docker if needed.")
+	}
+
+	writeEvent("done", "ok")
+}
+
+// stripANSI removes ANSI escape sequences from a string.
+func stripANSI(s string) string {
+	var result strings.Builder
+	i := 0
+	for i < len(s) {
+		if s[i] == '\x1b' && i+1 < len(s) && s[i+1] == '[' {
+			// Skip until 'm' or end of string.
+			j := i + 2
+			for j < len(s) && s[j] != 'm' {
+				j++
+			}
+			if j < len(s) {
+				i = j + 1
+			} else {
+				i = j
+			}
+			continue
+		}
+		result.WriteByte(s[i])
+		i++
+	}
+	return result.String()
 }
 
 // Start is called after Init. No background tasks needed yet.

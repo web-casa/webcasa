@@ -29,7 +29,17 @@ func NewService(db *gorm.DB, logger *slog.Logger) *Service {
 }
 
 // Start begins the periodic metric collection goroutine.
+// Safe to call multiple times; restarts the collection loop.
 func (s *Service) Start() {
+	// Stop any existing goroutines first to avoid leaks.
+	if s.stopCh != nil {
+		select {
+		case <-s.stopCh:
+			// Already closed, safe to recreate.
+		default:
+			close(s.stopCh)
+		}
+	}
 	s.stopCh = make(chan struct{})
 
 	// Collection loop — every 60 seconds.
@@ -64,10 +74,15 @@ func (s *Service) Start() {
 	}()
 }
 
-// Stop signals the background goroutines to exit.
+// Stop signals the background goroutines to exit. Safe to call multiple times.
 func (s *Service) Stop() {
 	if s.stopCh != nil {
-		close(s.stopCh)
+		select {
+		case <-s.stopCh:
+			// Already closed, no-op.
+		default:
+			close(s.stopCh)
+		}
 	}
 }
 

@@ -1,9 +1,13 @@
 package deploy
 
 import (
+	"context"
 	"encoding/json"
+	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"time"
 )
 
 // DetectFramework analyses a project directory and returns the best-matching framework preset.
@@ -33,21 +37,26 @@ func DetectFramework(dir string) FrameworkPreset {
 
 // DetectFrameworkFromURL clones a repo temporarily and detects the framework.
 // This is used by the "detect" API endpoint before a project is created.
-func DetectFrameworkFromURL(url, branch string) (FrameworkPreset, error) {
+// A 60-second timeout prevents resource abuse from slow/malicious repositories.
+func DetectFrameworkFromURL(gitURL, branch string) (FrameworkPreset, error) {
 	tmpDir, err := os.MkdirTemp("", "detect_*")
 	if err != nil {
 		return frameworkPresets["custom"], err
 	}
 	defer os.RemoveAll(tmpDir)
 
-	gc := NewGitClient(tmpDir)
-	lw := &LogWriter{} // discard output
-	// Use a fake project ID; the dir will be tmpDir/project_0
-	if err := gc.Clone(url, branch, "", 0, lw); err != nil {
-		return frameworkPresets["custom"], err
+	dir := filepath.Join(tmpDir, "repo")
+
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+
+	args := []string{"clone", "--depth", "1", "--branch", branch, gitURL, dir}
+	cmd := exec.CommandContext(ctx, "git", args...)
+	if out, err := cmd.CombinedOutput(); err != nil {
+		return frameworkPresets["custom"], fmt.Errorf("git clone failed: %s: %w", string(out), err)
 	}
 
-	return DetectFramework(gc.ProjectDir(0)), nil
+	return DetectFramework(dir), nil
 }
 
 func detectNodeFramework(dir string) *FrameworkPreset {

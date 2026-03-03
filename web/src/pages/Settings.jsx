@@ -246,7 +246,7 @@ function GeneralTab({ showMessage }) {
         setTwofaLoading(true)
         try {
             const res = await authAPI.setup2FA()
-            setTwofaUri(res.data.uri)
+            setTwofaUri(res.data.otpauth_uri)
             setTwofaStep('qr')
             setTwofaCode('')
         } catch (err) {

@@ -307,6 +307,21 @@ func (h *Handler) GetFrameworks(c *gin.Context) {
 	c.JSON(http.StatusOK, presets)
 }
 
+// GetWebhookInfo GET /api/plugins/deploy/projects/:id/webhook (admin only)
+// Returns the webhook token so the admin can set up Git hooks.
+func (h *Handler) GetWebhookInfo(c *gin.Context) {
+	id, err := parseUintParam(c, "id")
+	if err != nil {
+		return
+	}
+	var project Project
+	if err := h.svc.db.Select("id, webhook_token").First(&project, id).Error; err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "project not found"})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"webhook_token": project.WebhookToken})
+}
+
 func parseUintParam(c *gin.Context, name string) (uint, error) {
 	v, err := strconv.ParseUint(c.Param(name), 10, 64)
 	if err != nil {

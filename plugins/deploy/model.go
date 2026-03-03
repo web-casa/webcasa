@@ -20,7 +20,7 @@ type Project struct {
 	Status        string    `gorm:"size:32;default:pending" json:"status"` // pending, building, running, stopped, error
 	CurrentBuild  int       `gorm:"default:0" json:"current_build"`
 	AutoDeploy    bool      `gorm:"default:false" json:"auto_deploy"`
-	WebhookToken  string    `gorm:"size:64;uniqueIndex" json:"webhook_token"`
+	WebhookToken  string    `gorm:"size:64;uniqueIndex" json:"-"` // never exposed via API
 	HostID        uint      `gorm:"default:0" json:"host_id"` // associated reverse proxy host
 	EnvVars       string    `gorm:"type:text" json:"-"`        // JSON-encoded env vars (encrypted)
 	ErrorMsg      string    `gorm:"type:text" json:"error_msg"`
@@ -35,9 +35,10 @@ type Project struct {
 	UpdatedAt     time.Time `json:"updated_at"`
 
 	// Transient fields (not stored)
-	EnvVarList []EnvVar `gorm:"-" json:"env_vars,omitempty"`
-	HasDeployKey bool   `gorm:"-" json:"has_deploy_key"`        // indicates if deploy key is set
-	HasGitHubKey bool   `gorm:"-" json:"has_github_private_key"` // indicates if GitHub App key is set
+	EnvVarList   []EnvVar `gorm:"-" json:"env_vars,omitempty"`
+	HasDeployKey bool     `gorm:"-" json:"has_deploy_key"`          // indicates if deploy key is set
+	HasGitHubKey bool     `gorm:"-" json:"has_github_private_key"`  // indicates if GitHub App key is set
+	WebhookURL   string   `gorm:"-" json:"webhook_url,omitempty"`   // populated only for admin detail view
 }
 
 func (Project) TableName() string {

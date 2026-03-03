@@ -56,7 +56,7 @@ func checkPermission(ctx context.Context, scope string) error {
 
 	var perms []string
 	if err := json.Unmarshal([]byte(permsStr), &perms); err != nil {
-		return nil // parse error = treat as full access for safety
+		return fmt.Errorf("permission denied: malformed permissions on token")
 	}
 	if len(perms) == 0 {
 		return nil // empty array = full access

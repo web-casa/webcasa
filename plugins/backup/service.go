@@ -275,6 +275,7 @@ func (s *Service) RunBackup(trigger string) (*BackupSnapshot, error) {
 	sourceDir := filepath.Join(s.dataDir, "staging")
 	os.RemoveAll(sourceDir)
 	os.MkdirAll(sourceDir, 0755)
+	defer os.RemoveAll(sourceDir) // always clean up staging, even on failure
 
 	// Collect scopes.
 	for _, scope := range cfg.Scopes {
@@ -297,9 +298,6 @@ func (s *Service) RunBackup(trigger string) (*BackupSnapshot, error) {
 
 	// Update retention policy.
 	_ = s.kopia.SetRetention(ctx, cfg.RetainCount, cfg.RetainDays)
-
-	// Cleanup staging.
-	os.RemoveAll(sourceDir)
 
 	duration := time.Since(startTime).Seconds()
 	s.db.Model(snapshot).Updates(map[string]interface{}{

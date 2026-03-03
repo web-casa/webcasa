@@ -38,8 +38,8 @@ func (b *Builder) Build(ctx context.Context, project *Project, logWriter *LogWri
 	// Step 1: Clone or pull
 	logWriter.Write([]byte("=== Step 1/3: Fetching source code ===\n"))
 	if _, err := os.Stat(filepath.Join(projectDir, ".git")); err == nil {
-		// Directory exists, pull
-		if err := b.git.Pull(project.DeployKey, project.ID, logWriter); err != nil {
+		// Directory exists, pull (pass GitURL for HTTPS token refresh)
+		if err := b.git.Pull(project.DeployKey, project.GitURL, project.ID, logWriter); err != nil {
 			return BuildResult{ErrorMsg: fmt.Sprintf("git pull failed: %v", err), Duration: time.Since(start)}
 		}
 	} else {

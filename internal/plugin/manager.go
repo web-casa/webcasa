@@ -202,7 +202,7 @@ func (m *Manager) List() []PluginInfo {
 }
 
 // Enable enables a plugin. Takes effect immediately: updates the disabled map
-// and starts the plugin's background tasks.
+// and starts the plugin's background tasks. Idempotent: no-op if already enabled.
 func (m *Manager) Enable(id string) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -210,6 +210,11 @@ func (m *Manager) Enable(id string) error {
 	p, ok := m.plugins[id]
 	if !ok {
 		return fmt.Errorf("plugin %q not found", id)
+	}
+
+	// Idempotent: skip if already enabled.
+	if m.isEnabled(id) {
+		return nil
 	}
 
 	if err := m.setState(id, true); err != nil {
@@ -230,7 +235,7 @@ func (m *Manager) Enable(id string) error {
 }
 
 // Disable disables a plugin. Takes effect immediately: stops the plugin and
-// blocks its API routes via the guard middleware.
+// blocks its API routes via the guard middleware. Idempotent: no-op if already disabled.
 func (m *Manager) Disable(id string) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -238,6 +243,11 @@ func (m *Manager) Disable(id string) error {
 	p, ok := m.plugins[id]
 	if !ok {
 		return fmt.Errorf("plugin %q not found", id)
+	}
+
+	// Idempotent: skip if already disabled.
+	if !m.isEnabled(id) {
+		return nil
 	}
 
 	// Stop background tasks first.

@@ -57,8 +57,19 @@ func (g *GitClient) Clone(url, branch, deployKey string, projectID uint, logWrit
 }
 
 // Pull performs a git pull in the project directory.
-func (g *GitClient) Pull(deployKey string, projectID uint, logWriter *LogWriter) error {
+// If httpsURL is non-empty, the remote origin is temporarily updated to use the fresh
+// token-authenticated URL (for GitHub App auth where tokens expire after 1 hour).
+func (g *GitClient) Pull(deployKey string, httpsURL string, projectID uint, logWriter *LogWriter) error {
 	dir := g.ProjectDir(projectID)
+
+	// If an HTTPS URL with a fresh token is provided, update the remote before pulling.
+	if httpsURL != "" {
+		setCmd := exec.Command("git", "remote", "set-url", "origin", httpsURL)
+		setCmd.Dir = dir
+		if out, err := setCmd.CombinedOutput(); err != nil {
+			return fmt.Errorf("set remote URL: %s: %w", string(out), err)
+		}
+	}
 
 	cmd := exec.Command("git", "pull", "--ff-only")
 	cmd.Dir = dir
@@ -78,7 +89,27 @@ func (g *GitClient) Pull(deployKey string, projectID uint, logWriter *LogWriter)
 	if err := cmd.Run(); err != nil {
 		return fmt.Errorf("git pull failed: %w", err)
 	}
+
+	// After pull, sanitize the remote URL to remove the token.
+	if httpsURL != "" {
+		sanitized := sanitizeRemoteURL(httpsURL)
+		cleanCmd := exec.Command("git", "remote", "set-url", "origin", sanitized)
+		cleanCmd.Dir = dir
+		_ = cleanCmd.Run() // best-effort cleanup
+	}
+
 	return nil
+}
+
+// sanitizeRemoteURL removes embedded credentials from an HTTPS git URL.
+func sanitizeRemoteURL(u string) string {
+	if idx := strings.Index(u, "://"); idx != -1 {
+		rest := u[idx+3:]
+		if atIdx := strings.Index(rest, "@"); atIdx != -1 {
+			return u[:idx+3] + rest[atIdx+1:]
+		}
+	}
+	return u
 }
 
 // GetCommitHash returns the current commit hash of the project directory.
