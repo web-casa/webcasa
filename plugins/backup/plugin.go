@@ -46,6 +46,9 @@ func (p *Plugin) Init(ctx *pluginpkg.Context) error {
 	r := ctx.Router       // read-only
 	a := ctx.AdminRouter  // admin-only
 
+	// Install Kopia (admin-only, SSE streaming)
+	a.POST("/install-kopia", p.handler.InstallKopia)
+
 	// Config (read + admin mutations)
 	r.GET("/dependency-check", p.handler.CheckDependency)
 	r.GET("/config", p.handler.GetConfig)

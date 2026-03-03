@@ -96,7 +96,15 @@ func (m *Manager) InitAll() error {
 	// 3. Seed default states on fresh installs.
 	m.seedDefaultStates()
 
-	// 4. Init each plugin (all plugins, including disabled).
+	// 4. Apply guard middleware to all router groups BEFORE creating sub-groups.
+	// In Gin, child groups copy the parent's handler chain at creation time,
+	// so the guard must be added before any Group() calls.
+	guard := m.PluginGuardMiddleware()
+	m.router.Use(guard)
+	m.adminRouter.Use(guard)
+	m.publicRouter.Use(guard)
+
+	// 5. Init each plugin (all plugins, including disabled).
 	for _, id := range m.order {
 		p := m.plugins[id]
 		meta := p.Metadata()

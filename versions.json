@@ -1,0 +1,24 @@
+{
+  "schema_version": 1,
+  "updated_at": "2026-03-03",
+  "dependencies": {
+    "kopia": {
+      "recommended": "0.19.0",
+      "minimum": "0.15.0",
+      "install_scripts": {
+        "debian": "curl -s https://kopia.io/signing-key | sudo gpg --dearmor -o /etc/apt/keyrings/kopia-keyring.gpg && echo 'deb [signed-by=/etc/apt/keyrings/kopia-keyring.gpg] http://packages.kopia.io/apt/ stable main' | sudo tee /etc/apt/sources.list.d/kopia.list && sudo apt update && sudo apt install -y kopia",
+        "rhel": "sudo rpm --import https://kopia.io/signing-key && sudo dnf install -y https://github.com/kopia/kopia/releases/latest/download/kopia-0.19.0-linux-amd64.rpm"
+      }
+    },
+    "docker": {
+      "recommended": "27.5.1",
+      "minimum": "24.0.0"
+    },
+    "database_engines": {
+      "mysql": { "versions": ["8.4", "8.0"], "default": "8.4" },
+      "postgres": { "versions": ["18", "17", "16", "15", "14"], "default": "17" },
+      "mariadb": { "versions": ["11.8", "11.4", "10.11"], "default": "11.8" },
+      "redis": { "versions": ["8.6", "8.4", "7.4", "6.2"], "default": "8.6" }
+    }
+  }
+}

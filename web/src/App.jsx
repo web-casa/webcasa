@@ -84,7 +84,7 @@ export default function App() {
                     <Route path="dns" element={<Navigate to="/settings" replace />} />
                     <Route path="certificates" element={<Navigate to="/settings" replace />} />
                     <Route path="templates" element={<Navigate to="/settings" replace />} />
-                    <Route path="ai/config" element={<Navigate to="/settings" replace />} />
+                    <Route path="ai/config" element={<Navigate to="/settings?tab=ai" replace />} />
                     <Route path="docker/containers" element={<Navigate to="/docker" replace />} />
                     <Route path="docker/images" element={<Navigate to="/docker" replace />} />
                     <Route path="docker/networks" element={<Navigate to="/docker" replace />} />

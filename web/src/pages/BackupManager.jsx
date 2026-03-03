@@ -1,6 +1,6 @@
-import { useState, useEffect, useCallback } from 'react'
+import { useState, useEffect, useCallback, useRef } from 'react'
 import { Box, Flex, Text, Card, Badge, Button, Table, Dialog, TextField, Select, Switch, Tabs, TextArea } from '@radix-ui/themes'
-import { HardDrive, Play, RotateCcw, Trash2, Settings, Clock, CheckCircle, XCircle, AlertCircle, Download } from 'lucide-react'
+import { HardDrive, Play, RotateCcw, Trash2, Settings, Clock, CheckCircle, XCircle, AlertCircle, Download, RefreshCw } from 'lucide-react'
 import { useTranslation } from 'react-i18next'
 import { backupAPI } from '../api/index.js'
 
@@ -41,6 +41,13 @@ export default function BackupManager({ embedded }) {
     const [restoreId, setRestoreId] = useState(null)
     const [restoring, setRestoring] = useState(false)
 
+    // Kopia install state
+    const [installing, setInstalling] = useState(false)
+    const [installLogs, setInstallLogs] = useState([])
+    const [installDone, setInstallDone] = useState(false)
+    const [installError, setInstallError] = useState(false)
+    const installLogsEndRef = useRef(null)
+
     const fetchAll = useCallback(async () => {
         try {
             const depRes = await backupAPI.checkDependency()
@@ -72,6 +79,63 @@ export default function BackupManager({ embedded }) {
     }, [])
 
     useEffect(() => { fetchAll() }, [fetchAll])
+
+    useEffect(() => {
+        if (installLogsEndRef.current) {
+            installLogsEndRef.current.scrollIntoView({ behavior: 'smooth' })
+        }
+    }, [installLogs])
+
+    const handleInstallKopia = () => {
+        setInstalling(true)
+        setInstallLogs([])
+        setInstallDone(false)
+        setInstallError(false)
+
+        const token = localStorage.getItem('token')
+        fetch('/api/plugins/backup/install-kopia', {
+            method: 'POST',
+            headers: { 'Authorization': `Bearer ${token}` },
+        }).then(async (response) => {
+            const reader = response.body.getReader()
+            const decoder = new TextDecoder()
+            let buffer = ''
+
+            while (true) {
+                const { done, value } = await reader.read()
+                if (done) break
+                buffer += decoder.decode(value, { stream: true })
+
+                const lines = buffer.split('\n')
+                buffer = lines.pop() || ''
+
+                for (const line of lines) {
+                    if (line.startsWith('data: ')) {
+                        setInstallLogs(prev => [...prev, line.slice(6)])
+                    } else if (line.startsWith('event: done')) {
+                        setInstallDone(true)
+                    } else if (line.startsWith('event: error')) {
+                        setInstallError(true)
+                    }
+                }
+            }
+
+            if (buffer) {
+                for (const line of buffer.split('\n')) {
+                    if (line.startsWith('data: ')) {
+                        setInstallLogs(prev => [...prev, line.slice(6)])
+                    }
+                }
+            }
+
+            setInstallDone(prev => prev || true)
+        }).catch((err) => {
+            setInstallLogs(prev => [...prev, `ERROR: ${err.message}`])
+            setInstallError(true)
+        }).finally(() => {
+            setInstalling(false)
+        })
+    }
 
     const handleBackupNow = async () => {
         setBackingUp(true)
@@ -253,26 +317,69 @@ export default function BackupManager({ embedded }) {
 
     return (
         <Box>
-            {/* Kopia dependency warning */}
+            {/* Kopia dependency warning + one-click install */}
             {kopiaStatus && !kopiaStatus.available && (
                 <Card mb="4" style={{ background: 'var(--orange-2)', border: '1px solid var(--orange-6)', padding: '16px 20px' }}>
-                    <Flex direction="column" gap="2">
+                    <Flex direction="column" gap="3">
                         <Flex align="center" gap="2">
                             <AlertCircle size={18} style={{ color: 'var(--orange-9)' }} />
                             <Text size="3" weight="bold" style={{ color: 'var(--orange-11)' }}>{t('backup.kopia_not_installed')}</Text>
                         </Flex>
                         <Text size="2" style={{ color: 'var(--orange-11)' }}>{t('backup.kopia_install_hint')}</Text>
-                        {kopiaStatus.install_instructions && (
-                            <Box mt="1">
-                                <Text size="1" weight="bold" style={{ color: 'var(--orange-11)', display: 'block', marginBottom: 4 }}>Debian / Ubuntu:</Text>
-                                <code style={{ fontSize: 11, wordBreak: 'break-all', display: 'block', padding: '6px 8px', background: 'var(--orange-3)', borderRadius: 4, marginBottom: 8 }}>
-                                    {kopiaStatus.install_instructions.debian}
-                                </code>
-                                <Text size="1" weight="bold" style={{ color: 'var(--orange-11)', display: 'block', marginBottom: 4 }}>RHEL / CentOS / Rocky:</Text>
-                                <code style={{ fontSize: 11, wordBreak: 'break-all', display: 'block', padding: '6px 8px', background: 'var(--orange-3)', borderRadius: 4, marginBottom: 8 }}>
-                                    {kopiaStatus.install_instructions.rhel}
-                                </code>
+
+                        {/* Install logs area */}
+                        {installLogs.length > 0 && (
+                            <Box
+                                style={{
+                                    background: 'var(--gray-1)',
+                                    border: '1px solid var(--gray-6)',
+                                    borderRadius: 8,
+                                    padding: 12,
+                                    maxHeight: 300,
+                                    overflowY: 'auto',
+                                    fontFamily: 'monospace',
+                                    fontSize: '0.8rem',
+                                    lineHeight: 1.6,
+                                }}
+                            >
+                                {installLogs.map((log, i) => (
+                                    <Text
+                                        key={i}
+                                        size="1"
+                                        style={{
+                                            display: 'block',
+                                            color: log.startsWith('ERROR') ? 'var(--red-11)' : 'var(--gray-12)',
+                                            whiteSpace: 'pre-wrap',
+                                            wordBreak: 'break-all',
+                                        }}
+                                    >
+                                        {log}
+                                    </Text>
+                                ))}
+                                {installing && (
+                                    <Flex align="center" gap="1" mt="1">
+                                        <RefreshCw size={12} className="spin" />
+                                        <Text size="1" color="gray">{t('backup.installing_kopia')}</Text>
+                                    </Flex>
+                                )}
+                                <div ref={installLogsEndRef} />
                             </Box>
+                        )}
+
+                        {/* Install / Retry / Success buttons */}
+                        {installDone && !installError ? (
+                            <Button size="2" onClick={() => window.location.reload()}>
+                                <CheckCircle size={16} /> {t('backup.install_kopia_success')}
+                            </Button>
+                        ) : installError ? (
+                            <Button size="2" color="red" onClick={handleInstallKopia} disabled={installing}>
+                                <RefreshCw size={16} /> {t('backup.retry_install')}
+                            </Button>
+                        ) : (
+                            <Button size="2" onClick={handleInstallKopia} disabled={installing}>
+                                {installing ? <RefreshCw size={16} className="spin" /> : <Download size={16} />}
+                                {installing ? t('backup.installing_kopia') : t('backup.install_kopia')}
+                            </Button>
                         )}
                     </Flex>
                 </Card>

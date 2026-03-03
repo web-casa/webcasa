@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"fmt"
 	"log"
+	"log/slog"
 	"net/http"
 	"net/url"
 	"os"
@@ -18,6 +19,7 @@ import (
 	"github.com/web-casa/webcasa/internal/model"
 	"github.com/web-casa/webcasa/internal/plugin"
 	"github.com/web-casa/webcasa/internal/service"
+	"github.com/web-casa/webcasa/internal/versioncheck"
 	aiplugin "github.com/web-casa/webcasa/plugins/ai"
 	deployplugin "github.com/web-casa/webcasa/plugins/deploy"
 	dockerplugin "github.com/web-casa/webcasa/plugins/docker"
@@ -269,10 +271,15 @@ func main() {
 	publicPluginRouter := api.Group("/plugins") // public routes (no JWT) for webhooks etc.
 	pluginMgr := initPlugins(db, pluginRouter, adminPluginRouter, publicPluginRouter, hostSvc, caddyMgr, cfg)
 
-	// Guard middleware blocks API requests to disabled plugins.
-	pluginRouter.Use(pluginMgr.PluginGuardMiddleware())
-	adminPluginRouter.Use(pluginMgr.PluginGuardMiddleware())
-	publicPluginRouter.Use(pluginMgr.PluginGuardMiddleware())
+	// ============ Version Checker ============
+	versionChecker := versioncheck.NewChecker(
+		"https://raw.githubusercontent.com/web-casa/webcasa/main/versions.json",
+		slog.Default(),
+	)
+	versionChecker.Start()
+
+	versionH := handler.NewVersionHandler(versionChecker)
+	protected.GET("/version-check", versionH.Check)
 
 	pluginH := handler.NewPluginHandler(pluginMgr)
 	protected.GET("/plugins", pluginH.List)

@@ -150,7 +150,7 @@ export default function DockerOverview() {
                     <Heading size="5">Docker</Heading>
                 </Flex>
                 <Flex gap="2">
-                    <Button size="2" variant="ghost" onClick={() => navigate('/docker/settings')}><Settings size={16} /></Button>
+                    <Button size="2" variant="soft" color="gray" onClick={() => navigate('/docker/settings')}><Settings size={16} /> {t('docker.settings')}</Button>
                     <Button size="2" variant="soft" onClick={() => setShowRunContainer(true)}><Play size={16} /> {t('docker.run_container')}</Button>
                     <Button size="2" onClick={() => setShowCreate(true)}><Plus size={16} /> {t('docker.create_stack')}</Button>
                 </Flex>

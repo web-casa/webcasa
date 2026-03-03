@@ -1,6 +1,7 @@
 package backup
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"encoding/json"
@@ -25,6 +26,113 @@ func NewKopiaClient(dataDir string, logger *slog.Logger) *KopiaClient {
 		configFile: filepath.Join(dataDir, "kopia.config"),
 		logger:     logger,
 	}
+}
+
+// InstallKopia runs the Kopia installation commands and streams output via
+// the provided write functions. It detects the OS family and picks the
+// appropriate install commands. Returns true on success.
+func (k *KopiaClient) InstallKopia(writeSSE func(string), writeEvent func(string, string)) bool {
+	// Check if already installed.
+	if status := k.CheckKopia(); status.Available {
+		writeSSE("Kopia is already installed: " + status.Version)
+		writeEvent("done", "ok")
+		return true
+	}
+
+	// Detect OS family.
+	osFamily := detectOSFamily()
+	writeSSE("Detected OS family: " + osFamily)
+
+	var installCmd string
+	switch osFamily {
+	case "debian":
+		installCmd = kopiaInstallInstructions["debian"]
+	case "rhel":
+		installCmd = kopiaInstallInstructions["rhel"]
+	default:
+		writeSSE("ERROR: Unsupported OS family: " + osFamily)
+		writeSSE("Please install Kopia manually: https://kopia.io/docs/installation/")
+		writeEvent("error", "Unsupported OS family")
+		return false
+	}
+
+	writeSSE("Installing Kopia...")
+
+	cmd := exec.Command("bash", "-c", installCmd)
+	stdout, err := cmd.StdoutPipe()
+	if err != nil {
+		writeSSE("ERROR: " + err.Error())
+		writeEvent("error", err.Error())
+		return false
+	}
+	cmd.Stderr = cmd.Stdout
+
+	if err := cmd.Start(); err != nil {
+		writeSSE("ERROR: " + err.Error())
+		writeEvent("error", err.Error())
+		return false
+	}
+
+	scanner := bufio.NewScanner(stdout)
+	for scanner.Scan() {
+		line := strings.TrimSpace(scanner.Text())
+		if line != "" {
+			writeSSE(line)
+		}
+	}
+
+	if err := cmd.Wait(); err != nil {
+		writeSSE("ERROR: Installation failed: " + err.Error())
+		writeEvent("error", "Installation failed: "+err.Error())
+		return false
+	}
+
+	// Verify installation.
+	status := k.CheckKopia()
+	if !status.Available {
+		writeSSE("ERROR: Kopia binary not found after installation")
+		writeEvent("error", "Kopia not found after install")
+		return false
+	}
+
+	writeSSE("Kopia installed successfully: " + status.Version)
+	writeEvent("done", "ok")
+	return true
+}
+
+// detectOSFamily reads /etc/os-release to determine the OS family.
+// Returns "debian", "rhel", or "unknown".
+func detectOSFamily() string {
+	data, err := os.ReadFile("/etc/os-release")
+	if err != nil {
+		return "unknown"
+	}
+	content := strings.ToLower(string(data))
+
+	// Check ID_LIKE first, then ID.
+	for _, line := range strings.Split(content, "\n") {
+		if strings.HasPrefix(line, "id_like=") {
+			val := strings.Trim(strings.TrimPrefix(line, "id_like="), "\"")
+			if strings.Contains(val, "debian") || strings.Contains(val, "ubuntu") {
+				return "debian"
+			}
+			if strings.Contains(val, "rhel") || strings.Contains(val, "fedora") || strings.Contains(val, "centos") {
+				return "rhel"
+			}
+		}
+	}
+	for _, line := range strings.Split(content, "\n") {
+		if strings.HasPrefix(line, "id=") {
+			val := strings.Trim(strings.TrimPrefix(line, "id="), "\"")
+			switch val {
+			case "debian", "ubuntu", "linuxmint", "pop", "kali", "deepin":
+				return "debian"
+			case "rhel", "centos", "fedora", "rocky", "almalinux", "ol", "amzn":
+				return "rhel"
+			}
+		}
+	}
+	return "unknown"
 }
 
 // ── Repository Operations ──

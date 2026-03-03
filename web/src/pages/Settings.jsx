@@ -20,6 +20,7 @@ import {
 } from '../api/index.js'
 import { useAuthStore } from '../stores/auth.js'
 import { useTranslation } from 'react-i18next'
+import { useSearchParams } from 'react-router'
 import MonitoringDashboard from './MonitoringDashboard.jsx'
 import BackupManager from './BackupManager.jsx'
 
@@ -28,8 +29,12 @@ import BackupManager from './BackupManager.jsx'
 //  General | Users | Logs | AI | DNS | Certificates | Plugins
 // ============================================================
 
+const VALID_TABS = ['general', 'users', 'logs', 'ai', 'dns', 'certificates', 'plugins', 'tokens', 'monitoring', 'backup']
+
 export default function Settings() {
     const { t } = useTranslation()
+    const [searchParams] = useSearchParams()
+    const initialTab = VALID_TABS.includes(searchParams.get('tab')) ? searchParams.get('tab') : 'general'
     const [message, setMessage] = useState(null)
 
     const showMessage = (type, text) => {
@@ -57,7 +62,7 @@ export default function Settings() {
                 </Callout.Root>
             )}
 
-            <Tabs.Root defaultValue="general">
+            <Tabs.Root defaultValue={initialTab}>
                 <Tabs.List style={{ flexWrap: 'wrap' }}>
                     <Tabs.Trigger value="general">
                         <Server size={14} style={{ marginRight: 6 }} /> {t('settings.tab_general')}
@@ -1360,7 +1365,7 @@ function AITab({ showMessage }) {
                     <Text size="2" weight="bold" mb="1" style={{ display: 'block' }}>{t('ai.model')}</Text>
                     {currentPresetModels.length > 0 ? (
                         <Flex gap="2" align="center">
-                            <Select.Root value={currentPresetModels.includes(config.model) ? config.model : '_custom'} onValueChange={(v) => { if (v !== '_custom') setConfig(prev => ({ ...prev, model: v })) }}>
+                            <Select.Root value={currentPresetModels.includes(config.model) ? config.model : '_custom'} onValueChange={(v) => setConfig(prev => ({ ...prev, model: v === '_custom' ? '' : v }))}>
                                 <Select.Trigger style={{ flex: 1 }} />
                                 <Select.Content>
                                     {currentPresetModels.map(m => <Select.Item key={m} value={m}>{m}</Select.Item>)}

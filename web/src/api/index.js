@@ -361,6 +361,11 @@ export const appstoreAPI = {
     deployTemplate: (data) => api.post('/plugins/appstore/templates/deploy', data),
 }
 
+// ============ Version Check ============
+export const versionCheckAPI = {
+    check: () => api.get('/version-check'),
+}
+
 // ============ Plugins ============
 export const pluginAPI = {
     list: () => api.get('/plugins'),

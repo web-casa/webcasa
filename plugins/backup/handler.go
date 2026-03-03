@@ -1,6 +1,7 @@
 package backup
 
 import (
+	"fmt"
 	"net/http"
 	"strconv"
 
@@ -15,6 +16,30 @@ type Handler struct {
 // NewHandler creates a backup Handler.
 func NewHandler(svc *Service) *Handler {
 	return &Handler{svc: svc}
+}
+
+// ── Install ──
+
+// InstallKopia streams the Kopia installation progress via SSE.
+func (h *Handler) InstallKopia(c *gin.Context) {
+	// Set SSE headers.
+	c.Header("Content-Type", "text/event-stream")
+	c.Header("Cache-Control", "no-cache")
+	c.Header("Connection", "keep-alive")
+	c.Header("X-Accel-Buffering", "no")
+	c.Writer.Flush()
+
+	writeSSE := func(data string) {
+		fmt.Fprintf(c.Writer, "data: %s\n\n", data)
+		c.Writer.Flush()
+	}
+
+	writeEvent := func(event, data string) {
+		fmt.Fprintf(c.Writer, "event: %s\ndata: %s\n\n", event, data)
+		c.Writer.Flush()
+	}
+
+	h.svc.kopia.InstallKopia(writeSSE, writeEvent)
 }
 
 // ── Config ──
