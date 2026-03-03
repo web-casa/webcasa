@@ -3,6 +3,7 @@ import { Box, Flex, Text, Card, Button, Code, ScrollArea, Select, Callout } from
 import { Container, RefreshCw, AlertTriangle, Download, Terminal, Copy, Check, RotateCcw } from 'lucide-react'
 import { useTranslation } from 'react-i18next'
 import { dockerAPI } from '../api'
+import { copyToClipboard } from '../utils/clipboard.js'
 
 export default function DockerRequired({ installed, daemonRunning, error, onRetry, extraMessage }) {
     const { t } = useTranslation()
@@ -24,46 +25,10 @@ export default function DockerRequired({ installed, daemonRunning, error, onRetr
 
     const handleCopyLogs = () => {
         const text = logLinesRef.current.join('\n')
-        if (!text) return
-
-        // Use the modern clipboard API when available (HTTPS / localhost)
-        if (navigator.clipboard && typeof navigator.clipboard.writeText === 'function') {
-            navigator.clipboard.writeText(text).then(() => {
-                setCopied(true)
-                setTimeout(() => setCopied(false), 2000)
-            }).catch(() => {
-                fallbackCopy(text)
-            })
-        } else {
-            fallbackCopy(text)
-        }
-    }
-
-    const fallbackCopy = (text) => {
-        try {
-            const textarea = document.createElement('textarea')
-            textarea.value = text
-            // Must be visible for execCommand to work in some browsers
-            textarea.style.position = 'fixed'
-            textarea.style.left = '0'
-            textarea.style.top = '0'
-            textarea.style.width = '2em'
-            textarea.style.height = '2em'
-            textarea.style.opacity = '0.01'
-            document.body.appendChild(textarea)
-            textarea.focus()
-            textarea.select()
-            document.execCommand('copy')
-            document.body.removeChild(textarea)
+        copyToClipboard(text, () => {
             setCopied(true)
             setTimeout(() => setCopied(false), 2000)
-        } catch {
-            // Last resort: open a window with the text so the user can copy manually
-            const win = window.open('', '_blank', 'width=600,height=400')
-            if (win) {
-                win.document.write(`<pre style="white-space:pre-wrap">${text.replace(/</g, '&lt;')}</pre>`)
-            }
-        }
+        })
     }
 
     const handleInstall = async () => {

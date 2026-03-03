@@ -70,6 +70,7 @@ func (p *Plugin) Init(ctx *pluginpkg.Context) error {
 	// Create service and handler (may use nil client, handler checks dockerAvailable).
 	p.svc = NewService(ctx.DB, client, ctx.DataDir, ctx.Logger)
 	p.handler = NewHandler(p.svc, client)
+	p.handler.reconnectFn = p.tryReconnect
 
 	// Register API routes under /api/plugins/docker/
 	r := ctx.Router      // read-only
@@ -80,6 +81,11 @@ func (p *Plugin) Init(ctx *pluginpkg.Context) error {
 
 	// Docker install endpoint (admin only, SSE streaming).
 	a.POST("/install", p.installDocker)
+
+	// Daemon configuration (settings page — no requireDocker, settings should
+	// be accessible even if the daemon is currently down).
+	r.GET("/daemon-config", p.handler.GetDaemonConfig)
+	a.PUT("/daemon-config", p.handler.UpdateDaemonConfig)
 
 	// System (read)
 	r.GET("/info", p.requireDocker(), p.handler.Info)
@@ -98,6 +104,7 @@ func (p *Plugin) Init(ctx *pluginpkg.Context) error {
 
 	// Containers (read + admin mutations)
 	r.GET("/containers", p.requireDocker(), p.handler.ListContainers)
+	a.POST("/containers/run", p.requireDocker(), p.handler.RunContainer)
 	a.POST("/containers/:id/start", p.requireDocker(), p.handler.StartContainer)
 	a.POST("/containers/:id/stop", p.requireDocker(), p.handler.StopContainer)
 	a.POST("/containers/:id/restart", p.requireDocker(), p.handler.RestartContainer)
@@ -414,6 +421,7 @@ func (p *Plugin) FrontendManifest() pluginpkg.FrontendManifest {
 			{Path: "/docker/images", Component: "DockerImages", Label: "Images", LabelZh: "镜像管理"},
 			{Path: "/docker/networks", Component: "DockerNetworks", Label: "Networks", LabelZh: "网络管理"},
 			{Path: "/docker/volumes", Component: "DockerVolumes", Label: "Volumes", LabelZh: "存储卷"},
+			{Path: "/docker/settings", Component: "DockerSettings", Label: "Settings", LabelZh: "设置"},
 		},
 		MenuGroup: "deploy",
 		MenuOrder: 10,

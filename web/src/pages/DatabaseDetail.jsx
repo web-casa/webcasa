@@ -80,14 +80,14 @@ export default function DatabaseDetail() {
     const fetchDatabases = useCallback(async () => {
         try {
             const res = await databaseAPI.listDatabases(id)
-            setDatabases(res.data || [])
+            setDatabases(res.data?.databases || [])
         } catch { /* ignore for redis */ }
     }, [id])
 
     const fetchUsers = useCallback(async () => {
         try {
             const res = await databaseAPI.listUsers(id)
-            setUsers(res.data || [])
+            setUsers(res.data?.users || [])
         } catch { /* ignore for redis */ }
     }, [id])
 

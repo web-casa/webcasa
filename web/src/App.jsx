@@ -8,6 +8,7 @@ import HostList from './pages/HostList.jsx'
 import Settings from './pages/Settings.jsx'
 import CaddyfileEditor from './pages/CaddyfileEditor.jsx'
 import DockerOverview from './pages/DockerOverview.jsx'
+import DockerSettings from './pages/DockerSettings.jsx'
 import ProjectList from './pages/ProjectList.jsx'
 import ProjectCreate from './pages/ProjectCreate.jsx'
 import ProjectDetail from './pages/ProjectDetail.jsx'
@@ -57,6 +58,7 @@ export default function App() {
                     <Route path="hosts" element={<HostList />} />
                     <Route path="editor" element={<CaddyfileEditor />} />
                     <Route path="docker" element={<DockerOverview />} />
+                    <Route path="docker/settings" element={<DockerSettings />} />
                     <Route path="deploy" element={<ProjectList />} />
                     <Route path="deploy/create" element={<ProjectCreate />} />
                     <Route path="deploy/:id" element={<ProjectDetail />} />

@@ -1,9 +1,10 @@
 import { useState, useEffect, useRef } from 'react'
 import { Box, Flex, Text, Card, Badge, Separator, Button, Dialog, Switch, IconButton } from '@radix-ui/themes'
-import { Package, Download, Trash2, RefreshCw, Eye, EyeOff, Copy, Check, X } from 'lucide-react'
+import { Package, Download, Trash2, RefreshCw, Eye, EyeOff, Copy, Check, X, Power } from 'lucide-react'
 import { useTranslation } from 'react-i18next'
 import { pluginAPI } from '../api/index.js'
 import { usePluginNavStore } from '../stores/pluginNav.js'
+import { copyToClipboard } from '../utils/clipboard.js'
 
 const categoryColors = { deploy: 'blue', database: 'green', tool: 'orange', monitor: 'purple' }
 
@@ -19,6 +20,7 @@ export default function PluginsPage() {
     const [installError, setInstallError] = useState(false)
     const [copied, setCopied] = useState(false)
     const logsEndRef = useRef(null)
+    const installLogsRef = useRef([])
 
     const fetchPlugins = async () => {
         try {
@@ -39,6 +41,7 @@ export default function PluginsPage() {
     const handleInstall = (id) => {
         setInstallDialog(id)
         setInstallLogs([])
+        installLogsRef.current = []
         setInstallDone(false)
         setInstallError(false)
 
@@ -64,6 +67,7 @@ export default function PluginsPage() {
                 for (const line of lines) {
                     if (line.startsWith('data: ')) {
                         const data = line.slice(6)
+                        installLogsRef.current = [...installLogsRef.current, data]
                         setInstallLogs((prev) => [...prev, data])
                     } else if (line.startsWith('event: done')) {
                         setInstallDone(true)
@@ -78,7 +82,9 @@ export default function PluginsPage() {
                 const lines = buffer.split('\n')
                 for (const line of lines) {
                     if (line.startsWith('data: ')) {
-                        setInstallLogs((prev) => [...prev, line.slice(6)])
+                        const data = line.slice(6)
+                        installLogsRef.current = [...installLogsRef.current, data]
+                        setInstallLogs((prev) => [...prev, data])
                     }
                 }
             }
@@ -89,7 +95,9 @@ export default function PluginsPage() {
                 return prev
             })
         }).catch((err) => {
-            setInstallLogs((prev) => [...prev, `ERROR: ${err.message}`])
+            const msg = `ERROR: ${err.message}`
+            installLogsRef.current = [...installLogsRef.current, msg]
+            setInstallLogs((prev) => [...prev, msg])
             setInstallError(true)
         })
     }
@@ -102,6 +110,22 @@ export default function PluginsPage() {
             refreshNav()
         } catch { /* ignore */ }
         finally { setToggling(null) }
+    }
+
+    const handleToggleEnabled = async (id, currentEnabled) => {
+        setToggling(id)
+        try {
+            if (currentEnabled) {
+                await pluginAPI.disable(id)
+            } else {
+                await pluginAPI.enable(id)
+            }
+            await fetchPlugins()
+            refreshNav()
+        } catch (e) {
+            const msg = e.response?.data?.error || e.message
+            if (msg) alert(msg)
+        } finally { setToggling(null) }
     }
 
     const handleSidebarToggle = async (id, visible) => {
@@ -119,9 +143,11 @@ export default function PluginsPage() {
     }
 
     const handleCopyLogs = () => {
-        navigator.clipboard.writeText(installLogs.join('\n'))
-        setCopied(true)
-        setTimeout(() => setCopied(false), 2000)
+        const text = installLogsRef.current.join('\n')
+        copyToClipboard(text, () => {
+            setCopied(true)
+            setTimeout(() => setCopied(false), 2000)
+        })
     }
 
     if (loading) {
@@ -179,38 +205,21 @@ export default function PluginsPage() {
                                     )}
                                 </Flex>
                                 <Flex align="center" gap="2">
-                                    {p.enabled ? (
-                                        <>
-                                            <Flex align="center" gap="1" title={p.show_in_sidebar ? t('plugins.hide_sidebar') : t('plugins.show_sidebar')}>
-                                                <IconButton
-                                                    variant="ghost"
-                                                    size="1"
-                                                    onClick={() => handleSidebarToggle(p.id, !p.show_in_sidebar)}
-                                                >
-                                                    {p.show_in_sidebar ? <Eye size={16} /> : <EyeOff size={16} />}
-                                                </IconButton>
-                                            </Flex>
-                                            <Button
-                                                variant="soft"
-                                                color="red"
-                                                size="1"
-                                                disabled={toggling === p.id}
-                                                onClick={() => handleUninstall(p.id)}
-                                            >
-                                                <Trash2 size={14} />
-                                                {t('plugins.uninstall')}
-                                            </Button>
-                                        </>
-                                    ) : (
-                                        <Button
-                                            variant="solid"
+                                    {p.enabled && (
+                                        <IconButton
+                                            variant="ghost"
                                             size="1"
-                                            onClick={() => handleInstall(p.id)}
+                                            title={p.show_in_sidebar ? t('plugins.hide_sidebar') : t('plugins.show_sidebar')}
+                                            onClick={() => handleSidebarToggle(p.id, !p.show_in_sidebar)}
                                         >
-                                            <Download size={14} />
-                                            {t('plugins.install_btn')}
-                                        </Button>
+                                            {p.show_in_sidebar ? <Eye size={16} /> : <EyeOff size={16} />}
+                                        </IconButton>
                                     )}
+                                    <Switch
+                                        checked={p.enabled}
+                                        disabled={toggling === p.id}
+                                        onCheckedChange={() => handleToggleEnabled(p.id, p.enabled)}
+                                    />
                                 </Flex>
                             </Flex>
                         </Card>

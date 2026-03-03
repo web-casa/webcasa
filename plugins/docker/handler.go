@@ -3,6 +3,7 @@ package docker
 import (
 	"bufio"
 	"context"
+	"io"
 	"net/http"
 	"net/url"
 	"strconv"
@@ -14,8 +15,9 @@ import (
 
 // Handler implements the REST API for Docker management.
 type Handler struct {
-	svc    *Service
-	client *Client
+	svc         *Service
+	client      *Client
+	reconnectFn func() bool // called after daemon restart to reconnect
 }
 
 // NewHandler creates a Docker Handler.
@@ -266,6 +268,108 @@ func (h *Handler) ContainerStats(c *gin.Context) {
 		return
 	}
 	c.JSON(http.StatusOK, stats)
+}
+
+// ── Daemon Configuration ──
+
+// GetDaemonConfig returns the current Docker daemon configuration.
+func (h *Handler) GetDaemonConfig(c *gin.Context) {
+	cfg, _, err := ReadDaemonConfig()
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"config": cfg})
+}
+
+// UpdateDaemonConfig writes daemon.json and restarts Docker.
+func (h *Handler) UpdateDaemonConfig(c *gin.Context) {
+	var cfg DaemonConfig
+	if err := c.ShouldBindJSON(&cfg); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+
+	// Read existing raw config to preserve unmanaged fields.
+	_, raw, err := ReadDaemonConfig()
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to read current config: " + err.Error()})
+		return
+	}
+
+	// Write merged config.
+	if err := WriteDaemonConfig(&cfg, raw); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to write config: " + err.Error()})
+		return
+	}
+
+	// Restart Docker daemon.
+	if err := RestartDockerDaemon(); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "config saved but failed to restart Docker: " + err.Error()})
+		return
+	}
+
+	// Wait for daemon to come back (up to 15 seconds).
+	reconnected := false
+	if h.reconnectFn != nil {
+		for i := 0; i < 15; i++ {
+			time.Sleep(1 * time.Second)
+			if h.reconnectFn() {
+				reconnected = true
+				break
+			}
+		}
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"status":      "ok",
+		"reconnected": reconnected,
+	})
+}
+
+// ── Run Container ──
+
+// RunContainer creates and starts a standalone container.
+func (h *Handler) RunContainer(c *gin.Context) {
+	var req RunContainerRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+
+	if req.Image == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "image is required"})
+		return
+	}
+
+	// Validate restart policy.
+	switch req.RestartPolicy {
+	case "", "no", "always", "unless-stopped", "on-failure":
+		// valid
+	default:
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid restart_policy, must be one of: no, always, unless-stopped, on-failure"})
+		return
+	}
+
+	// Try to pull the image first, but don't fail if it errors — the image
+	// may already exist locally (local build, offline environment, etc.).
+	pullCtx, pullCancel := context.WithTimeout(context.Background(), 5*time.Minute)
+	defer pullCancel()
+	if reader, err := h.client.PullImage(pullCtx, req.Image); err == nil {
+		_, _ = io.Copy(io.Discard, reader)
+		reader.Close()
+	}
+
+	// Create and start the container.
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	id, err := h.client.RunContainer(ctx, &req)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+
+	c.JSON(http.StatusCreated, gin.H{"id": id, "message": "Container created and started"})
 }
 
 // ── Images ──

@@ -1,6 +1,7 @@
 import { useState, useEffect, useCallback, useRef } from 'react'
 import { Box, Flex, Text, Card, Badge, Heading, Button, Separator, Dialog, TextArea, TextField, Tabs } from '@radix-ui/themes'
-import { Container, Play, Square, RefreshCw, Trash2, FileText, Plus, Download, Server, Search, Radio, Upload } from 'lucide-react'
+import { Container, Play, Square, RefreshCw, Trash2, FileText, Plus, Download, Server, Search, Radio, Upload, X, Loader2, Star, Settings } from 'lucide-react'
+import { useNavigate } from 'react-router'
 import { dockerAPI } from '../api/index.js'
 import { useTranslation } from 'react-i18next'
 import DockerRequired from '../components/DockerRequired.jsx'
@@ -10,6 +11,7 @@ const statusColors = { running: 'green', stopped: 'gray', partial: 'orange', err
 
 export default function DockerOverview() {
     const { t } = useTranslation()
+    const navigate = useNavigate()
     const [dockerStatus, setDockerStatus] = useState(null)
     const [dockerChecking, setDockerChecking] = useState(true)
     const [stacks, setStacks] = useState([])
@@ -17,6 +19,7 @@ export default function DockerOverview() {
     const [loading, setLoading] = useState(true)
     const [actionLoading, setActionLoading] = useState(null)
     const [showCreate, setShowCreate] = useState(false)
+    const [showRunContainer, setShowRunContainer] = useState(false)
     const [showLogs, setShowLogs] = useState(null)
     const [logs, setLogs] = useState('')
     const [logFilter, setLogFilter] = useState('')
@@ -147,6 +150,8 @@ export default function DockerOverview() {
                     <Heading size="5">Docker</Heading>
                 </Flex>
                 <Flex gap="2">
+                    <Button size="2" variant="ghost" onClick={() => navigate('/docker/settings')}><Settings size={16} /></Button>
+                    <Button size="2" variant="soft" onClick={() => setShowRunContainer(true)}><Play size={16} /> {t('docker.run_container')}</Button>
                     <Button size="2" onClick={() => setShowCreate(true)}><Plus size={16} /> {t('docker.create_stack')}</Button>
                 </Flex>
             </Flex>
@@ -234,6 +239,9 @@ export default function DockerOverview() {
 
             {/* Create Stack Dialog */}
             <CreateStackDialog open={showCreate} onClose={() => setShowCreate(false)} onCreated={fetchData} />
+
+            {/* Run Container Dialog */}
+            <RunContainerDialog open={showRunContainer} onClose={() => setShowRunContainer(false)} onCreated={fetchData} />
 
             {/* Logs Dialog */}
             <Dialog.Root open={!!showLogs} onOpenChange={(v) => { if (!v) closeLogs() }}>
@@ -368,6 +376,286 @@ function CreateStackDialog({ open, onClose, onCreated }) {
                     <Dialog.Close><Button variant="soft" color="gray">{t('common.cancel')}</Button></Dialog.Close>
                     <Button disabled={creating || !name.trim() || !composeFile.trim()} onClick={handleCreate}>
                         {creating ? t('common.saving') : t('common.create')}
+                    </Button>
+                </Flex>
+            </Dialog.Content>
+        </Dialog.Root>
+    )
+}
+
+function RunContainerDialog({ open, onClose, onCreated }) {
+    const { t } = useTranslation()
+    const [image, setImage] = useState('')
+    const [name, setName] = useState('')
+    const [ports, setPorts] = useState([])
+    const [volumes, setVolumes] = useState([])
+    const [envVars, setEnvVars] = useState([])
+    const [network, setNetwork] = useState('')
+    const [restartPolicy, setRestartPolicy] = useState('no')
+    const [command, setCommand] = useState('')
+    const [memoryLimit, setMemoryLimit] = useState('')
+    const [cpuLimit, setCpuLimit] = useState('')
+    const [networks, setNetworks] = useState([])
+    const [creating, setCreating] = useState(false)
+    const [error, setError] = useState('')
+
+    // Image search state
+    const [searchTerm, setSearchTerm] = useState('')
+    const [searchResults, setSearchResults] = useState([])
+    const [searching, setSearching] = useState(false)
+    const [showSearch, setShowSearch] = useState(false)
+
+    useEffect(() => {
+        if (open) {
+            dockerAPI.listNetworks().then(res => {
+                setNetworks(res.data?.networks || [])
+            }).catch(() => {})
+        }
+    }, [open])
+
+    const resetForm = () => {
+        setImage(''); setName(''); setPorts([]); setVolumes([]); setEnvVars([])
+        setNetwork(''); setRestartPolicy('no'); setCommand('')
+        setMemoryLimit(''); setCpuLimit(''); setError('')
+        setSearchTerm(''); setSearchResults([]); setShowSearch(false)
+    }
+
+    const handleClose = () => {
+        resetForm()
+        onClose()
+    }
+
+    const handleSearch = async () => {
+        if (!searchTerm.trim()) return
+        setSearching(true)
+        try {
+            const res = await dockerAPI.searchImages(searchTerm.trim(), 10)
+            setSearchResults(res.data?.results || [])
+            setShowSearch(true)
+        } catch { setSearchResults([]) }
+        finally { setSearching(false) }
+    }
+
+    const selectImage = (name) => {
+        setImage(name)
+        setShowSearch(false)
+        setSearchResults([])
+    }
+
+    const handleRun = async () => {
+        if (!image.trim()) return
+        setCreating(true)
+        setError('')
+        try {
+            const data = {
+                image: image.trim(),
+                name: name.trim(),
+                ports: ports.filter(p => p.container_port),
+                volumes: volumes.filter(v => v.host_path && v.container_path),
+                env: envVars.filter(e => e.key).map(e => `${e.key}=${e.value}`),
+                restart_policy: restartPolicy,
+                network: network,
+                command: command.trim(),
+                memory_limit: memoryLimit ? parseInt(memoryLimit) * 1024 * 1024 : 0,
+                cpu_limit: cpuLimit ? parseFloat(cpuLimit) : 0,
+            }
+            await dockerAPI.runContainer(data)
+            onCreated()
+            handleClose()
+        } catch (e) {
+            setError(e.response?.data?.error || e.message)
+        } finally { setCreating(false) }
+    }
+
+    const addPort = () => setPorts([...ports, { host_port: '', container_port: '', protocol: 'tcp' }])
+    const removePort = (i) => setPorts(ports.filter((_, idx) => idx !== i))
+    const updatePort = (i, field, val) => {
+        const next = [...ports]
+        next[i] = { ...next[i], [field]: val }
+        setPorts(next)
+    }
+
+    const addVolume = () => setVolumes([...volumes, { host_path: '', container_path: '', read_only: false }])
+    const removeVolume = (i) => setVolumes(volumes.filter((_, idx) => idx !== i))
+    const updateVolume = (i, field, val) => {
+        const next = [...volumes]
+        next[i] = { ...next[i], [field]: val }
+        setVolumes(next)
+    }
+
+    const addEnv = () => setEnvVars([...envVars, { key: '', value: '' }])
+    const removeEnv = (i) => setEnvVars(envVars.filter((_, idx) => idx !== i))
+    const updateEnv = (i, field, val) => {
+        const next = [...envVars]
+        next[i] = { ...next[i], [field]: val }
+        setEnvVars(next)
+    }
+
+    return (
+        <Dialog.Root open={open} onOpenChange={(v) => { if (!v) handleClose() }}>
+            <Dialog.Content maxWidth="700px" style={{ maxHeight: '85vh', overflow: 'auto' }}>
+                <Dialog.Title>{t('docker.run_container')}</Dialog.Title>
+                <Flex direction="column" gap="3" mt="3">
+                    {/* Image */}
+                    <Box>
+                        <Text size="2" weight="bold" mb="1" style={{ display: 'block' }}>{t('docker.image')} *</Text>
+                        <Flex gap="2">
+                            <Box style={{ flex: 1 }}>
+                                <TextField.Root placeholder="nginx:latest" value={image} onChange={(e) => setImage(e.target.value)} />
+                            </Box>
+                            <TextField.Root
+                                placeholder={t('docker.search_placeholder')}
+                                value={searchTerm}
+                                onChange={(e) => setSearchTerm(e.target.value)}
+                                onKeyDown={(e) => { if (e.key === 'Enter') handleSearch() }}
+                                style={{ width: 180 }}
+                            >
+                                <TextField.Slot side="right">
+                                    <Button variant="ghost" size="1" onClick={handleSearch} disabled={searching}>
+                                        {searching ? <Loader2 size={14} className="spin" /> : <Search size={14} />}
+                                    </Button>
+                                </TextField.Slot>
+                            </TextField.Root>
+                        </Flex>
+                        {showSearch && searchResults.length > 0 && (
+                            <Box mt="2" style={{ border: '1px solid var(--gray-5)', borderRadius: 8, maxHeight: 200, overflow: 'auto' }}>
+                                {searchResults.map((r, i) => (
+                                    <Flex key={i} align="center" gap="2" px="3" py="2"
+                                        style={{ cursor: 'pointer', borderBottom: i < searchResults.length - 1 ? '1px solid var(--gray-4)' : 'none' }}
+                                        onClick={() => selectImage(r.name)}
+                                    >
+                                        <Text size="2" weight="bold" style={{ flex: 1 }}>{r.name}</Text>
+                                        {r.is_official && <Badge color="blue" size="1">Official</Badge>}
+                                        <Flex align="center" gap="1"><Star size={12} /><Text size="1">{r.star_count}</Text></Flex>
+                                    </Flex>
+                                ))}
+                            </Box>
+                        )}
+                    </Box>
+
+                    {/* Container Name */}
+                    <Box>
+                        <Text size="2" weight="bold" mb="1" style={{ display: 'block' }}>{t('docker.container_name')}</Text>
+                        <TextField.Root placeholder={t('docker.container_name_placeholder')} value={name} onChange={(e) => setName(e.target.value)} />
+                    </Box>
+
+                    {/* Port Mappings */}
+                    <Box>
+                        <Flex align="center" justify="between" mb="1">
+                            <Text size="2" weight="bold">{t('docker.port_mappings')}</Text>
+                            <Button variant="ghost" size="1" onClick={addPort}><Plus size={14} /> {t('docker.add_port')}</Button>
+                        </Flex>
+                        {ports.map((p, i) => (
+                            <Flex key={i} gap="2" align="center" mb="1">
+                                <TextField.Root placeholder={t('docker.host_port')} value={p.host_port}
+                                    onChange={(e) => updatePort(i, 'host_port', e.target.value)} style={{ width: 100 }} />
+                                <Text size="2">:</Text>
+                                <TextField.Root placeholder={t('docker.container_port')} value={p.container_port}
+                                    onChange={(e) => updatePort(i, 'container_port', e.target.value)} style={{ width: 100 }} />
+                                <select value={p.protocol} onChange={(e) => updatePort(i, 'protocol', e.target.value)}
+                                    style={{ padding: '6px 8px', borderRadius: 6, border: '1px solid var(--gray-6)', fontSize: 13, background: 'var(--color-background)' }}>
+                                    <option value="tcp">TCP</option>
+                                    <option value="udp">UDP</option>
+                                </select>
+                                <Button variant="ghost" size="1" color="red" onClick={() => removePort(i)}><X size={14} /></Button>
+                            </Flex>
+                        ))}
+                    </Box>
+
+                    {/* Volume Mounts */}
+                    <Box>
+                        <Flex align="center" justify="between" mb="1">
+                            <Text size="2" weight="bold">{t('docker.volume_mounts')}</Text>
+                            <Button variant="ghost" size="1" onClick={addVolume}><Plus size={14} /> {t('docker.add_volume')}</Button>
+                        </Flex>
+                        {volumes.map((v, i) => (
+                            <Flex key={i} gap="2" align="center" mb="1">
+                                <TextField.Root placeholder={t('docker.host_path')} value={v.host_path}
+                                    onChange={(e) => updateVolume(i, 'host_path', e.target.value)} style={{ flex: 1 }} />
+                                <Text size="2">:</Text>
+                                <TextField.Root placeholder={t('docker.container_path')} value={v.container_path}
+                                    onChange={(e) => updateVolume(i, 'container_path', e.target.value)} style={{ flex: 1 }} />
+                                <Flex align="center" gap="1">
+                                    <input type="checkbox" checked={v.read_only}
+                                        onChange={(e) => updateVolume(i, 'read_only', e.target.checked)} />
+                                    <Text size="1">RO</Text>
+                                </Flex>
+                                <Button variant="ghost" size="1" color="red" onClick={() => removeVolume(i)}><X size={14} /></Button>
+                            </Flex>
+                        ))}
+                    </Box>
+
+                    {/* Environment Variables */}
+                    <Box>
+                        <Flex align="center" justify="between" mb="1">
+                            <Text size="2" weight="bold">{t('docker.env_vars')}</Text>
+                            <Button variant="ghost" size="1" onClick={addEnv}><Plus size={14} /> {t('docker.add_env')}</Button>
+                        </Flex>
+                        {envVars.map((e, i) => (
+                            <Flex key={i} gap="2" align="center" mb="1">
+                                <TextField.Root placeholder="KEY" value={e.key}
+                                    onChange={(ev) => updateEnv(i, 'key', ev.target.value)} style={{ flex: 1 }} />
+                                <Text size="2">=</Text>
+                                <TextField.Root placeholder="VALUE" value={e.value}
+                                    onChange={(ev) => updateEnv(i, 'value', ev.target.value)} style={{ flex: 1 }} />
+                                <Button variant="ghost" size="1" color="red" onClick={() => removeEnv(i)}><X size={14} /></Button>
+                            </Flex>
+                        ))}
+                    </Box>
+
+                    {/* Network + Restart Policy */}
+                    <Flex gap="3">
+                        <Box style={{ flex: 1 }}>
+                            <Text size="2" weight="bold" mb="1" style={{ display: 'block' }}>{t('docker.network')}</Text>
+                            <select value={network} onChange={(e) => setNetwork(e.target.value)}
+                                style={{ width: '100%', padding: '8px 10px', borderRadius: 6, border: '1px solid var(--gray-6)', fontSize: 13, background: 'var(--color-background)' }}>
+                                <option value="">{t('docker.network_default')}</option>
+                                {networks.map(n => (
+                                    <option key={n.id} value={n.name}>{n.name} ({n.driver})</option>
+                                ))}
+                            </select>
+                        </Box>
+                        <Box style={{ flex: 1 }}>
+                            <Text size="2" weight="bold" mb="1" style={{ display: 'block' }}>{t('docker.restart_policy')}</Text>
+                            <select value={restartPolicy} onChange={(e) => setRestartPolicy(e.target.value)}
+                                style={{ width: '100%', padding: '8px 10px', borderRadius: 6, border: '1px solid var(--gray-6)', fontSize: 13, background: 'var(--color-background)' }}>
+                                <option value="no">{t('docker.restart_no')}</option>
+                                <option value="always">{t('docker.restart_always')}</option>
+                                <option value="unless-stopped">{t('docker.restart_unless_stopped')}</option>
+                                <option value="on-failure">{t('docker.restart_on_failure')}</option>
+                            </select>
+                        </Box>
+                    </Flex>
+
+                    {/* Command */}
+                    <Box>
+                        <Text size="2" weight="bold" mb="1" style={{ display: 'block' }}>{t('docker.command')}</Text>
+                        <TextField.Root placeholder={t('docker.command_placeholder')} value={command} onChange={(e) => setCommand(e.target.value)} />
+                    </Box>
+
+                    {/* Resource Limits */}
+                    <Flex gap="3">
+                        <Box style={{ flex: 1 }}>
+                            <Text size="2" weight="bold" mb="1" style={{ display: 'block' }}>{t('docker.memory_limit')}</Text>
+                            <TextField.Root type="number" placeholder="0" value={memoryLimit} onChange={(e) => setMemoryLimit(e.target.value)} />
+                        </Box>
+                        <Box style={{ flex: 1 }}>
+                            <Text size="2" weight="bold" mb="1" style={{ display: 'block' }}>{t('docker.cpu_limit')}</Text>
+                            <TextField.Root type="number" placeholder="0" step="0.1" value={cpuLimit} onChange={(e) => setCpuLimit(e.target.value)} />
+                        </Box>
+                    </Flex>
+
+                    {error && <Text size="2" color="red">{error}</Text>}
+                </Flex>
+
+                <Flex justify="end" gap="2" mt="4">
+                    <Dialog.Close><Button variant="soft" color="gray">{t('common.cancel')}</Button></Dialog.Close>
+                    <Button disabled={creating || !image.trim()} onClick={handleRun}>
+                        {creating ? (
+                            <><Loader2 size={16} className="spin" /> {t('docker.running_container')}</>
+                        ) : (
+                            <><Play size={16} /> {t('docker.run')}</>
+                        )}
                     </Button>
                 </Flex>
             </Dialog.Content>

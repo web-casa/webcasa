@@ -16,6 +16,7 @@ import (
 	"github.com/docker/docker/api/types/registry"
 	"github.com/docker/docker/api/types/volume"
 	"github.com/docker/docker/client"
+	"github.com/docker/go-connections/nat"
 )
 
 // Client wraps the Docker Engine API client with convenience methods.
@@ -193,6 +194,128 @@ func (c *Client) GetContainerStats(ctx context.Context, id string) (*ContainerSt
 		NetRx:      netRx,
 		NetTx:      netTx,
 	}, nil
+}
+
+// ── Run Container ──
+
+// RunContainerRequest describes a standalone container to create and start.
+type RunContainerRequest struct {
+	Image         string          `json:"image"`
+	Name          string          `json:"name"`
+	Ports         []RunPortMapping   `json:"ports"`
+	Volumes       []RunVolumeMapping `json:"volumes"`
+	Env           []string        `json:"env"`            // KEY=VALUE
+	RestartPolicy string          `json:"restart_policy"` // no|always|unless-stopped|on-failure
+	Network       string          `json:"network"`
+	Command       string          `json:"command"`
+	MemoryLimit   int64           `json:"memory_limit"`   // bytes, 0 = unlimited
+	CPULimit      float64         `json:"cpu_limit"`      // cores, 0 = unlimited
+}
+
+// RunPortMapping describes a single port mapping for RunContainer.
+type RunPortMapping struct {
+	HostPort      string `json:"host_port"`
+	ContainerPort string `json:"container_port"`
+	Protocol      string `json:"protocol"` // tcp|udp
+}
+
+// RunVolumeMapping describes a single volume mount for RunContainer.
+type RunVolumeMapping struct {
+	HostPath      string `json:"host_path"`
+	ContainerPath string `json:"container_path"`
+	ReadOnly      bool   `json:"read_only"`
+}
+
+// RunContainer creates and starts a standalone container. Returns the container ID.
+func (c *Client) RunContainer(ctx context.Context, req *RunContainerRequest) (string, error) {
+	// Build port bindings.
+	exposedPorts := nat.PortSet{}
+	portBindings := nat.PortMap{}
+	for _, p := range req.Ports {
+		proto := p.Protocol
+		if proto == "" {
+			proto = "tcp"
+		}
+		containerPort, err := nat.NewPort(proto, p.ContainerPort)
+		if err != nil {
+			return "", fmt.Errorf("invalid container port %s/%s: %w", p.ContainerPort, proto, err)
+		}
+		exposedPorts[containerPort] = struct{}{}
+		portBindings[containerPort] = []nat.PortBinding{
+			{HostIP: "0.0.0.0", HostPort: p.HostPort},
+		}
+	}
+
+	// Build volume binds.
+	var binds []string
+	for _, v := range req.Volumes {
+		bind := v.HostPath + ":" + v.ContainerPath
+		if v.ReadOnly {
+			bind += ":ro"
+		}
+		binds = append(binds, bind)
+	}
+
+	// Build command.
+	var cmd []string
+	if req.Command != "" {
+		cmd = strings.Fields(req.Command)
+	}
+
+	// Restart policy.
+	restartPolicy := container.RestartPolicy{Name: container.RestartPolicyDisabled}
+	switch req.RestartPolicy {
+	case "always":
+		restartPolicy.Name = container.RestartPolicyAlways
+	case "unless-stopped":
+		restartPolicy.Name = container.RestartPolicyUnlessStopped
+	case "on-failure":
+		restartPolicy.Name = container.RestartPolicyOnFailure
+	}
+
+	// Resource limits.
+	resources := container.Resources{}
+	if req.MemoryLimit > 0 {
+		resources.Memory = req.MemoryLimit
+	}
+	if req.CPULimit > 0 {
+		resources.NanoCPUs = int64(req.CPULimit * 1e9)
+	}
+
+	config := &container.Config{
+		Image:        req.Image,
+		Env:          req.Env,
+		ExposedPorts: exposedPorts,
+		Cmd:          cmd,
+	}
+	hostConfig := &container.HostConfig{
+		PortBindings:  portBindings,
+		Binds:         binds,
+		RestartPolicy: restartPolicy,
+		Resources:     resources,
+	}
+
+	var networkConfig *network.NetworkingConfig
+	if req.Network != "" {
+		networkConfig = &network.NetworkingConfig{
+			EndpointsConfig: map[string]*network.EndpointSettings{
+				req.Network: {},
+			},
+		}
+	}
+
+	resp, err := c.cli.ContainerCreate(ctx, config, hostConfig, networkConfig, nil, req.Name)
+	if err != nil {
+		return "", fmt.Errorf("create container: %w", err)
+	}
+
+	if err := c.cli.ContainerStart(ctx, resp.ID, container.StartOptions{}); err != nil {
+		// Clean up the created container on start failure.
+		_ = c.cli.ContainerRemove(ctx, resp.ID, container.RemoveOptions{Force: true})
+		return "", fmt.Errorf("start container: %w", err)
+	}
+
+	return resp.ID[:12], nil
 }
 
 // ── Images ──

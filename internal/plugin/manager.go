@@ -217,6 +217,13 @@ func (m *Manager) Enable(id string) error {
 		return nil
 	}
 
+	// Check that all dependencies are enabled.
+	for _, dep := range p.Metadata().Dependencies {
+		if !m.isEnabled(dep) {
+			return fmt.Errorf("dependency %q is not enabled", dep)
+		}
+	}
+
 	if err := m.setState(id, true); err != nil {
 		return err
 	}

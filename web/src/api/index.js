@@ -167,8 +167,13 @@ export const dockerAPI = {
     stackPull: (id) => api.post(`/plugins/docker/stacks/${id}/pull`),
     stackLogs: (id, tail) => api.get(`/plugins/docker/stacks/${id}/logs`, { params: { tail } }),
 
+    // Daemon config
+    getDaemonConfig: () => api.get('/plugins/docker/daemon-config'),
+    updateDaemonConfig: (data) => api.put('/plugins/docker/daemon-config', data, { timeout: 60000 }),
+
     // Containers
     listContainers: (all = true) => api.get('/plugins/docker/containers', { params: { all } }),
+    runContainer: (data) => api.post('/plugins/docker/containers/run', data, { timeout: 300000 }),
     startContainer: (id) => api.post(`/plugins/docker/containers/${id}/start`),
     stopContainer: (id) => api.post(`/plugins/docker/containers/${id}/stop`),
     restartContainer: (id) => api.post(`/plugins/docker/containers/${id}/restart`),
