@@ -424,6 +424,11 @@ jobs:
 
       - name: 'Test: Frontend manifests >= 4'
         run: |
+          # Enable core plugins (only AI is enabled by default on fresh install)
+          for pid in docker deploy filemanager monitoring backup; do
+              curl -sf -X POST "http://localhost:$PANEL_PORT/api/plugins/$pid/enable" \
+                  -H "Authorization: Bearer $TOKEN" > /dev/null 2>&1 || true
+          done
           MANIFEST_COUNT=$(curl -sf http://localhost:$PANEL_PORT/api/plugins/frontend-manifests \
             -H "Authorization: Bearer $TOKEN" | jq '. | length')
           echo "Manifest count: $MANIFEST_COUNT"
