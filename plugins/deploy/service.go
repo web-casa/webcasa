@@ -1028,9 +1028,14 @@ func (s *Service) CreateCronJob(job *CronJob) error {
 }
 
 // UpdateCronJob updates a cron job and re-registers it with the scheduler.
-func (s *Service) UpdateCronJob(jobID uint, updates map[string]interface{}) error {
-	if err := s.db.Model(&CronJob{}).Where("id = ?", jobID).Updates(updates).Error; err != nil {
-		return err
+// projectID is used to verify the job belongs to the specified project.
+func (s *Service) UpdateCronJob(projectID, jobID uint, updates map[string]interface{}) error {
+	result := s.db.Model(&CronJob{}).Where("id = ? AND project_id = ?", jobID, projectID).Updates(updates)
+	if result.Error != nil {
+		return result.Error
+	}
+	if result.RowsAffected == 0 {
+		return fmt.Errorf("cron job not found or does not belong to this project")
 	}
 	var job CronJob
 	if err := s.db.First(&job, jobID).Error; err != nil {
@@ -1041,9 +1046,17 @@ func (s *Service) UpdateCronJob(jobID uint, updates map[string]interface{}) erro
 }
 
 // DeleteCronJob deletes a cron job and removes it from the scheduler.
-func (s *Service) DeleteCronJob(jobID uint) error {
+// projectID is used to verify the job belongs to the specified project.
+func (s *Service) DeleteCronJob(projectID, jobID uint) error {
+	result := s.db.Where("id = ? AND project_id = ?", jobID, projectID).Delete(&CronJob{})
+	if result.Error != nil {
+		return result.Error
+	}
+	if result.RowsAffected == 0 {
+		return fmt.Errorf("cron job not found or does not belong to this project")
+	}
 	s.cron.RemoveJob(jobID)
-	return s.db.Delete(&CronJob{}, jobID).Error
+	return nil
 }
 
 // ---- ExtraProcess CRUD ----
@@ -1061,15 +1074,24 @@ func (s *Service) CreateExtraProcess(proc *ExtraProcess) error {
 }
 
 // UpdateExtraProcess updates an extra process.
-func (s *Service) UpdateExtraProcess(procID uint, updates map[string]interface{}) error {
-	return s.db.Model(&ExtraProcess{}).Where("id = ?", procID).Updates(updates).Error
+// projectID is used to verify the process belongs to the specified project.
+func (s *Service) UpdateExtraProcess(projectID, procID uint, updates map[string]interface{}) error {
+	result := s.db.Model(&ExtraProcess{}).Where("id = ? AND project_id = ?", procID, projectID).Updates(updates)
+	if result.Error != nil {
+		return result.Error
+	}
+	if result.RowsAffected == 0 {
+		return fmt.Errorf("extra process not found or does not belong to this project")
+	}
+	return nil
 }
 
 // DeleteExtraProcess stops and deletes an extra process.
-func (s *Service) DeleteExtraProcess(procID uint) error {
+// projectID is used to verify the process belongs to the specified project.
+func (s *Service) DeleteExtraProcess(projectID, procID uint) error {
 	var proc ExtraProcess
-	if err := s.db.First(&proc, procID).Error; err != nil {
-		return err
+	if err := s.db.Where("id = ? AND project_id = ?", procID, projectID).First(&proc).Error; err != nil {
+		return fmt.Errorf("extra process not found or does not belong to this project")
 	}
 	var project Project
 	if err := s.db.First(&project, proc.ProjectID).Error; err != nil {
@@ -1085,13 +1107,14 @@ func (s *Service) DeleteExtraProcess(procID uint) error {
 }
 
 // RestartExtraProcess restarts an extra process.
-func (s *Service) RestartExtraProcess(procID uint) error {
+// projectID is used to verify the process belongs to the specified project.
+func (s *Service) RestartExtraProcess(projectID, procID uint) error {
 	var proc ExtraProcess
-	if err := s.db.First(&proc, procID).Error; err != nil {
-		return err
+	if err := s.db.Where("id = ? AND project_id = ?", procID, projectID).First(&proc).Error; err != nil {
+		return fmt.Errorf("extra process not found or does not belong to this project")
 	}
 	var project Project
-	if err := s.db.First(&project, proc.ProjectID).Error; err != nil {
+	if err := s.db.First(&project, projectID).Error; err != nil {
 		return err
 	}
 	if project.DeployMode == "docker" {

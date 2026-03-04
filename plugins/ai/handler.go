@@ -35,6 +35,26 @@ func getUserID(c *gin.Context) uint {
 	return 0
 }
 
+// getUserRole extracts the current user role from the gin context.
+// Falls back to querying the DB if user_role is not set (e.g. on the read-only router).
+func (h *Handler) getUserRole(c *gin.Context) string {
+	if role, exists := c.Get("user_role"); exists {
+		if s, ok := role.(string); ok {
+			return s
+		}
+	}
+	// Fallback: query role from DB using user_id.
+	userID := getUserID(c)
+	if userID == 0 {
+		return "viewer"
+	}
+	var role string
+	if err := h.svc.db.Table("users").Select("role").Where("id = ?", userID).Row().Scan(&role); err != nil {
+		return "viewer"
+	}
+	return role
+}
+
 // writeSSEData writes an SSE data field, encoding multi-line content correctly.
 // Each line of the payload must be prefixed with "data: " per the SSE spec.
 func writeSSEData(w gin.ResponseWriter, payload string) error {
@@ -116,7 +136,7 @@ func (h *Handler) Chat(c *gin.Context) {
 	c.Header("X-Accel-Buffering", "no")
 	c.Writer.Flush()
 
-	convID, err := h.svc.ChatWithTools(c.Request.Context(), req, getUserID(c), func(event StreamEvent) error {
+	convID, err := h.svc.ChatWithTools(c.Request.Context(), req, getUserID(c), h.getUserRole(c), func(event StreamEvent) error {
 		switch event.Type {
 		case "delta":
 			writeSSEEvent(c.Writer, "delta", event.Content)
@@ -301,7 +321,7 @@ func (h *Handler) Confirm(c *gin.Context) {
 		return
 	}
 
-	if err := h.svc.ResolveConfirmation(req.PendingID, req.Approved); err != nil {
+	if err := h.svc.ResolveConfirmation(req.PendingID, req.Approved, getUserID(c)); err != nil {
 		c.JSON(http.StatusNotFound, gin.H{"error": err.Error()})
 		return
 	}

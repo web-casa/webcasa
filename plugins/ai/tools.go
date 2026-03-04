@@ -17,6 +17,7 @@ type Tool struct {
 	Parameters        map[string]interface{} `json:"parameters"` // JSON Schema object
 	ReadOnly          bool                   `json:"-"`           // true = no side effects
 	NeedsConfirmation bool                   `json:"-"`           // true = requires user approval before execution
+	AdminOnly         bool                   `json:"-"`           // true = only admin users can execute this tool
 	Handler           ToolHandler            `json:"-"`
 }
 

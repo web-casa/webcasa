@@ -84,6 +84,7 @@ func RegisterBuiltinTools(r *ToolRegistry) {
 		}),
 		ReadOnly:          false,
 		NeedsConfirmation: true,
+		AdminOnly:         true,
 		Handler:           createHostHandler(r),
 	})
 
@@ -219,6 +220,7 @@ func RegisterBuiltinTools(r *ToolRegistry) {
 		}),
 		ReadOnly:          false,
 		NeedsConfirmation: true,
+		AdminOnly:         true,
 		Handler: func(ctx context.Context, args json.RawMessage) (interface{}, error) {
 			var p struct {
 				ProjectID uint `json:"project_id"`
@@ -269,6 +271,7 @@ func RegisterBuiltinTools(r *ToolRegistry) {
 		}),
 		ReadOnly:          false,
 		NeedsConfirmation: true,
+		AdminOnly:         true,
 		Handler:           createProjectHandler(r),
 	})
 
@@ -420,6 +423,7 @@ func RegisterBuiltinTools(r *ToolRegistry) {
 		}),
 		ReadOnly:          false,
 		NeedsConfirmation: true,
+		AdminOnly:         true,
 		Handler: func(ctx context.Context, args json.RawMessage) (interface{}, error) {
 			var p struct {
 				Command string `json:"command"`
@@ -487,6 +491,7 @@ func RegisterBuiltinTools(r *ToolRegistry) {
 		}),
 		ReadOnly:          false,
 		NeedsConfirmation: true,
+		AdminOnly:         true,
 		Handler: func(ctx context.Context, args json.RawMessage) (interface{}, error) {
 			if err := r.coreAPI.TriggerBackup(); err != nil {
 				return nil, err
@@ -538,6 +543,7 @@ func RegisterBuiltinTools(r *ToolRegistry) {
 		}),
 		ReadOnly:          false,
 		NeedsConfirmation: true,
+		AdminOnly:         true,
 		Handler:  updateHostHandler(r),
 	})
 }
@@ -547,19 +553,38 @@ func RegisterBuiltinTools(r *ToolRegistry) {
 // ──────────────────────────────────────────────
 
 // isPathSafe checks if a file path is within allowed directories.
+// It resolves symlinks to prevent escape via symlink traversal and uses
+// proper directory boundary checks (e.g. /home must not match /home2).
 func isPathSafe(path string) bool {
 	abs, err := filepath.Abs(path)
 	if err != nil {
 		return false
 	}
+
+	// Resolve symlinks to get the real path.
+	resolved, err := filepath.EvalSymlinks(abs)
+	if err != nil {
+		// If the file doesn't exist yet, EvalSymlinks fails.
+		// Try resolving the parent directory instead.
+		dir := filepath.Dir(abs)
+		resolvedDir, dirErr := filepath.EvalSymlinks(dir)
+		if dirErr != nil {
+			return false
+		}
+		resolved = filepath.Join(resolvedDir, filepath.Base(abs))
+	}
+
 	// Block sensitive files
-	blocked := []string{"/etc/shadow", "/etc/gshadow", "/etc/sudoers"}
+	blocked := []string{"/etc/shadow", "/etc/gshadow", "/etc/sudoers", "/etc/passwd"}
 	for _, b := range blocked {
-		if abs == b {
+		if resolved == b {
 			return false
 		}
 	}
-	// Allow common safe directories
+
+	// Allow common safe directories.
+	// Use filepath boundary check: resolved path must be exactly the allowed dir
+	// or start with allowedDir + "/" to prevent /home matching /home2.
 	allowed := []string{
 		"/etc/caddy", "/etc/nginx",
 		"/var/log",
@@ -568,7 +593,7 @@ func isPathSafe(path string) bool {
 		"/tmp",
 	}
 	for _, a := range allowed {
-		if strings.HasPrefix(abs, a) {
+		if resolved == a || strings.HasPrefix(resolved, a+"/") {
 			return true
 		}
 	}

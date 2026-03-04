@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"net/http"
 	"os/exec"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -202,7 +203,7 @@ func (c *Checker) checkLocal(manifest *RemoteVersions) []CheckResult {
 			if err == nil && ver != "" {
 				r.Installed = true
 				r.LocalVersion = ver
-				r.UpdateAvailable = ver != tv.Recommended
+				r.UpdateAvailable = semverLessThan(ver, tv.Recommended)
 			}
 			results = append(results, r)
 		}
@@ -220,13 +221,46 @@ func (c *Checker) checkLocal(manifest *RemoteVersions) []CheckResult {
 			if err == nil && ver != "" {
 				r.Installed = true
 				r.LocalVersion = ver
-				r.UpdateAvailable = ver != tv.Recommended
+				r.UpdateAvailable = semverLessThan(ver, tv.Recommended)
 			}
 			results = append(results, r)
 		}
 	}
 
 	return results
+}
+
+// semverLessThan returns true if version a is strictly less than version b.
+// Handles versions like "27.5.1", "0.18.2", "1.2.3-beta". Pre-release suffixes are stripped.
+func semverLessThan(a, b string) bool {
+	parseVer := func(v string) (int, int, int) {
+		// Strip leading "v" and any pre-release suffix (e.g. "-beta")
+		v = strings.TrimPrefix(v, "v")
+		if idx := strings.IndexByte(v, '-'); idx >= 0 {
+			v = v[:idx]
+		}
+		parts := strings.SplitN(v, ".", 3)
+		major, _ := strconv.Atoi(safeIndex(parts, 0))
+		minor, _ := strconv.Atoi(safeIndex(parts, 1))
+		patch, _ := strconv.Atoi(safeIndex(parts, 2))
+		return major, minor, patch
+	}
+	aMaj, aMin, aPat := parseVer(a)
+	bMaj, bMin, bPat := parseVer(b)
+	if aMaj != bMaj {
+		return aMaj < bMaj
+	}
+	if aMin != bMin {
+		return aMin < bMin
+	}
+	return aPat < bPat
+}
+
+func safeIndex(s []string, i int) string {
+	if i < len(s) {
+		return s[i]
+	}
+	return "0"
 }
 
 // getCommandVersion runs a command and returns the first line of output, trimmed.

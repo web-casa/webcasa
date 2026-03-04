@@ -24,9 +24,15 @@ type Service struct {
 	tools       *ToolRegistry
 
 	// pendingConfirms tracks tool calls that require user confirmation.
-	// Key: pending_id, Value: channel that receives the approval decision.
+	// Key: pending_id, Value: pendingEntry with user ownership and approval channel.
 	pendingMu       sync.Mutex
-	pendingConfirms map[string]chan bool
+	pendingConfirms map[string]*pendingEntry
+}
+
+// pendingEntry binds a confirmation to its owning user.
+type pendingEntry struct {
+	userID uint
+	ch     chan bool
 }
 
 // NewService creates a new AI assistant service.
@@ -41,7 +47,7 @@ func NewService(db *gorm.DB, configStore *pluginpkg.ConfigStore, coreAPI pluginp
 		logger:          logger,
 		jwtSecret:       jwtSecret,
 		tools:           toolReg,
-		pendingConfirms: make(map[string]chan bool),
+		pendingConfirms: make(map[string]*pendingEntry),
 	}
 	// Set back-reference so tools that need AI generation can access the service.
 	toolReg.svc = svc
@@ -182,16 +188,21 @@ func (s *Service) Chat(ctx context.Context, req ChatRequest, userID uint, cb Str
 }
 
 // ResolveConfirmation resolves a pending tool confirmation.
-func (s *Service) ResolveConfirmation(pendingID string, approved bool) error {
+// The userID must match the user who initiated the tool call.
+func (s *Service) ResolveConfirmation(pendingID string, approved bool, userID uint) error {
 	s.pendingMu.Lock()
-	ch, ok := s.pendingConfirms[pendingID]
+	entry, ok := s.pendingConfirms[pendingID]
 	s.pendingMu.Unlock()
 
 	if !ok {
 		return fmt.Errorf("no pending confirmation found for ID %q", pendingID)
 	}
 
-	ch <- approved
+	if entry.userID != userID {
+		return fmt.Errorf("permission denied: confirmation belongs to a different user")
+	}
+
+	entry.ch <- approved
 	return nil
 }
 
@@ -199,7 +210,7 @@ func (s *Service) ResolveConfirmation(pendingID string, approved bool) error {
 
 // ChatWithTools handles a user message with tool use support.
 // The callback receives StreamEvents: text deltas, tool calls, tool results, and done.
-func (s *Service) ChatWithTools(ctx context.Context, req ChatRequest, userID uint, cb StreamEventCallback) (uint, error) {
+func (s *Service) ChatWithTools(ctx context.Context, req ChatRequest, userID uint, userRole string, cb StreamEventCallback) (uint, error) {
 	client, err := s.getClient()
 	if err != nil {
 		return 0, err
@@ -282,8 +293,29 @@ func (s *Service) ChatWithTools(ctx context.Context, req ChatRequest, userID uin
 		for _, tc := range pendingToolCalls {
 			s.logger.Info("executing tool", "name", tc.Name, "id", tc.ID)
 
-			// Check if tool needs user confirmation.
+			// Check admin-only permission before executing.
 			tool := s.tools.Get(tc.Name)
+			if tool != nil && tool.AdminOnly && userRole != "admin" {
+				resultContent := `{"error": "Permission denied: this tool requires admin privileges"}`
+				cb(StreamEvent{
+					Type:    "tool_result",
+					Content: resultContent,
+					ToolCall: &ToolCall{
+						ID:   tc.ID,
+						Name: tc.Name,
+					},
+				})
+				apiMessages = append(apiMessages, ToolUseMessage{
+					Role:       "tool",
+					Content:    resultContent,
+					ToolCallID: tc.ID,
+					ToolName:   tc.Name,
+				})
+				s.logger.Warn("tool blocked: admin-only", "name", tc.Name, "user_id", userID, "role", userRole)
+				continue
+			}
+
+			// Check if tool needs user confirmation.
 			if tool != nil && tool.NeedsConfirmation {
 				// Parse arguments for display.
 				var argsMap map[string]interface{}
@@ -291,10 +323,10 @@ func (s *Service) ChatWithTools(ctx context.Context, req ChatRequest, userID uin
 
 				pendingID := fmt.Sprintf("%s-%s", tc.ID, tc.Name)
 
-				// Create confirmation channel.
+				// Create confirmation channel bound to this user.
 				confirmCh := make(chan bool, 1)
 				s.pendingMu.Lock()
-				s.pendingConfirms[pendingID] = confirmCh
+				s.pendingConfirms[pendingID] = &pendingEntry{userID: userID, ch: confirmCh}
 				s.pendingMu.Unlock()
 
 				// Send confirm_required event to frontend.

@@ -876,11 +876,35 @@ do_upgrade() {
         info "Backed up current binary to webcasa.bak"
     fi
 
-    # Build or download new version
+    # Build or download new version.
+    # Run in subshell so that exit 1 inside install_prebuilt/install_from_source
+    # only exits the subshell, allowing rollback logic to execute.
+    local INSTALL_OK=true
+    set +e
     if [[ "$BUILD_MODE" == "source" ]]; then
-        install_from_source
+        ( install_from_source )
     else
-        install_prebuilt
+        ( install_prebuilt )
+    fi
+    if [[ $? -ne 0 ]]; then
+        INSTALL_OK=false
+    fi
+    set -e
+
+    if [[ "$INSTALL_OK" != "true" ]]; then
+        error "Install step failed during upgrade!"
+        if [[ -f "$INSTALL_DIR/webcasa.bak" ]]; then
+            warn "Rolling back to previous binary..."
+            mv -f "$INSTALL_DIR/webcasa.bak" "$INSTALL_DIR/webcasa"
+        fi
+        warn "Restarting previous version..."
+        systemctl start webcasa || true
+        if systemctl is-active --quiet webcasa; then
+            success "Rollback successful. Previous version restored."
+        else
+            error "Rollback failed. Check logs: journalctl -u webcasa -n 50 --no-pager"
+        fi
+        exit 1
     fi
 
     # Update systemd service in case it changed

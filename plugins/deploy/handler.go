@@ -447,7 +447,7 @@ func (h *Handler) CreateCronJob(c *gin.Context) {
 
 // UpdateCronJob PUT /api/plugins/deploy/projects/:id/crons/:cronId
 func (h *Handler) UpdateCronJob(c *gin.Context) {
-	_, err := parseUintParam(c, "id")
+	id, err := parseUintParam(c, "id")
 	if err != nil {
 		return
 	}
@@ -468,7 +468,7 @@ func (h *Handler) UpdateCronJob(c *gin.Context) {
 			filtered[k] = v
 		}
 	}
-	if err := h.svc.UpdateCronJob(uint(cronID), filtered); err != nil {
+	if err := h.svc.UpdateCronJob(id, uint(cronID), filtered); err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
@@ -477,7 +477,7 @@ func (h *Handler) UpdateCronJob(c *gin.Context) {
 
 // DeleteCronJob DELETE /api/plugins/deploy/projects/:id/crons/:cronId
 func (h *Handler) DeleteCronJob(c *gin.Context) {
-	_, err := parseUintParam(c, "id")
+	id, err := parseUintParam(c, "id")
 	if err != nil {
 		return
 	}
@@ -486,7 +486,7 @@ func (h *Handler) DeleteCronJob(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid cronId"})
 		return
 	}
-	if err := h.svc.DeleteCronJob(uint(cronID)); err != nil {
+	if err := h.svc.DeleteCronJob(id, uint(cronID)); err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
@@ -549,7 +549,7 @@ func (h *Handler) CreateExtraProcess(c *gin.Context) {
 
 // UpdateExtraProcess PUT /api/plugins/deploy/projects/:id/processes/:procId
 func (h *Handler) UpdateExtraProcess(c *gin.Context) {
-	_, err := parseUintParam(c, "id")
+	id, err := parseUintParam(c, "id")
 	if err != nil {
 		return
 	}
@@ -570,7 +570,7 @@ func (h *Handler) UpdateExtraProcess(c *gin.Context) {
 			filtered[k] = v
 		}
 	}
-	if err := h.svc.UpdateExtraProcess(uint(procID), filtered); err != nil {
+	if err := h.svc.UpdateExtraProcess(id, uint(procID), filtered); err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
@@ -579,7 +579,7 @@ func (h *Handler) UpdateExtraProcess(c *gin.Context) {
 
 // DeleteExtraProcess DELETE /api/plugins/deploy/projects/:id/processes/:procId
 func (h *Handler) DeleteExtraProcess(c *gin.Context) {
-	_, err := parseUintParam(c, "id")
+	id, err := parseUintParam(c, "id")
 	if err != nil {
 		return
 	}
@@ -588,7 +588,7 @@ func (h *Handler) DeleteExtraProcess(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid procId"})
 		return
 	}
-	if err := h.svc.DeleteExtraProcess(uint(procID)); err != nil {
+	if err := h.svc.DeleteExtraProcess(id, uint(procID)); err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
@@ -597,7 +597,7 @@ func (h *Handler) DeleteExtraProcess(c *gin.Context) {
 
 // RestartExtraProcess POST /api/plugins/deploy/projects/:id/processes/:procId/restart
 func (h *Handler) RestartExtraProcess(c *gin.Context) {
-	_, err := parseUintParam(c, "id")
+	id, err := parseUintParam(c, "id")
 	if err != nil {
 		return
 	}
@@ -606,7 +606,7 @@ func (h *Handler) RestartExtraProcess(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid procId"})
 		return
 	}
-	if err := h.svc.RestartExtraProcess(uint(procID)); err != nil {
+	if err := h.svc.RestartExtraProcess(id, uint(procID)); err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
