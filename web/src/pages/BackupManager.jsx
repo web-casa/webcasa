@@ -317,6 +317,49 @@ export default function BackupManager({ embedded }) {
 
     return (
         <Box>
+            {/* Header */}
+            <Flex align="center" justify="between" mb="4">
+                {!embedded && (
+                    <Box>
+                        <Flex align="center" gap="2" mb="1">
+                            <HardDrive size={24} />
+                            <Text size="5" weight="bold" style={{ color: 'var(--cp-text)' }}>{t('backup.title')}</Text>
+                        </Flex>
+                        <Text size="2" style={{ color: 'var(--cp-text-muted)' }}>{t('backup.subtitle')}</Text>
+                    </Box>
+                )}
+                {embedded && <Box />}
+                <Button size="2" disabled={backingUp} onClick={handleBackupNow}>
+                    <Play size={16} /> {backingUp ? t('backup.running') : t('backup.backup_now')}
+                </Button>
+            </Flex>
+
+            {/* Status cards */}
+            <Flex gap="3" mb="4" wrap="wrap">
+                <Card style={{ padding: '12px 16px', flex: 1, minWidth: 180, background: 'var(--cp-card)', border: '1px solid var(--cp-border)' }}>
+                    <Text size="1" style={{ color: 'var(--cp-text-muted)', display: 'block' }}>{t('backup.current_status')}</Text>
+                    <Flex align="center" gap="2" mt="1">
+                        {status.state === 'running'
+                            ? <Badge color="yellow" variant="soft"><Clock size={12} /> {t('backup.running')}</Badge>
+                            : <Badge color="green" variant="soft"><CheckCircle size={12} /> {t('backup.idle')}</Badge>
+                        }
+                    </Flex>
+                </Card>
+                <Card style={{ padding: '12px 16px', flex: 1, minWidth: 180, background: 'var(--cp-card)', border: '1px solid var(--cp-border)' }}>
+                    <Text size="1" style={{ color: 'var(--cp-text-muted)', display: 'block' }}>{t('backup.last_backup')}</Text>
+                    <Text size="2" weight="bold" style={{ display: 'block', color: 'var(--cp-text)', marginTop: 4 }}>
+                        {formatDate(status.last_backup)}
+                    </Text>
+                    {status.last_status && statusBadge(status.last_status)}
+                </Card>
+                <Card style={{ padding: '12px 16px', flex: 1, minWidth: 180, background: 'var(--cp-card)', border: '1px solid var(--cp-border)' }}>
+                    <Text size="1" style={{ color: 'var(--cp-text-muted)', display: 'block' }}>{t('backup.next_scheduled')}</Text>
+                    <Text size="2" weight="bold" style={{ display: 'block', color: 'var(--cp-text)', marginTop: 4 }}>
+                        {status.next_run ? formatDate(status.next_run) : t('backup.never')}
+                    </Text>
+                </Card>
+            </Flex>
+
             {/* Kopia dependency warning + one-click install */}
             {kopiaStatus && !kopiaStatus.available && (
                 <Card mb="4" style={{ background: 'var(--orange-2)', border: '1px solid var(--orange-6)', padding: '16px 20px' }}>
@@ -384,48 +427,6 @@ export default function BackupManager({ embedded }) {
                     </Flex>
                 </Card>
             )}
-            {/* Header */}
-            <Flex align="center" justify="between" mb="4">
-                {!embedded && (
-                    <Box>
-                        <Flex align="center" gap="2" mb="1">
-                            <HardDrive size={24} />
-                            <Text size="5" weight="bold" style={{ color: 'var(--cp-text)' }}>{t('backup.title')}</Text>
-                        </Flex>
-                        <Text size="2" style={{ color: 'var(--cp-text-muted)' }}>{t('backup.subtitle')}</Text>
-                    </Box>
-                )}
-                {embedded && <Box />}
-                <Button size="2" disabled={backingUp} onClick={handleBackupNow}>
-                    <Play size={16} /> {backingUp ? t('backup.running') : t('backup.backup_now')}
-                </Button>
-            </Flex>
-
-            {/* Status cards */}
-            <Flex gap="3" mb="4" wrap="wrap">
-                <Card style={{ padding: '12px 16px', flex: 1, minWidth: 180, background: 'var(--cp-card)', border: '1px solid var(--cp-border)' }}>
-                    <Text size="1" style={{ color: 'var(--cp-text-muted)', display: 'block' }}>{t('backup.current_status')}</Text>
-                    <Flex align="center" gap="2" mt="1">
-                        {status.state === 'running'
-                            ? <Badge color="yellow" variant="soft"><Clock size={12} /> {t('backup.running')}</Badge>
-                            : <Badge color="green" variant="soft"><CheckCircle size={12} /> {t('backup.idle')}</Badge>
-                        }
-                    </Flex>
-                </Card>
-                <Card style={{ padding: '12px 16px', flex: 1, minWidth: 180, background: 'var(--cp-card)', border: '1px solid var(--cp-border)' }}>
-                    <Text size="1" style={{ color: 'var(--cp-text-muted)', display: 'block' }}>{t('backup.last_backup')}</Text>
-                    <Text size="2" weight="bold" style={{ display: 'block', color: 'var(--cp-text)', marginTop: 4 }}>
-                        {formatDate(status.last_backup)}
-                    </Text>
-                    {status.last_status && statusBadge(status.last_status)}
-                </Card>
-                <Card style={{ padding: '12px 16px', flex: 1, minWidth: 180, background: 'var(--cp-card)', border: '1px solid var(--cp-border)' }}>
-                    <Text size="1" style={{ color: 'var(--cp-text-muted)', display: 'block' }}>{t('backup.next_scheduled')}</Text>
-                    <Text size="2" weight="bold" style={{ display: 'block', color: 'var(--cp-text)', marginTop: 4 }}>
-                        {status.next_run ? formatDate(status.next_run) : t('backup.never')}
-                    </Text>
-                </Card>
-            </Flex>
 
             {/* Tabs */}
             <Tabs.Root defaultValue="config">

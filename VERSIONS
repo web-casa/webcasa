@@ -1,0 +1,20 @@
+# ============================================================================
+#  Web.Casa — Pinned Dependency Versions
+#  https://web.casa
+#
+#  This file is the single source of truth for all third-party tool versions.
+#  It is consumed by:
+#    - install.sh          (bash: source VERSIONS)
+#    - internal/versions/  (Go: embed + parse)
+#
+#  Format: KEY=VALUE  (no spaces around '=', no quotes needed)
+# ============================================================================
+
+# Go toolchain — major.minor, latest patch auto-detected at install time
+GO_MAJOR=1.26
+
+# Node.js — major version, latest LTS patch auto-detected at install time
+NODE_MAJOR=24
+
+# Kopia backup tool — exact version for RPM/DEB install
+KOPIA=0.22.3

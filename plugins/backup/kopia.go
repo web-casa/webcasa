@@ -10,8 +10,11 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"time"
+
+	"github.com/web-casa/webcasa/internal/versions"
 )
 
 // KopiaClient wraps the Kopia CLI for repository and snapshot operations.
@@ -48,7 +51,7 @@ func (k *KopiaClient) InstallKopia(writeSSE func(string), writeEvent func(string
 	case "debian":
 		installCmd = kopiaInstallInstructions["debian"]
 	case "rhel":
-		installCmd = kopiaInstallInstructions["rhel"]
+		installCmd = buildRHELInstallCmd()
 	default:
 		writeSSE("ERROR: Unsupported OS family: " + osFamily)
 		writeSSE("Please install Kopia manually: https://kopia.io/docs/installation/")
@@ -144,11 +147,36 @@ type KopiaStatus struct {
 	InstallInstructions map[string]string `json:"install_instructions,omitempty"`
 }
 
+// kopiaVersion references the centrally pinned Kopia version.
+var kopiaVersion = versions.Kopia
+
 // kopiaInstallInstructions provides install commands per OS family.
+// The "rhel" entry is built dynamically — see buildRHELInstallCmd().
 var kopiaInstallInstructions = map[string]string{
 	"debian":  "curl -s https://kopia.io/signing-key | sudo gpg --dearmor -o /etc/apt/keyrings/kopia-keyring.gpg && echo 'deb [signed-by=/etc/apt/keyrings/kopia-keyring.gpg] http://packages.kopia.io/apt/ stable main' | sudo tee /etc/apt/sources.list.d/kopia.list && sudo apt update && sudo apt install -y kopia",
-	"rhel":    "sudo rpm --import https://kopia.io/signing-key && sudo dnf install -y https://github.com/kopia/kopia/releases/latest/download/kopia-*.rpm",
 	"generic": "Visit https://kopia.io/docs/installation/ for installation instructions",
+}
+
+// rpmArch maps Go's GOARCH to Kopia RPM architecture suffixes.
+// Actual filenames: kopia-0.22.3.x86_64.rpm, kopia-0.22.3.aarch64.rpm, kopia-0.22.3.armhfp.rpm
+var rpmArch = map[string]string{
+	"amd64": "x86_64",
+	"arm64": "aarch64",
+	"arm":   "armhfp",
+}
+
+// buildRHELInstallCmd returns the dnf install command with the exact RPM URL
+// for the current architecture.
+func buildRHELInstallCmd() string {
+	arch := rpmArch[runtime.GOARCH]
+	if arch == "" {
+		arch = runtime.GOARCH
+	}
+	rpmURL := fmt.Sprintf(
+		"https://github.com/kopia/kopia/releases/download/v%s/kopia-%s.%s.rpm",
+		kopiaVersion, kopiaVersion, arch,
+	)
+	return fmt.Sprintf("sudo rpm --import https://kopia.io/signing-key && sudo dnf install -y %s", rpmURL)
 }
 
 // CheckKopia checks if the Kopia CLI is available in PATH.

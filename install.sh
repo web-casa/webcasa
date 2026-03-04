@@ -26,6 +26,18 @@
 
 set -euo pipefail
 
+# ==================== Load Pinned Versions ====================
+# VERSIONS file contains GO_MAJOR, NODE_MAJOR, KOPIA etc.
+SCRIPT_SELF_DIR="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" && pwd 2>/dev/null || echo ".")"
+if [[ -f "$SCRIPT_SELF_DIR/VERSIONS" ]]; then
+    # shellcheck source=VERSIONS
+    source "$SCRIPT_SELF_DIR/VERSIONS"
+fi
+# Defaults if VERSIONS file is missing (e.g. curl|bash without local clone)
+: "${GO_MAJOR:=1.26}"
+: "${NODE_MAJOR:=24}"
+: "${KOPIA:=0.22.3}"
+
 # ==================== Configuration ====================
 # Auto-detect version: local VERSION file → GitHub latest release → fallback
 SCRIPT_SELF="${BASH_SOURCE[0]:-}"
@@ -461,7 +473,7 @@ install_from_source() {
 }
 
 install_go() {
-    local GO_MAJOR="1.26"
+    # GO_MAJOR is loaded from VERSIONS file
 
     if command -v go &>/dev/null; then
         CURRENT_GO=$(go version | grep -oP 'go\K[0-9]+\.[0-9]+')
@@ -495,7 +507,7 @@ install_go() {
 }
 
 install_nodejs() {
-    local NODE_MAJOR="24"
+    # NODE_MAJOR is loaded from VERSIONS file
 
     if command -v node &>/dev/null; then
         NODE_VER=$(node --version | tr -d 'v' | cut -d. -f1)
