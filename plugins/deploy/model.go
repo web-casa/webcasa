@@ -25,6 +25,22 @@ type Project struct {
 	EnvVars       string    `gorm:"type:text" json:"-"`        // JSON-encoded env vars (encrypted)
 	ErrorMsg      string    `gorm:"type:text" json:"error_msg"`
 
+	// Deploy mode: bare (systemd) or docker (container)
+	DeployMode    string `gorm:"size:16;default:bare" json:"deploy_mode"` // bare | docker
+	DockerImage   string `gorm:"size:255" json:"docker_image,omitempty"` // e.g. webcasa-project-5:3
+	ContainerID   string `gorm:"size:128" json:"container_id,omitempty"`
+	ContainerName string `gorm:"size:128" json:"container_name,omitempty"`
+
+	// Health check settings
+	HealthCheckPath    string `gorm:"size:255;default:/" json:"health_check_path"`
+	HealthCheckTimeout int    `gorm:"default:30" json:"health_check_timeout"` // seconds
+	HealthCheckRetries int    `gorm:"default:3" json:"health_check_retries"`
+
+	// Resource limits
+	MemoryLimit  int `gorm:"default:0" json:"memory_limit"`  // MB, 0 = unlimited
+	CPULimit     int `gorm:"default:0" json:"cpu_limit"`     // percentage (100 = 1 core), 0 = unlimited
+	BuildTimeout int `gorm:"default:30" json:"build_timeout"` // minutes
+
 	// GitHub App authentication fields
 	AuthMethod           string `gorm:"size:32;default:ssh_key" json:"auth_method"` // ssh_key | github_app
 	GitHubAppID          int64  `gorm:"default:0" json:"github_app_id"`
@@ -53,14 +69,15 @@ type EnvVar struct {
 
 // Deployment records one build/deploy attempt.
 type Deployment struct {
-	ID        uint      `gorm:"primaryKey" json:"id"`
-	ProjectID uint      `gorm:"index;not null" json:"project_id"`
-	BuildNum  int       `gorm:"not null" json:"build_num"`
-	GitCommit string    `gorm:"size:64" json:"git_commit"`
-	Status    string    `gorm:"size:32;default:building" json:"status"` // building, success, failed, rolled_back
-	LogFile   string    `gorm:"size:512" json:"log_file"`
-	Duration  int       `json:"duration"` // seconds
-	CreatedAt time.Time `json:"created_at"`
+	ID              uint      `gorm:"primaryKey" json:"id"`
+	ProjectID       uint      `gorm:"index;not null" json:"project_id"`
+	BuildNum        int       `gorm:"not null" json:"build_num"`
+	GitCommit       string    `gorm:"size:64" json:"git_commit"`
+	Status          string    `gorm:"size:32;default:building" json:"status"` // building, success, failed, rolled_back
+	LogFile         string    `gorm:"size:512" json:"log_file"`
+	Duration        int       `json:"duration"` // seconds
+	DiagnosisResult string    `gorm:"type:text" json:"diagnosis_result,omitempty"` // AI diagnosis of build failure
+	CreatedAt       time.Time `json:"created_at"`
 }
 
 func (Deployment) TableName() string {
@@ -115,7 +132,114 @@ var frameworkPresets = map[string]FrameworkPreset{
 		Name: "Django", Framework: "django",
 		InstallCmd: "pip install -r requirements.txt", BuildCmd: "python manage.py collectstatic --noinput", StartCmd: "gunicorn config.wsgi:application", Port: 8000,
 	},
+	"dockerfile": {
+		Name: "Dockerfile", Framework: "dockerfile",
+		InstallCmd: "", BuildCmd: "", StartCmd: "", Port: 0, // handled by Docker
+	},
 	"custom": {
 		Name: "Custom", Framework: "custom",
 	},
+}
+
+// CronJob represents a scheduled task for a project.
+type CronJob struct {
+	ID         uint       `gorm:"primaryKey" json:"id"`
+	ProjectID  uint       `gorm:"index;not null" json:"project_id"`
+	Name       string     `gorm:"size:255;not null" json:"name"`
+	Schedule   string     `gorm:"size:128;not null" json:"schedule"` // cron expression
+	Command    string     `gorm:"size:1024;not null" json:"command"`
+	Enabled    bool       `gorm:"default:true" json:"enabled"`
+	LastRunAt  *time.Time `json:"last_run_at"`
+	LastStatus string     `gorm:"size:32" json:"last_status"` // success, failed, ""
+	CreatedAt  time.Time  `json:"created_at"`
+	UpdatedAt  time.Time  `json:"updated_at"`
+}
+
+func (CronJob) TableName() string {
+	return "plugin_deploy_cron_jobs"
+}
+
+// ExtraProcess represents an additional process (worker, queue consumer, etc.) for a project.
+type ExtraProcess struct {
+	ID        uint      `gorm:"primaryKey" json:"id"`
+	ProjectID uint      `gorm:"index;not null" json:"project_id"`
+	Name      string    `gorm:"size:255;not null" json:"name"`
+	Command   string    `gorm:"size:1024;not null" json:"command"`
+	Instances int       `gorm:"default:1" json:"instances"`
+	Enabled   bool      `gorm:"default:true" json:"enabled"`
+	CreatedAt time.Time `json:"created_at"`
+	UpdatedAt time.Time `json:"updated_at"`
+}
+
+func (ExtraProcess) TableName() string {
+	return "plugin_deploy_extra_processes"
+}
+
+// EnvVarSuggestion represents a suggested environment variable for a framework.
+type EnvVarSuggestion struct {
+	Key          string `json:"key"`
+	DefaultValue string `json:"default_value"`
+	Description  string `json:"description"`
+	Required     bool   `json:"required"`
+}
+
+// frameworkEnvSuggestions maps framework IDs to suggested environment variables.
+var frameworkEnvSuggestions = map[string][]EnvVarSuggestion{
+	"nextjs": {
+		{Key: "NODE_ENV", DefaultValue: "production", Description: "Node.js environment mode", Required: true},
+		{Key: "NEXT_TELEMETRY_DISABLED", DefaultValue: "1", Description: "Disable Next.js telemetry"},
+		{Key: "NEXT_PUBLIC_API_URL", DefaultValue: "", Description: "Public API base URL for client-side requests"},
+	},
+	"nuxt": {
+		{Key: "NODE_ENV", DefaultValue: "production", Description: "Node.js environment mode", Required: true},
+		{Key: "NITRO_PRESET", DefaultValue: "node-server", Description: "Nitro server preset"},
+		{Key: "NUXT_PUBLIC_API_BASE", DefaultValue: "", Description: "Public API base URL"},
+	},
+	"vite": {
+		{Key: "NODE_ENV", DefaultValue: "production", Description: "Node.js environment mode", Required: true},
+		{Key: "VITE_API_URL", DefaultValue: "", Description: "API base URL (exposed to client)"},
+	},
+	"remix": {
+		{Key: "NODE_ENV", DefaultValue: "production", Description: "Node.js environment mode", Required: true},
+		{Key: "SESSION_SECRET", DefaultValue: "", Description: "Session encryption secret", Required: true},
+	},
+	"express": {
+		{Key: "NODE_ENV", DefaultValue: "production", Description: "Node.js environment mode", Required: true},
+		{Key: "LOG_LEVEL", DefaultValue: "info", Description: "Application log level"},
+	},
+	"go": {
+		{Key: "GIN_MODE", DefaultValue: "release", Description: "Gin framework mode (debug/release)"},
+		{Key: "GO_ENV", DefaultValue: "production", Description: "Go environment mode"},
+	},
+	"laravel": {
+		{Key: "APP_ENV", DefaultValue: "production", Description: "Application environment", Required: true},
+		{Key: "APP_KEY", DefaultValue: "", Description: "Application encryption key (run: php artisan key:generate)", Required: true},
+		{Key: "APP_DEBUG", DefaultValue: "false", Description: "Debug mode (disable in production)", Required: true},
+		{Key: "DB_CONNECTION", DefaultValue: "mysql", Description: "Database driver"},
+		{Key: "DB_HOST", DefaultValue: "127.0.0.1", Description: "Database host"},
+		{Key: "DB_PORT", DefaultValue: "3306", Description: "Database port"},
+		{Key: "DB_DATABASE", DefaultValue: "", Description: "Database name", Required: true},
+		{Key: "DB_USERNAME", DefaultValue: "", Description: "Database username", Required: true},
+		{Key: "DB_PASSWORD", DefaultValue: "", Description: "Database password", Required: true},
+	},
+	"flask": {
+		{Key: "FLASK_ENV", DefaultValue: "production", Description: "Flask environment mode", Required: true},
+		{Key: "FLASK_APP", DefaultValue: "app", Description: "Flask application module"},
+		{Key: "SECRET_KEY", DefaultValue: "", Description: "Flask session secret key", Required: true},
+	},
+	"django": {
+		{Key: "DJANGO_SETTINGS_MODULE", DefaultValue: "config.settings", Description: "Django settings module path", Required: true},
+		{Key: "DEBUG", DefaultValue: "False", Description: "Debug mode (disable in production)", Required: true},
+		{Key: "SECRET_KEY", DefaultValue: "", Description: "Django secret key", Required: true},
+		{Key: "ALLOWED_HOSTS", DefaultValue: "*", Description: "Allowed host headers"},
+		{Key: "DATABASE_URL", DefaultValue: "", Description: "Database connection URL"},
+	},
+}
+
+// GetEnvSuggestions returns environment variable suggestions for a framework.
+func GetEnvSuggestions(framework string) []EnvVarSuggestion {
+	if suggestions, ok := frameworkEnvSuggestions[framework]; ok {
+		return suggestions
+	}
+	return nil
 }

@@ -121,7 +121,12 @@ export default function ProjectList() {
                                     )}
                                 </Table.Cell>
                                 <Table.Cell>
-                                    <Badge variant="soft" color="gray">{project.framework || 'custom'}</Badge>
+                                    <Flex gap="1" align="center">
+                                        <Badge variant="soft" color="gray">{project.framework || 'custom'}</Badge>
+                                        {project.deploy_mode === 'docker' && (
+                                            <Badge variant="soft" color="blue">Docker</Badge>
+                                        )}
+                                    </Flex>
                                 </Table.Cell>
                                 <Table.Cell>
                                     <Badge color={statusColors[project.status] || 'gray'}>

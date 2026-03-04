@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef, useCallback } from 'react'
 import { Box, Flex, Text, Button, TextField, Badge, Separator } from '@radix-ui/themes'
-import { Bot, X, Send, Plus, Trash2, MessageSquare, Sparkles, Loader2, SquareTerminal, Minus, Maximize2, Minimize2 } from 'lucide-react'
+import { Bot, X, Send, Plus, Trash2, MessageSquare, Sparkles, Loader2, SquareTerminal, Minus, Maximize2, Minimize2, Wrench, ChevronDown, ChevronRight, CheckCircle2, AlertCircle, ShieldAlert } from 'lucide-react'
 import { Terminal } from '@xterm/xterm'
 import { FitAddon } from '@xterm/addon-fit'
 import { WebLinksAddon } from '@xterm/addon-web-links'
@@ -304,6 +304,133 @@ function BottomTerminalPanel({ open, onClose }) {
     )
 }
 
+// ============ Tool Call Card ============
+function ToolCallCard({ toolCall }) {
+    const { t } = useTranslation()
+    const [expanded, setExpanded] = useState(false)
+    const label = t(`ai.tool_${toolCall.name}`, toolCall.name)
+    const isRunning = toolCall.status === 'running'
+    const hasError = toolCall.result && toolCall.result.includes('"error"')
+
+    return (
+        <Box
+            my="1"
+            style={{
+                background: 'var(--gray-2)',
+                border: '1px solid var(--gray-4)',
+                borderRadius: 8,
+                fontSize: '0.8rem',
+                overflow: 'hidden',
+            }}
+        >
+            <Flex
+                align="center"
+                gap="2"
+                px="2"
+                py="1"
+                style={{ cursor: toolCall.result ? 'pointer' : 'default' }}
+                onClick={() => toolCall.result && setExpanded(!expanded)}
+            >
+                {isRunning ? (
+                    <Loader2 size={12} className="spin" style={{ color: 'var(--accent-9)', flexShrink: 0 }} />
+                ) : hasError ? (
+                    <AlertCircle size={12} style={{ color: 'var(--red-9)', flexShrink: 0 }} />
+                ) : (
+                    <CheckCircle2 size={12} style={{ color: 'var(--green-9)', flexShrink: 0 }} />
+                )}
+                <Wrench size={11} style={{ opacity: 0.5, flexShrink: 0 }} />
+                <Text size="1" weight="medium" style={{ flex: 1 }}>{label}</Text>
+                {toolCall.result && (
+                    expanded
+                        ? <ChevronDown size={12} style={{ opacity: 0.5 }} />
+                        : <ChevronRight size={12} style={{ opacity: 0.5 }} />
+                )}
+            </Flex>
+            {expanded && toolCall.result && (
+                <Box
+                    px="2"
+                    py="1"
+                    style={{
+                        borderTop: '1px solid var(--gray-4)',
+                        maxHeight: 200,
+                        overflow: 'auto',
+                        whiteSpace: 'pre-wrap',
+                        wordBreak: 'break-all',
+                        fontSize: '0.75rem',
+                        fontFamily: 'monospace',
+                        color: 'var(--gray-11)',
+                        background: 'var(--gray-1)',
+                    }}
+                >
+                    {(() => {
+                        try {
+                            return JSON.stringify(JSON.parse(toolCall.result), null, 2)
+                        } catch {
+                            return toolCall.result
+                        }
+                    })()}
+                </Box>
+            )}
+        </Box>
+    )
+}
+
+// ============ Confirmation Card (inline) ============
+function ConfirmationCard({ confirmation, onRespond, t }) {
+    const label = t(`ai.tool_${confirmation.tool_name}`, confirmation.tool_name)
+    const resolved = confirmation.resolved
+
+    return (
+        <Box
+            my="1"
+            style={{
+                background: resolved ? 'var(--gray-2)' : 'var(--amber-2)',
+                border: `1px solid ${resolved ? 'var(--gray-4)' : 'var(--amber-6)'}`,
+                borderRadius: 8,
+                fontSize: '0.8rem',
+                overflow: 'hidden',
+            }}
+        >
+            <Flex align="center" gap="2" px="2" py="1">
+                <ShieldAlert size={12} style={{ color: resolved ? 'var(--gray-9)' : 'var(--amber-9)', flexShrink: 0 }} />
+                <Text size="1" weight="medium" style={{ flex: 1 }}>
+                    {t('ai.confirm_title')}: {label}
+                </Text>
+                {resolved === 'approved' && <Badge size="1" color="green">{t('ai.confirm_approve')}</Badge>}
+                {resolved === 'rejected' && <Badge size="1" color="red">{t('ai.confirm_reject')}</Badge>}
+            </Flex>
+            {confirmation.arguments && Object.keys(confirmation.arguments).length > 0 && (
+                <Box
+                    px="2"
+                    py="1"
+                    style={{
+                        borderTop: `1px solid ${resolved ? 'var(--gray-4)' : 'var(--amber-4)'}`,
+                        fontSize: '0.75rem',
+                        fontFamily: 'monospace',
+                        color: 'var(--gray-11)',
+                        whiteSpace: 'pre-wrap',
+                        wordBreak: 'break-all',
+                        maxHeight: 100,
+                        overflow: 'auto',
+                    }}
+                >
+                    {JSON.stringify(confirmation.arguments, null, 2)}
+                </Box>
+            )}
+            {!resolved && (
+                <Flex gap="2" px="2" py="1" style={{ borderTop: '1px solid var(--amber-4)' }}>
+                    <Button size="1" color="green" variant="soft" onClick={() => onRespond(confirmation.pending_id, true)}>
+                        {t('ai.confirm_approve')}
+                    </Button>
+                    <Button size="1" color="red" variant="soft" onClick={() => onRespond(confirmation.pending_id, false)}>
+                        {t('ai.confirm_reject')}
+                    </Button>
+                </Flex>
+            )}
+        </Box>
+    )
+}
+
 // ============ AI Chat Widget + Floating Buttons ============
 export default function AIChatWidget() {
     const { t } = useTranslation()
@@ -315,6 +442,7 @@ export default function AIChatWidget() {
     const [input, setInput] = useState('')
     const [streaming, setStreaming] = useState(false)
     const [configured, setConfigured] = useState(null)
+    const [confirmations, setConfirmations] = useState([])
     const messagesEndRef = useRef(null)
     const abortRef = useRef(null)
 
@@ -352,6 +480,7 @@ export default function AIChatWidget() {
     const newConversation = () => {
         setCurrentConv(null)
         setMessages([])
+        setConfirmations([])
         setInput('')
     }
 
@@ -364,6 +493,42 @@ export default function AIChatWidget() {
         } catch { /* ignore */ }
     }
 
+    const buildPageContext = useCallback(() => {
+        const path = window.location.pathname
+        let ctx = `Current page: ${path}`
+        // Extract useful info from URL patterns
+        const projectMatch = path.match(/\/deploy\/(\d+)/)
+        if (projectMatch) {
+            ctx += ` (Project detail page, project ID: ${projectMatch[1]})`
+        }
+        const dockerMatch = path.match(/\/docker/)
+        if (dockerMatch) {
+            ctx += ' (Docker management page)'
+        }
+        const hostMatch = path.match(/\/hosts/)
+        if (hostMatch) {
+            ctx += ' (Reverse proxy hosts page)'
+        }
+        const monitorMatch = path.match(/\/monitoring/)
+        if (monitorMatch) {
+            ctx += ' (System monitoring page)'
+        }
+        const backupMatch = path.match(/\/backup/)
+        if (backupMatch) {
+            ctx += ' (Backup management page)'
+        }
+        return ctx
+    }, [])
+
+    const handleConfirmResponse = useCallback(async (pendingId, approved) => {
+        try {
+            await aiAPI.confirm(pendingId, approved)
+            setConfirmations(prev => prev.map(c =>
+                c.pending_id === pendingId ? { ...c, resolved: approved ? 'approved' : 'rejected' } : c
+            ))
+        } catch { /* ignore */ }
+    }, [])
+
     const sendMessage = async () => {
         const msg = input.trim()
         if (!msg || streaming) return
@@ -372,7 +537,7 @@ export default function AIChatWidget() {
         const userMsg = { role: 'user', content: msg, id: Date.now() }
         setMessages(prev => [...prev, userMsg])
 
-        const assistantMsg = { role: 'assistant', content: '', id: Date.now() + 1 }
+        const assistantMsg = { role: 'assistant', content: '', id: Date.now() + 1, toolCalls: [] }
         setMessages(prev => [...prev, assistantMsg])
 
         setStreaming(true)
@@ -390,6 +555,7 @@ export default function AIChatWidget() {
                 body: JSON.stringify({
                     conversation_id: currentConv?.id || 0,
                     message: msg,
+                    context: buildPageContext(),
                 }),
                 signal: controller.signal,
             })
@@ -397,8 +563,10 @@ export default function AIChatWidget() {
             const reader = response.body.getReader()
             const decoder = new TextDecoder()
             let fullContent = ''
+            let toolCalls = []
             let buffer = ''
             let currentEvent = ''
+            let dataBuffer = ''
 
             while (true) {
                 const { done, value } = await reader.read()
@@ -411,11 +579,64 @@ export default function AIChatWidget() {
                 for (const line of lines) {
                     if (line.startsWith('event: ')) {
                         currentEvent = line.slice(7).trim()
+                        dataBuffer = ''
                         continue
                     }
                     if (line.startsWith('data: ')) {
-                        const data = line.slice(6)
-                        if (currentEvent === 'done') {
+                        dataBuffer += (dataBuffer ? '\n' : '') + line.slice(6)
+                        continue
+                    }
+                    if (line === '' && currentEvent) {
+                        // End of SSE event — process it
+                        const data = dataBuffer
+
+                        if (currentEvent === 'delta') {
+                            fullContent += data
+                            setMessages(prev => {
+                                const updated = [...prev]
+                                const last = updated[updated.length - 1]
+                                updated[updated.length - 1] = { ...last, content: fullContent, toolCalls: [...toolCalls] }
+                                return updated
+                            })
+                        } else if (currentEvent === 'tool_call') {
+                            try {
+                                const tc = JSON.parse(data)
+                                toolCalls = [...toolCalls, { ...tc, status: 'running', result: null }]
+                                setMessages(prev => {
+                                    const updated = [...prev]
+                                    const last = updated[updated.length - 1]
+                                    updated[updated.length - 1] = { ...last, toolCalls: [...toolCalls] }
+                                    return updated
+                                })
+                            } catch { /* ignore parse error */ }
+                        } else if (currentEvent === 'tool_result') {
+                            try {
+                                const tr = JSON.parse(data)
+                                toolCalls = toolCalls.map(tc =>
+                                    tc.id === tr.tool_call_id
+                                        ? { ...tc, status: 'done', result: tr.content }
+                                        : tc
+                                )
+                                setMessages(prev => {
+                                    const updated = [...prev]
+                                    const last = updated[updated.length - 1]
+                                    updated[updated.length - 1] = { ...last, toolCalls: [...toolCalls] }
+                                    return updated
+                                })
+                            } catch { /* ignore parse error */ }
+                        } else if (currentEvent === 'confirm_required') {
+                            try {
+                                const conf = JSON.parse(data)
+                                setConfirmations(prev => [...prev, { ...conf, resolved: null }])
+                                setMessages(prev => {
+                                    const updated = [...prev]
+                                    const last = updated[updated.length - 1]
+                                    const existingConfs = last.confirmations || []
+                                    updated[updated.length - 1] = { ...last, confirmations: [...existingConfs, { ...conf, resolved: null }] }
+                                    return updated
+                                })
+                            } catch { /* ignore parse error */ }
+                        } else if (currentEvent === 'done') {
                             const convId = parseInt(data)
                             if (convId > 0 && !currentConv) {
                                 setCurrentConv({ id: convId })
@@ -423,24 +644,18 @@ export default function AIChatWidget() {
                                     setConversations(res.data?.conversations || [])
                                 }).catch(() => {})
                             }
-                            currentEvent = ''
-                            continue
+                        } else if (currentEvent === 'error') {
+                            fullContent += '\n\n**Error:** ' + data
+                            setMessages(prev => {
+                                const updated = [...prev]
+                                const last = updated[updated.length - 1]
+                                updated[updated.length - 1] = { ...last, content: fullContent }
+                                return updated
+                            })
                         }
-                        if (currentEvent === 'error') {
-                            fullContent += data
-                            currentEvent = ''
-                            continue
-                        }
-                        fullContent += data
-                        setMessages(prev => {
-                            const updated = [...prev]
-                            updated[updated.length - 1] = { ...updated[updated.length - 1], content: fullContent }
-                            return updated
-                        })
+
                         currentEvent = ''
-                    }
-                    if (line === '') {
-                        currentEvent = ''
+                        dataBuffer = ''
                     }
                 }
             }
@@ -650,7 +865,26 @@ export default function AIChatWidget() {
                                                         wordBreak: 'break-word',
                                                     }}
                                                 >
-                                                    {msg.content || (streaming && i === messages.length - 1 ? '...' : '')}
+                                                    {msg.content || (streaming && i === messages.length - 1 && (!msg.toolCalls || msg.toolCalls.length === 0) ? '...' : '')}
+                                                    {msg.toolCalls && msg.toolCalls.length > 0 && (
+                                                        <Box mt={msg.content ? '2' : '0'}>
+                                                            {msg.toolCalls.map((tc, j) => (
+                                                                <ToolCallCard key={tc.id || j} toolCall={tc} />
+                                                            ))}
+                                                        </Box>
+                                                    )}
+                                                    {msg.confirmations && msg.confirmations.length > 0 && (
+                                                        <Box mt={msg.content || (msg.toolCalls && msg.toolCalls.length > 0) ? '2' : '0'}>
+                                                            {msg.confirmations.map((conf, j) => (
+                                                                <ConfirmationCard
+                                                                    key={conf.pending_id || j}
+                                                                    confirmation={confirmations.find(c => c.pending_id === conf.pending_id) || conf}
+                                                                    onRespond={handleConfirmResponse}
+                                                                    t={t}
+                                                                />
+                                                            ))}
+                                                        </Box>
+                                                    )}
                                                 </Box>
                                             </Flex>
                                         ))}

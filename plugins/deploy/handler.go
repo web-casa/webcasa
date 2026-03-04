@@ -57,6 +57,13 @@ func (h *Handler) CreateProject(c *gin.Context) {
 		Port         int      `json:"port"`
 		AutoDeploy   bool     `json:"auto_deploy"`
 		EnvVars      []EnvVar `json:"env_vars"`
+		DeployMode         string `json:"deploy_mode"` // bare | docker
+		HealthCheckPath    string `json:"health_check_path"`
+		HealthCheckTimeout int    `json:"health_check_timeout"`
+		HealthCheckRetries int    `json:"health_check_retries"`
+		MemoryLimit        int    `json:"memory_limit"`
+		CPULimit           int    `json:"cpu_limit"`
+		BuildTimeout       int    `json:"build_timeout"`
 		// GitHub App auth fields
 		AuthMethod           string `json:"auth_method"`
 		GitHubAppID          int64  `json:"github_app_id"`
@@ -86,6 +93,13 @@ func (h *Handler) CreateProject(c *gin.Context) {
 		Port:                 req.Port,
 		AutoDeploy:           req.AutoDeploy,
 		EnvVarList:           req.EnvVars,
+		DeployMode:           req.DeployMode,
+		HealthCheckPath:      req.HealthCheckPath,
+		HealthCheckTimeout:   req.HealthCheckTimeout,
+		HealthCheckRetries:   req.HealthCheckRetries,
+		MemoryLimit:          req.MemoryLimit,
+		CPULimit:             req.CPULimit,
+		BuildTimeout:         req.BuildTimeout,
 		AuthMethod:           req.AuthMethod,
 		GitHubAppID:          req.GitHubAppID,
 		GitHubPrivateKey:     req.GitHubPrivateKey,
@@ -118,7 +132,9 @@ func (h *Handler) UpdateProject(c *gin.Context) {
 		"name": true, "domain": true, "git_url": true, "git_branch": true,
 		"deploy_key": true, "framework": true, "build_command": true,
 		"start_command": true, "install_command": true, "port": true,
-		"auto_deploy": true, "env_vars": true,
+		"auto_deploy": true, "env_vars": true, "deploy_mode": true,
+		"health_check_path": true, "health_check_timeout": true, "health_check_retries": true,
+		"memory_limit": true, "cpu_limit": true, "build_timeout": true,
 		"auth_method": true, "github_app_id": true,
 		"github_private_key": true, "github_installation_id": true,
 	}
@@ -320,6 +336,281 @@ func (h *Handler) GetWebhookInfo(c *gin.Context) {
 		return
 	}
 	c.JSON(http.StatusOK, gin.H{"webhook_token": project.WebhookToken})
+}
+
+// ClearCache DELETE /api/plugins/deploy/projects/:id/cache
+func (h *Handler) ClearCache(c *gin.Context) {
+	id, err := parseUintParam(c, "id")
+	if err != nil {
+		return
+	}
+	if err := h.svc.ClearCache(id); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"ok": true})
+}
+
+// GetCacheInfo GET /api/plugins/deploy/projects/:id/cache
+func (h *Handler) GetCacheInfo(c *gin.Context) {
+	id, err := parseUintParam(c, "id")
+	if err != nil {
+		return
+	}
+	size := h.svc.GetCacheSize(id)
+	c.JSON(http.StatusOK, gin.H{"size": size})
+}
+
+// SuggestEnv GET /api/plugins/deploy/suggest-env?framework=nextjs
+func (h *Handler) SuggestEnv(c *gin.Context) {
+	framework := c.Query("framework")
+	if framework == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "framework is required"})
+		return
+	}
+	suggestions := GetEnvSuggestions(framework)
+	if suggestions == nil {
+		suggestions = []EnvVarSuggestion{}
+	}
+	c.JSON(http.StatusOK, suggestions)
+}
+
+// CloneEnvVars POST /api/plugins/deploy/projects/:id/clone-env
+func (h *Handler) CloneEnvVars(c *gin.Context) {
+	targetID, err := parseUintParam(c, "id")
+	if err != nil {
+		return
+	}
+	var req struct {
+		SourceID uint `json:"source_id" binding:"required"`
+	}
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+	if err := h.svc.CloneEnvVars(req.SourceID, targetID); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"status": "ok"})
+}
+
+// ---- CronJob Handlers ----
+
+// ListCronJobs GET /api/plugins/deploy/projects/:id/crons
+func (h *Handler) ListCronJobs(c *gin.Context) {
+	id, err := parseUintParam(c, "id")
+	if err != nil {
+		return
+	}
+	jobs, err := h.svc.ListCronJobs(id)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	c.JSON(http.StatusOK, jobs)
+}
+
+// CreateCronJob POST /api/plugins/deploy/projects/:id/crons
+func (h *Handler) CreateCronJob(c *gin.Context) {
+	id, err := parseUintParam(c, "id")
+	if err != nil {
+		return
+	}
+	var req struct {
+		Name     string `json:"name" binding:"required"`
+		Schedule string `json:"schedule" binding:"required"`
+		Command  string `json:"command" binding:"required"`
+		Enabled  *bool  `json:"enabled"`
+	}
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+	enabled := true
+	if req.Enabled != nil {
+		enabled = *req.Enabled
+	}
+	job := &CronJob{
+		ProjectID: id,
+		Name:      req.Name,
+		Schedule:  req.Schedule,
+		Command:   req.Command,
+		Enabled:   enabled,
+	}
+	if err := h.svc.CreateCronJob(job); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	c.JSON(http.StatusCreated, job)
+}
+
+// UpdateCronJob PUT /api/plugins/deploy/projects/:id/crons/:cronId
+func (h *Handler) UpdateCronJob(c *gin.Context) {
+	_, err := parseUintParam(c, "id")
+	if err != nil {
+		return
+	}
+	cronID, err := strconv.ParseUint(c.Param("cronId"), 10, 64)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid cronId"})
+		return
+	}
+	var req map[string]interface{}
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+	allowed := map[string]bool{"name": true, "schedule": true, "command": true, "enabled": true}
+	filtered := make(map[string]interface{})
+	for k, v := range req {
+		if allowed[k] {
+			filtered[k] = v
+		}
+	}
+	if err := h.svc.UpdateCronJob(uint(cronID), filtered); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"ok": true})
+}
+
+// DeleteCronJob DELETE /api/plugins/deploy/projects/:id/crons/:cronId
+func (h *Handler) DeleteCronJob(c *gin.Context) {
+	_, err := parseUintParam(c, "id")
+	if err != nil {
+		return
+	}
+	cronID, err := strconv.ParseUint(c.Param("cronId"), 10, 64)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid cronId"})
+		return
+	}
+	if err := h.svc.DeleteCronJob(uint(cronID)); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"ok": true})
+}
+
+// ---- ExtraProcess Handlers ----
+
+// ListExtraProcesses GET /api/plugins/deploy/projects/:id/processes
+func (h *Handler) ListExtraProcesses(c *gin.Context) {
+	id, err := parseUintParam(c, "id")
+	if err != nil {
+		return
+	}
+	procs, err := h.svc.ListExtraProcesses(id)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	c.JSON(http.StatusOK, procs)
+}
+
+// CreateExtraProcess POST /api/plugins/deploy/projects/:id/processes
+func (h *Handler) CreateExtraProcess(c *gin.Context) {
+	id, err := parseUintParam(c, "id")
+	if err != nil {
+		return
+	}
+	var req struct {
+		Name      string `json:"name" binding:"required"`
+		Command   string `json:"command" binding:"required"`
+		Instances int    `json:"instances"`
+		Enabled   *bool  `json:"enabled"`
+	}
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+	instances := req.Instances
+	if instances <= 0 {
+		instances = 1
+	}
+	enabled := true
+	if req.Enabled != nil {
+		enabled = *req.Enabled
+	}
+	proc := &ExtraProcess{
+		ProjectID: id,
+		Name:      req.Name,
+		Command:   req.Command,
+		Instances: instances,
+		Enabled:   enabled,
+	}
+	if err := h.svc.CreateExtraProcess(proc); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	c.JSON(http.StatusCreated, proc)
+}
+
+// UpdateExtraProcess PUT /api/plugins/deploy/projects/:id/processes/:procId
+func (h *Handler) UpdateExtraProcess(c *gin.Context) {
+	_, err := parseUintParam(c, "id")
+	if err != nil {
+		return
+	}
+	procID, err := strconv.ParseUint(c.Param("procId"), 10, 64)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid procId"})
+		return
+	}
+	var req map[string]interface{}
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+	allowed := map[string]bool{"name": true, "command": true, "instances": true, "enabled": true}
+	filtered := make(map[string]interface{})
+	for k, v := range req {
+		if allowed[k] {
+			filtered[k] = v
+		}
+	}
+	if err := h.svc.UpdateExtraProcess(uint(procID), filtered); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"ok": true})
+}
+
+// DeleteExtraProcess DELETE /api/plugins/deploy/projects/:id/processes/:procId
+func (h *Handler) DeleteExtraProcess(c *gin.Context) {
+	_, err := parseUintParam(c, "id")
+	if err != nil {
+		return
+	}
+	procID, err := strconv.ParseUint(c.Param("procId"), 10, 64)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid procId"})
+		return
+	}
+	if err := h.svc.DeleteExtraProcess(uint(procID)); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"ok": true})
+}
+
+// RestartExtraProcess POST /api/plugins/deploy/projects/:id/processes/:procId/restart
+func (h *Handler) RestartExtraProcess(c *gin.Context) {
+	_, err := parseUintParam(c, "id")
+	if err != nil {
+		return
+	}
+	procID, err := strconv.ParseUint(c.Param("procId"), 10, 64)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid procId"})
+		return
+	}
+	if err := h.svc.RestartExtraProcess(uint(procID)); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"ok": true})
 }
 
 func parseUintParam(c *gin.Context, name string) (uint, error) {

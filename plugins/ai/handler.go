@@ -1,6 +1,7 @@
 package ai
 
 import (
+	"encoding/json"
 	"fmt"
 	"net/http"
 	"strconv"
@@ -90,7 +91,13 @@ func (h *Handler) TestConnection(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"status": "ok"})
 }
 
-// Chat handles a chat message with SSE streaming response.
+// Chat handles a chat message with SSE streaming response and tool use support.
+// SSE events:
+//   - event: delta       → data: "text chunk"
+//   - event: tool_call   → data: {"id":"...","name":"...","arguments":"..."}
+//   - event: tool_result → data: {"tool_call_id":"...","name":"...","content":"..."}
+//   - event: done        → data: "conversation_id"
+//   - event: error       → data: "error message"
 func (h *Handler) Chat(c *gin.Context) {
 	var req ChatRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
@@ -109,9 +116,29 @@ func (h *Handler) Chat(c *gin.Context) {
 	c.Header("X-Accel-Buffering", "no")
 	c.Writer.Flush()
 
-	convID, err := h.svc.Chat(c.Request.Context(), req, getUserID(c), func(delta string) error {
-		if err := writeSSEData(c.Writer, delta); err != nil {
-			return err
+	convID, err := h.svc.ChatWithTools(c.Request.Context(), req, getUserID(c), func(event StreamEvent) error {
+		switch event.Type {
+		case "delta":
+			writeSSEEvent(c.Writer, "delta", event.Content)
+		case "tool_call":
+			if event.ToolCall != nil {
+				data, _ := json.Marshal(event.ToolCall)
+				writeSSEEvent(c.Writer, "tool_call", string(data))
+			}
+		case "tool_result":
+			if event.ToolCall != nil {
+				data, _ := json.Marshal(map[string]string{
+					"tool_call_id": event.ToolCall.ID,
+					"name":         event.ToolCall.Name,
+					"content":      event.Content,
+				})
+				writeSSEEvent(c.Writer, "tool_result", string(data))
+			}
+		case "confirm_required":
+			writeSSEEvent(c.Writer, "confirm_required", event.Content)
+		case "done":
+			// Don't send done here — we send it below with the conversation ID
+			return nil
 		}
 		c.Writer.Flush()
 		return nil
@@ -122,7 +149,7 @@ func (h *Handler) Chat(c *gin.Context) {
 		return
 	}
 
-	// Send conversation ID as the final event.
+	// Send conversation ID as the final done event.
 	writeSSEEvent(c.Writer, "done", fmt.Sprintf("%d", convID))
 	c.Writer.Flush()
 }
@@ -195,6 +222,90 @@ func (h *Handler) GenerateCompose(c *gin.Context) {
 	}
 	writeSSEEvent(c.Writer, "done", "")
 	c.Writer.Flush()
+}
+
+// GenerateDockerfile converts natural language to an optimized Dockerfile (SSE).
+func (h *Handler) GenerateDockerfile(c *gin.Context) {
+	var req struct {
+		Description string `json:"description"`
+	}
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+	if req.Description == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "description is required"})
+		return
+	}
+
+	c.Header("Content-Type", "text/event-stream")
+	c.Header("Cache-Control", "no-cache")
+	c.Header("Connection", "keep-alive")
+	c.Header("X-Accel-Buffering", "no")
+	c.Writer.Flush()
+
+	if err := h.svc.GenerateDockerfile(c.Request.Context(), req.Description, func(delta string) error {
+		if err := writeSSEData(c.Writer, delta); err != nil {
+			return err
+		}
+		c.Writer.Flush()
+		return nil
+	}); err != nil {
+		writeSSEEvent(c.Writer, "error", err.Error())
+	}
+	writeSSEEvent(c.Writer, "done", "")
+	c.Writer.Flush()
+}
+
+// ReviewCode performs an AI code review of a project's source code (SSE).
+func (h *Handler) ReviewCode(c *gin.Context) {
+	var req struct {
+		ProjectID uint `json:"project_id" binding:"required"`
+	}
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+
+	c.Header("Content-Type", "text/event-stream")
+	c.Header("Cache-Control", "no-cache")
+	c.Header("Connection", "keep-alive")
+	c.Header("X-Accel-Buffering", "no")
+	c.Writer.Flush()
+
+	if err := h.svc.ReviewCode(c.Request.Context(), req.ProjectID, func(delta string) error {
+		if err := writeSSEData(c.Writer, delta); err != nil {
+			return err
+		}
+		c.Writer.Flush()
+		return nil
+	}); err != nil {
+		writeSSEEvent(c.Writer, "error", err.Error())
+	}
+	writeSSEEvent(c.Writer, "done", "")
+	c.Writer.Flush()
+}
+
+// Confirm resolves a pending tool execution confirmation.
+func (h *Handler) Confirm(c *gin.Context) {
+	var req struct {
+		PendingID string `json:"pending_id"`
+		Approved  bool   `json:"approved"`
+	}
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+	if req.PendingID == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "pending_id is required"})
+		return
+	}
+
+	if err := h.svc.ResolveConfirmation(req.PendingID, req.Approved); err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": err.Error()})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"status": "ok"})
 }
 
 // Diagnose analyses error logs and streams diagnosis (SSE).

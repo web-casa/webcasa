@@ -1,6 +1,6 @@
 import { useState, useEffect } from 'react'
-import { Box, Flex, Text, Button, Card, Heading, TextField, Select, Switch, TextArea, Separator, Callout } from '@radix-ui/themes'
-import { ArrowLeft, Rocket, Plus, Trash2, Loader2, Sparkles, Key, Github } from 'lucide-react'
+import { Box, Flex, Text, Button, Card, Heading, TextField, Select, Switch, TextArea, Separator, Callout, Badge } from '@radix-ui/themes'
+import { ArrowLeft, Rocket, Plus, Trash2, Loader2, Sparkles, Key, Github, Container, Server, Wand2 } from 'lucide-react'
 import { useNavigate } from 'react-router'
 import { deployAPI } from '../api/index.js'
 import { useTranslation } from 'react-i18next'
@@ -27,6 +27,13 @@ export default function ProjectCreate() {
         start_command: '',
         domain: '',
         port: 0,
+        deploy_mode: '',
+        health_check_path: '/',
+        health_check_timeout: 30,
+        health_check_retries: 3,
+        memory_limit: 0,
+        cpu_limit: 0,
+        build_timeout: 30,
         auto_deploy: false,
         env_vars: [],
     })
@@ -50,6 +57,7 @@ export default function ProjectCreate() {
                 build_command: preset.build_command || '',
                 start_command: preset.start_command || '',
                 port: preset.port || 0,
+                deploy_mode: preset.framework === 'dockerfile' ? 'docker' : 'bare',
             }))
         } catch (e) {
             alert(e.response?.data?.error || t('deploy.detect_failed'))
@@ -64,6 +72,22 @@ export default function ProjectCreate() {
         const vars = [...form.env_vars]
         vars[i] = { ...vars[i], [field]: val }
         updateForm('env_vars', vars)
+    }
+
+    const suggestEnvVars = async () => {
+        if (!form.framework || form.framework === 'custom' || form.framework === 'dockerfile') return
+        try {
+            const res = await deployAPI.suggestEnv(form.framework)
+            const suggestions = res.data || []
+            if (suggestions.length === 0) return
+            const existingKeys = new Set(form.env_vars.map(e => e.key))
+            const newVars = suggestions
+                .filter(s => !existingKeys.has(s.key))
+                .map(s => ({ key: s.key, value: s.default_value || '' }))
+            if (newVars.length > 0) {
+                updateForm('env_vars', [...form.env_vars, ...newVars])
+            }
+        } catch { /* ignore */ }
     }
 
     const handleSubmit = async () => {
@@ -205,6 +229,7 @@ export default function ProjectCreate() {
                                     updateForm('build_command', preset.build_command || '')
                                     updateForm('start_command', preset.start_command || '')
                                     updateForm('port', preset.port || 0)
+                                    updateForm('deploy_mode', v === 'dockerfile' ? 'docker' : (form.deploy_mode || 'bare'))
                                 }
                             }}>
                                 <Select.Trigger placeholder={t('deploy.select_framework')} />
@@ -215,22 +240,84 @@ export default function ProjectCreate() {
                                 </Select.Content>
                             </Select.Root>
                         </label>
-                        <label>
-                            <Text size="2" weight="medium" mb="1">{t('deploy.install_command')}</Text>
-                            <TextField.Root placeholder="npm install" value={form.install_command} onChange={e => updateForm('install_command', e.target.value)} style={{ fontFamily: 'monospace' }} />
-                        </label>
-                        <label>
-                            <Text size="2" weight="medium" mb="1">{t('deploy.build_command')}</Text>
-                            <TextField.Root placeholder="npm run build" value={form.build_command} onChange={e => updateForm('build_command', e.target.value)} style={{ fontFamily: 'monospace' }} />
-                        </label>
-                        <label>
-                            <Text size="2" weight="medium" mb="1">{t('deploy.start_command')}</Text>
-                            <TextField.Root placeholder="npm start" value={form.start_command} onChange={e => updateForm('start_command', e.target.value)} style={{ fontFamily: 'monospace' }} />
-                        </label>
+
+                        {/* Deploy Mode */}
+                        <Box>
+                            <Text size="2" weight="medium" mb="1">{t('deploy.deploy_mode')}</Text>
+                            <Flex gap="2" mt="1">
+                                <Button
+                                    variant={(form.deploy_mode || 'bare') === 'bare' ? 'solid' : 'outline'}
+                                    size="2"
+                                    onClick={() => updateForm('deploy_mode', 'bare')}
+                                    disabled={form.framework === 'dockerfile'}
+                                >
+                                    <Server size={14} />
+                                    {t('deploy.mode_bare')}
+                                </Button>
+                                <Button
+                                    variant={form.deploy_mode === 'docker' ? 'solid' : 'outline'}
+                                    size="2"
+                                    onClick={() => updateForm('deploy_mode', 'docker')}
+                                >
+                                    <Container size={14} />
+                                    {t('deploy.mode_docker')}
+                                </Button>
+                            </Flex>
+                            <Text size="1" color="gray" mt="1">
+                                {form.deploy_mode === 'docker' ? t('deploy.mode_docker_hint') : t('deploy.mode_bare_hint')}
+                            </Text>
+                        </Box>
+
+                        {form.deploy_mode === 'docker' && form.framework !== 'dockerfile' && (
+                            <Callout.Root size="1">
+                                <Callout.Text>{t('deploy.docker_needs_dockerfile')}</Callout.Text>
+                            </Callout.Root>
+                        )}
+
+                        {form.deploy_mode !== 'docker' && (
+                            <>
+                                <label>
+                                    <Text size="2" weight="medium" mb="1">{t('deploy.install_command')}</Text>
+                                    <TextField.Root placeholder="npm install" value={form.install_command} onChange={e => updateForm('install_command', e.target.value)} style={{ fontFamily: 'monospace' }} />
+                                </label>
+                                <label>
+                                    <Text size="2" weight="medium" mb="1">{t('deploy.build_command')}</Text>
+                                    <TextField.Root placeholder="npm run build" value={form.build_command} onChange={e => updateForm('build_command', e.target.value)} style={{ fontFamily: 'monospace' }} />
+                                </label>
+                                <label>
+                                    <Text size="2" weight="medium" mb="1">{t('deploy.start_command')}</Text>
+                                    <TextField.Root placeholder="npm start" value={form.start_command} onChange={e => updateForm('start_command', e.target.value)} style={{ fontFamily: 'monospace' }} />
+                                </label>
+                            </>
+                        )}
+
                         <label>
                             <Text size="2" weight="medium" mb="1">{t('deploy.port')}</Text>
                             <TextField.Root type="number" placeholder="3000" value={form.port || ''} onChange={e => updateForm('port', parseInt(e.target.value) || 0)} />
+                            {form.deploy_mode === 'docker' && (
+                                <Text size="1" color="gray">{t('deploy.docker_port_hint')}</Text>
+                            )}
                         </label>
+
+                        <Separator />
+
+                        {/* Resource Limits */}
+                        <Text size="2" weight="medium">{t('deploy.resource_limits')}</Text>
+                        <Flex gap="2">
+                            <label style={{ flex: 1 }}>
+                                <Text size="1" color="gray">{t('deploy.memory_limit')}</Text>
+                                <TextField.Root type="number" placeholder="0" value={form.memory_limit || ''} onChange={e => updateForm('memory_limit', parseInt(e.target.value) || 0)} />
+                            </label>
+                            <label style={{ flex: 1 }}>
+                                <Text size="1" color="gray">{t('deploy.cpu_limit')}</Text>
+                                <TextField.Root type="number" placeholder="0" value={form.cpu_limit || ''} onChange={e => updateForm('cpu_limit', parseInt(e.target.value) || 0)} />
+                            </label>
+                            <label style={{ flex: 1 }}>
+                                <Text size="1" color="gray">{t('deploy.build_timeout')}</Text>
+                                <TextField.Root type="number" placeholder="30" value={form.build_timeout || ''} onChange={e => updateForm('build_timeout', parseInt(e.target.value) || 30)} />
+                            </label>
+                        </Flex>
+                        <Text size="1" color="gray">{t('deploy.resource_limits_hint')}</Text>
                     </Flex>
                     <Flex justify="between" mt="4">
                         <Button variant="soft" onClick={() => setStep(1)}>{t('common.previous')}</Button>
@@ -256,11 +343,37 @@ export default function ProjectCreate() {
 
                         <Separator />
 
+                        {/* Health Check */}
+                        <Text size="2" weight="medium">{t('deploy.health_check')}</Text>
+                        <Flex gap="2">
+                            <label style={{ flex: 2 }}>
+                                <Text size="1" color="gray">{t('deploy.health_check_path')}</Text>
+                                <TextField.Root placeholder="/" value={form.health_check_path} onChange={e => updateForm('health_check_path', e.target.value)} style={{ fontFamily: 'monospace' }} />
+                            </label>
+                            <label style={{ flex: 1 }}>
+                                <Text size="1" color="gray">{t('deploy.health_check_timeout')}</Text>
+                                <TextField.Root type="number" placeholder="30" value={form.health_check_timeout} onChange={e => updateForm('health_check_timeout', parseInt(e.target.value) || 30)} />
+                            </label>
+                            <label style={{ flex: 1 }}>
+                                <Text size="1" color="gray">{t('deploy.health_check_retries')}</Text>
+                                <TextField.Root type="number" placeholder="3" value={form.health_check_retries} onChange={e => updateForm('health_check_retries', parseInt(e.target.value) || 3)} />
+                            </label>
+                        </Flex>
+
+                        <Separator />
+
                         <Flex justify="between" align="center">
                             <Text size="2" weight="medium">{t('deploy.env_vars')}</Text>
-                            <Button variant="ghost" size="1" onClick={addEnvVar}>
-                                <Plus size={14} /> {t('common.add')}
-                            </Button>
+                            <Flex gap="2">
+                                {form.framework && form.framework !== 'custom' && form.framework !== 'dockerfile' && (
+                                    <Button variant="ghost" size="1" onClick={suggestEnvVars}>
+                                        <Wand2 size={14} /> {t('deploy.suggest_env')}
+                                    </Button>
+                                )}
+                                <Button variant="ghost" size="1" onClick={addEnvVar}>
+                                    <Plus size={14} /> {t('common.add')}
+                                </Button>
+                            </Flex>
                         </Flex>
                         {form.env_vars.map((ev, i) => (
                             <Flex key={i} gap="2" align="center">

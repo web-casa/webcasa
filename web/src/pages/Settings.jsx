@@ -16,7 +16,7 @@ import { QRCodeSVG } from 'qrcode.react'
 import {
     caddyAPI, configAPI, settingAPI, authAPI, groupAPI, tagAPI,
     userAPI, logAPI, auditAPI, pluginAPI, aiAPI, dnsProviderAPI, certificateAPI, mcpAPI,
-    deployAPI, backupAPI,
+    deployAPI, backupAPI, notifyAPI,
 } from '../api/index.js'
 import { useAuthStore } from '../stores/auth.js'
 import { useTranslation } from 'react-i18next'
@@ -29,7 +29,7 @@ import BackupManager from './BackupManager.jsx'
 //  General | Users | Logs | AI | DNS | Certificates | Plugins
 // ============================================================
 
-const VALID_TABS = ['general', 'users', 'logs', 'ai', 'dns', 'certificates', 'plugins', 'tokens', 'monitoring', 'backup']
+const VALID_TABS = ['general', 'users', 'logs', 'ai', 'dns', 'certificates', 'plugins', 'tokens', 'monitoring', 'backup', 'notify']
 
 export default function Settings() {
     const { t } = useTranslation()
@@ -94,6 +94,9 @@ export default function Settings() {
                     <Tabs.Trigger value="backup">
                         <HardDrive size={14} style={{ marginRight: 6 }} /> {t('nav.backup')}
                     </Tabs.Trigger>
+                    <Tabs.Trigger value="notify">
+                        <Activity size={14} style={{ marginRight: 6 }} /> {t('notify.title')}
+                    </Tabs.Trigger>
                 </Tabs.List>
 
                 <Tabs.Content value="general">
@@ -125,6 +128,9 @@ export default function Settings() {
                 </Tabs.Content>
                 <Tabs.Content value="backup">
                     <BackupManager embedded />
+                </Tabs.Content>
+                <Tabs.Content value="notify">
+                    <NotifyTab showMessage={showMessage} />
                 </Tabs.Content>
             </Tabs.Root>
         </Box>
@@ -1979,6 +1985,264 @@ function APITokensTab() {
                     </Flex>
                 </AlertDialog.Content>
             </AlertDialog.Root>
+        </Box>
+    )
+}
+
+// ======================== Notify Tab ========================
+const EVENT_OPTIONS = [
+    { value: 'deploy.*', label: 'Deploy Events' },
+    { value: 'deploy.build.failed', label: 'Build Failed' },
+    { value: 'deploy.build.success', label: 'Build Success' },
+    { value: 'backup.*', label: 'Backup Events' },
+    { value: 'monitoring.alert.*', label: 'Monitoring Alerts' },
+    { value: '*', label: 'All Events' },
+]
+
+function NotifyConfigForm({ type, config, onChange, t }) {
+    let parsed = {}
+    try { parsed = JSON.parse(config) } catch {}
+
+    const update = (key, value) => {
+        const next = { ...parsed, [key]: value }
+        onChange(JSON.stringify(next, null, 2))
+    }
+
+    switch (type) {
+        case 'webhook':
+            return (
+                <Flex direction="column" gap="2">
+                    <label>
+                        <Text size="2" weight="medium">Webhook URL</Text>
+                        <TextField.Root placeholder="https://example.com/webhook" value={parsed.url || ''} onChange={e => update('url', e.target.value)} />
+                    </label>
+                    <label>
+                        <Text size="2" weight="medium">{t('notify.custom_headers')}</Text>
+                        <Text size="1" color="gray">{t('notify.headers_hint')}</Text>
+                        <TextArea rows={2} value={parsed.headers ? JSON.stringify(parsed.headers, null, 2) : ''} onChange={e => {
+                            try { update('headers', JSON.parse(e.target.value)) } catch {}
+                        }} style={{ fontFamily: 'monospace', fontSize: 12 }} />
+                    </label>
+                </Flex>
+            )
+        case 'email':
+            return (
+                <Flex direction="column" gap="2">
+                    <Flex gap="2">
+                        <Box style={{ flex: 1 }}><label><Text size="2" weight="medium">SMTP Host</Text><TextField.Root placeholder="smtp.gmail.com" value={parsed.smtp_host || ''} onChange={e => update('smtp_host', e.target.value)} /></label></Box>
+                        <Box style={{ width: 80 }}><label><Text size="2" weight="medium">Port</Text><TextField.Root type="number" value={parsed.smtp_port || 587} onChange={e => update('smtp_port', parseInt(e.target.value) || 587)} /></label></Box>
+                    </Flex>
+                    <Flex gap="2">
+                        <Box style={{ flex: 1 }}><label><Text size="2" weight="medium">{t('common.username')}</Text><TextField.Root value={parsed.username || ''} onChange={e => update('username', e.target.value)} /></label></Box>
+                        <Box style={{ flex: 1 }}><label><Text size="2" weight="medium">{t('common.password')}</Text><TextField.Root type="password" value={parsed.password || ''} onChange={e => update('password', e.target.value)} /></label></Box>
+                    </Flex>
+                    <Flex gap="2">
+                        <Box style={{ flex: 1 }}><label><Text size="2" weight="medium">From</Text><TextField.Root placeholder="noreply@example.com" value={parsed.from || ''} onChange={e => update('from', e.target.value)} /></label></Box>
+                        <Box style={{ flex: 1 }}><label><Text size="2" weight="medium">To</Text><TextField.Root placeholder="admin@example.com" value={parsed.to || ''} onChange={e => update('to', e.target.value)} /></label></Box>
+                    </Flex>
+                    <Flex align="center" gap="2"><Switch size="1" checked={parsed.use_tls !== false} onCheckedChange={v => update('use_tls', v)} /><Text size="2">TLS</Text></Flex>
+                </Flex>
+            )
+        case 'discord':
+            return (
+                <Flex direction="column" gap="2">
+                    <label>
+                        <Text size="2" weight="medium">Discord Webhook URL</Text>
+                        <Text size="1" color="gray">{t('notify.discord_hint')}</Text>
+                        <TextField.Root placeholder="https://discord.com/api/webhooks/..." value={parsed.webhook_url || ''} onChange={e => update('webhook_url', e.target.value)} />
+                    </label>
+                </Flex>
+            )
+        case 'telegram':
+            return (
+                <Flex direction="column" gap="2">
+                    <label>
+                        <Text size="2" weight="medium">Bot Token</Text>
+                        <Text size="1" color="gray">{t('notify.telegram_token_hint')}</Text>
+                        <TextField.Root placeholder="123456:ABC-DEF..." value={parsed.bot_token || ''} onChange={e => update('bot_token', e.target.value)} />
+                    </label>
+                    <label>
+                        <Text size="2" weight="medium">Chat ID</Text>
+                        <Text size="1" color="gray">{t('notify.telegram_chat_hint')}</Text>
+                        <TextField.Root placeholder="-1001234567890" value={parsed.chat_id || ''} onChange={e => update('chat_id', e.target.value)} />
+                    </label>
+                </Flex>
+            )
+        default:
+            return (
+                <label>
+                    <Text size="2" weight="medium">{t('notify.config')}</Text>
+                    <TextArea rows={6} value={config} onChange={e => onChange(e.target.value)} style={{ fontFamily: 'monospace', fontSize: 12 }} />
+                </label>
+            )
+    }
+}
+
+function NotifyTab({ showMessage }) {
+    const { t } = useTranslation()
+    const [channels, setChannels] = useState([])
+    const [loading, setLoading] = useState(true)
+    const [dialogOpen, setDialogOpen] = useState(false)
+    const [editChannel, setEditChannel] = useState(null)
+    const [testing, setTesting] = useState(null)
+
+    const [form, setForm] = useState({
+        name: '', type: 'webhook', config: '', events: '["*"]', enabled: true,
+    })
+
+    const fetchChannels = async () => {
+        try {
+            const res = await notifyAPI.listChannels()
+            setChannels(res.data || [])
+        } catch (e) { console.error(e) }
+        finally { setLoading(false) }
+    }
+
+    useEffect(() => { fetchChannels() }, [])
+
+    const getDefaultConfig = (type) => {
+        switch (type) {
+            case 'webhook': return JSON.stringify({ url: '' }, null, 2)
+            case 'email': return JSON.stringify({ smtp_host: '', smtp_port: 587, username: '', password: '', from: '', to: '', use_tls: true }, null, 2)
+            case 'discord': return JSON.stringify({ webhook_url: '' }, null, 2)
+            case 'telegram': return JSON.stringify({ bot_token: '', chat_id: '' }, null, 2)
+            default: return '{}'
+        }
+    }
+
+    const openCreate = () => {
+        setEditChannel(null)
+        setForm({ name: '', type: 'webhook', config: getDefaultConfig('webhook'), events: '["*"]', enabled: true })
+        setDialogOpen(true)
+    }
+
+    const openEdit = (ch) => {
+        setEditChannel(ch)
+        setForm({ name: ch.name, type: ch.type, config: ch.config || '', events: ch.events || '["*"]', enabled: ch.enabled })
+        setDialogOpen(true)
+    }
+
+    const handleSave = async () => {
+        try { JSON.parse(form.config); JSON.parse(form.events) }
+        catch { showMessage('error', t('notify.invalid_json')); return }
+
+        try {
+            if (editChannel) await notifyAPI.updateChannel(editChannel.id, form)
+            else await notifyAPI.createChannel(form)
+            setDialogOpen(false)
+            fetchChannels()
+            showMessage('success', t('common.saved'))
+        } catch (e) { showMessage('error', e.response?.data?.error || t('common.operation_failed')) }
+    }
+
+    const handleDelete = async (id) => {
+        if (!confirm(t('notify.confirm_delete'))) return
+        try { await notifyAPI.deleteChannel(id); fetchChannels() }
+        catch (e) { showMessage('error', e.response?.data?.error || t('common.operation_failed')) }
+    }
+
+    const handleTest = async (id) => {
+        setTesting(id)
+        try { await notifyAPI.testChannel(id); showMessage('success', t('notify.test_sent')) }
+        catch (e) { showMessage('error', e.response?.data?.error || t('notify.test_failed')) }
+        finally { setTesting(null) }
+    }
+
+    const handleToggle = async (id, enabled) => {
+        try { await notifyAPI.updateChannel(id, { enabled }); fetchChannels() }
+        catch (e) { console.error(e) }
+    }
+
+    if (loading) return <Text color="gray">{t('common.loading')}</Text>
+
+    return (
+        <Box>
+            <Flex justify="between" align="center" mb="4" mt="4">
+                <Box>
+                    <Heading size="4">{t('notify.title')}</Heading>
+                    <Text size="2" color="gray">{t('notify.subtitle')}</Text>
+                </Box>
+                <Button onClick={openCreate}><Plus size={14} /> {t('notify.add_channel')}</Button>
+            </Flex>
+
+            {channels.length === 0 ? (
+                <Card><Text size="2" color="gray" style={{ textAlign: 'center', padding: '2rem 0' }}>{t('notify.no_channels')}</Text></Card>
+            ) : (
+                <Table.Root variant="surface">
+                    <Table.Header>
+                        <Table.Row>
+                            <Table.ColumnHeaderCell>{t('common.name')}</Table.ColumnHeaderCell>
+                            <Table.ColumnHeaderCell>{t('notify.type')}</Table.ColumnHeaderCell>
+                            <Table.ColumnHeaderCell>{t('notify.events')}</Table.ColumnHeaderCell>
+                            <Table.ColumnHeaderCell>{t('common.status')}</Table.ColumnHeaderCell>
+                            <Table.ColumnHeaderCell>{t('common.actions')}</Table.ColumnHeaderCell>
+                        </Table.Row>
+                    </Table.Header>
+                    <Table.Body>
+                        {channels.map(ch => (
+                            <Table.Row key={ch.id}>
+                                <Table.Cell><Text weight="medium">{ch.name}</Text></Table.Cell>
+                                <Table.Cell><Badge variant="soft">{ch.type}</Badge></Table.Cell>
+                                <Table.Cell><Text size="1" color="gray" style={{ fontFamily: 'monospace' }}>{ch.events || '*'}</Text></Table.Cell>
+                                <Table.Cell><Switch size="1" checked={ch.enabled} onCheckedChange={v => handleToggle(ch.id, v)} /></Table.Cell>
+                                <Table.Cell>
+                                    <Flex gap="1">
+                                        <Tooltip content={t('notify.test')}><IconButton size="1" variant="ghost" onClick={() => handleTest(ch.id)} disabled={testing === ch.id}>{testing === ch.id ? <Spinner size="1" /> : <TestTube size={14} />}</IconButton></Tooltip>
+                                        <Tooltip content={t('common.edit')}><IconButton size="1" variant="ghost" onClick={() => openEdit(ch)}><Pencil size={14} /></IconButton></Tooltip>
+                                        <Tooltip content={t('common.delete')}><IconButton size="1" variant="ghost" color="red" onClick={() => handleDelete(ch.id)}><Trash2 size={14} /></IconButton></Tooltip>
+                                    </Flex>
+                                </Table.Cell>
+                            </Table.Row>
+                        ))}
+                    </Table.Body>
+                </Table.Root>
+            )}
+
+            <Dialog.Root open={dialogOpen} onOpenChange={setDialogOpen}>
+                <Dialog.Content maxWidth="500px">
+                    <Dialog.Title>{editChannel ? t('notify.edit_channel') : t('notify.add_channel')}</Dialog.Title>
+                    <Flex direction="column" gap="3" mt="3">
+                        <label>
+                            <Text size="2" weight="medium">{t('common.name')}</Text>
+                            <TextField.Root placeholder="My Webhook" value={form.name} onChange={e => setForm(f => ({ ...f, name: e.target.value }))} />
+                        </label>
+                        <label>
+                            <Text size="2" weight="medium">{t('notify.type')}</Text>
+                            <Select.Root value={form.type} onValueChange={v => {
+                                setForm(f => ({ ...f, type: v, config: getDefaultConfig(v) }))
+                            }}>
+                                <Select.Trigger />
+                                <Select.Content>
+                                    <Select.Item value="webhook">Webhook</Select.Item>
+                                    <Select.Item value="email">Email (SMTP)</Select.Item>
+                                    <Select.Item value="discord">Discord</Select.Item>
+                                    <Select.Item value="telegram">Telegram</Select.Item>
+                                </Select.Content>
+                            </Select.Root>
+                        </label>
+                        <NotifyConfigForm type={form.type} config={form.config} onChange={config => setForm(f => ({ ...f, config }))} t={t} />
+                        <label>
+                            <Text size="2" weight="medium">{t('notify.events')}</Text>
+                            <Text size="1" color="gray">{t('notify.events_hint')}</Text>
+                            <TextArea rows={2} value={form.events} onChange={e => setForm(f => ({ ...f, events: e.target.value }))} style={{ fontFamily: 'monospace', fontSize: 12 }} />
+                        </label>
+                        <Flex wrap="wrap" gap="1">
+                            {EVENT_OPTIONS.map(opt => (
+                                <Badge key={opt.value} variant="soft" style={{ cursor: 'pointer' }} onClick={() => {
+                                    try {
+                                        const cur = JSON.parse(form.events || '[]')
+                                        if (!cur.includes(opt.value)) setForm(f => ({ ...f, events: JSON.stringify([...cur, opt.value]) }))
+                                    } catch {}
+                                }}>+ {opt.label}</Badge>
+                            ))}
+                        </Flex>
+                    </Flex>
+                    <Flex gap="3" mt="4" justify="end">
+                        <Dialog.Close><Button variant="soft" color="gray">{t('common.cancel')}</Button></Dialog.Close>
+                        <Button onClick={handleSave}>{t('common.save')}</Button>
+                    </Flex>
+                </Dialog.Content>
+            </Dialog.Root>
         </Box>
     )
 }

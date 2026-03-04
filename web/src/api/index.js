@@ -204,6 +204,7 @@ export const deployAPI = {
     // Frameworks
     frameworks: () => api.get('/plugins/deploy/frameworks'),
     detect: (url, branch) => api.get('/plugins/deploy/detect', { params: { url, branch } }),
+    suggestEnv: (framework) => api.get('/plugins/deploy/suggest-env', { params: { framework } }),
 
     // Projects
     listProjects: () => api.get('/plugins/deploy/projects'),
@@ -221,6 +222,29 @@ export const deployAPI = {
     // Deployments & Logs
     deployments: (id) => api.get(`/plugins/deploy/projects/${id}/deployments`),
     logs: (id, params) => api.get(`/plugins/deploy/projects/${id}/logs`, { params }),
+
+    // Build cache
+    getCacheInfo: (id) => api.get(`/plugins/deploy/projects/${id}/cache`),
+    clearCache: (id) => api.delete(`/plugins/deploy/projects/${id}/cache`),
+
+    // Environment cloning
+    cloneEnv: (targetId, sourceId) => api.post(`/plugins/deploy/projects/${targetId}/clone-env`, { source_id: sourceId }),
+
+    // Webhook info
+    getWebhook: (id) => api.get(`/plugins/deploy/projects/${id}/webhook`),
+
+    // Cron jobs
+    listCrons: (id) => api.get(`/plugins/deploy/projects/${id}/crons`),
+    createCron: (id, data) => api.post(`/plugins/deploy/projects/${id}/crons`, data),
+    updateCron: (id, cronId, data) => api.put(`/plugins/deploy/projects/${id}/crons/${cronId}`, data),
+    deleteCron: (id, cronId) => api.delete(`/plugins/deploy/projects/${id}/crons/${cronId}`),
+
+    // Extra processes
+    listProcesses: (id) => api.get(`/plugins/deploy/projects/${id}/processes`),
+    createProcess: (id, data) => api.post(`/plugins/deploy/projects/${id}/processes`, data),
+    updateProcess: (id, procId, data) => api.put(`/plugins/deploy/projects/${id}/processes/${procId}`, data),
+    deleteProcess: (id, procId) => api.delete(`/plugins/deploy/projects/${id}/processes/${procId}`),
+    restartProcess: (id, procId) => api.post(`/plugins/deploy/projects/${id}/processes/${procId}/restart`),
 }
 
 // ============ AI (plugin) ============
@@ -236,9 +260,13 @@ export const aiAPI = {
     getConversation: (id) => api.get(`/plugins/ai/conversations/${id}`),
     deleteConversation: (id) => api.delete(`/plugins/ai/conversations/${id}`),
 
+    // Tool confirmations
+    confirm: (pendingId, approved) => api.post('/plugins/ai/confirm', { pending_id: pendingId, approved }),
+
     // Tools
     generateCompose: (description) => api.post('/plugins/ai/generate-compose', { description }),
     diagnose: (logs, context) => api.post('/plugins/ai/diagnose', { logs, context }),
+    reviewCode: (projectId) => api.post('/plugins/ai/review-code', { project_id: projectId }),
 }
 
 // ============ File Manager (plugin) ============
@@ -390,6 +418,14 @@ export const mcpAPI = {
     listTokens: () => api.get('/plugins/mcpserver/tokens'),
     createToken: (data) => api.post('/plugins/mcpserver/tokens', data),
     deleteToken: (id) => api.delete(`/plugins/mcpserver/tokens/${id}`),
+}
+
+export const notifyAPI = {
+    listChannels: () => api.get('/notify/channels'),
+    createChannel: (data) => api.post('/notify/channels', data),
+    updateChannel: (id, data) => api.put(`/notify/channels/${id}`, data),
+    deleteChannel: (id) => api.delete(`/notify/channels/${id}`),
+    testChannel: (id) => api.post(`/notify/channels/${id}/test`),
 }
 
 export default api

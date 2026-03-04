@@ -4,6 +4,7 @@ import (
 	"log"
 
 	"github.com/web-casa/webcasa/internal/model"
+	"github.com/web-casa/webcasa/internal/notify"
 	"gorm.io/driver/sqlite"
 	"gorm.io/gorm"
 	"gorm.io/gorm/logger"
@@ -40,6 +41,7 @@ func Init(dbPath string) *gorm.DB {
 		&model.Tag{},
 		&model.HostTag{},
 		&model.Template{},
+		&notify.Channel{},
 	)
 	if err != nil {
 		log.Fatalf("Failed to migrate database: %v", err)

@@ -54,12 +54,31 @@ func setupTestManager(t *testing.T) (*Manager, *gorm.DB) {
 // stubCoreAPI implements CoreAPI for testing.
 type stubCoreAPI struct{}
 
-func (s *stubCoreAPI) CreateHost(req CreateHostRequest) (uint, error) { return 1, nil }
-func (s *stubCoreAPI) DeleteHost(id uint) error                       { return nil }
-func (s *stubCoreAPI) ReloadCaddy() error                             { return nil }
-func (s *stubCoreAPI) GetSetting(key string) (string, error)          { return "", nil }
-func (s *stubCoreAPI) SetSetting(key, value string) error             { return nil }
-func (s *stubCoreAPI) GetDB() *gorm.DB                                { return nil }
+func (s *stubCoreAPI) CreateHost(req CreateHostRequest) (uint, error)          { return 1, nil }
+func (s *stubCoreAPI) DeleteHost(id uint) error                                { return nil }
+func (s *stubCoreAPI) ListHosts() ([]map[string]interface{}, error)            { return nil, nil }
+func (s *stubCoreAPI) GetHost(id uint) (map[string]interface{}, error)         { return nil, nil }
+func (s *stubCoreAPI) UpdateHostUpstream(hostID uint, newUpstream string) error { return nil }
+func (s *stubCoreAPI) ReloadCaddy() error                                      { return nil }
+func (s *stubCoreAPI) GetSetting(key string) (string, error)                   { return "", nil }
+func (s *stubCoreAPI) SetSetting(key, value string) error                      { return nil }
+func (s *stubCoreAPI) GetDB() *gorm.DB                                         { return nil }
+func (s *stubCoreAPI) ListProjects() ([]map[string]interface{}, error)         { return nil, nil }
+func (s *stubCoreAPI) GetProject(id uint) (map[string]interface{}, error)      { return nil, nil }
+func (s *stubCoreAPI) GetBuildLog(projectID uint, buildNum int) (string, error) { return "", nil }
+func (s *stubCoreAPI) GetRuntimeLog(projectID uint, lines int) (string, error) { return "", nil }
+func (s *stubCoreAPI) TriggerBuild(projectID uint) error                       { return nil }
+func (s *stubCoreAPI) CreateProject(req CreateProjectRequest) (uint, error)    { return 1, nil }
+func (s *stubCoreAPI) GetEnvSuggestions(framework string) ([]map[string]interface{}, error) {
+	return nil, nil
+}
+func (s *stubCoreAPI) DockerPS() ([]map[string]interface{}, error)             { return nil, nil }
+func (s *stubCoreAPI) DockerLogs(containerID string, tail int) (string, error) { return "", nil }
+func (s *stubCoreAPI) GetMetrics() (map[string]interface{}, error)             { return nil, nil }
+func (s *stubCoreAPI) RunCommand(cmd string, timeoutSec int) (string, error)   { return "", nil }
+func (s *stubCoreAPI) TriggerBackup() error                                    { return nil }
+func (s *stubCoreAPI) UpdateHost(id uint, req UpdateHostRequest) error         { return nil }
+func (s *stubCoreAPI) GetRecentAlerts() ([]map[string]interface{}, error)      { return nil, nil }
 
 // ── stub plugin ──
 

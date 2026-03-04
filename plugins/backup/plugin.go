@@ -65,6 +65,16 @@ func (p *Plugin) Init(ctx *pluginpkg.Context) error {
 	r.GET("/status", p.handler.GetStatus)
 	r.GET("/logs", p.handler.ListLogs)
 
+	// Subscribe to backup.trigger event (from AI tool or other plugins).
+	ctx.EventBus.Subscribe("backup.trigger", func(e pluginpkg.Event) {
+		ctx.Logger.Info("Backup triggered via event", "source", e.Source)
+		go func() {
+			if _, err := p.svc.RunBackup("ai-triggered"); err != nil {
+				ctx.Logger.Error("AI-triggered backup failed", "err", err)
+			}
+		}()
+	})
+
 	ctx.Logger.Info("Backup plugin routes registered")
 	return nil
 }

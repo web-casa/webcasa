@@ -36,7 +36,7 @@ func (p *Plugin) Metadata() pluginpkg.Metadata {
 // Init initialises the deploy plugin: migrates DB, creates service, registers routes.
 func (p *Plugin) Init(ctx *pluginpkg.Context) error {
 	// Migrate models
-	if err := ctx.DB.AutoMigrate(&Project{}, &Deployment{}); err != nil {
+	if err := ctx.DB.AutoMigrate(&Project{}, &Deployment{}, &CronJob{}, &ExtraProcess{}); err != nil {
 		return fmt.Errorf("migrate: %w", err)
 	}
 
@@ -58,7 +58,7 @@ func (p *Plugin) Init(ctx *pluginpkg.Context) error {
 	}
 
 	// Create service and handler
-	p.svc = NewService(ctx.DB, ctx.CoreAPI, ctx.Logger, ctx.DataDir, jwtSecret)
+	p.svc = NewService(ctx.DB, ctx.CoreAPI, ctx.EventBus, ctx.Logger, ctx.DataDir, jwtSecret)
 	p.handler = NewHandler(p.svc)
 
 	// Register API routes under /api/plugins/deploy/
@@ -67,6 +67,7 @@ func (p *Plugin) Init(ctx *pluginpkg.Context) error {
 
 	// Frameworks presets (read)
 	r.GET("/frameworks", p.handler.GetFrameworks)
+	r.GET("/suggest-env", p.handler.SuggestEnv)
 	a.GET("/detect", p.handler.DetectFramework) // admin only — triggers git clone
 
 	// Projects CRUD (read + admin mutations)
@@ -85,6 +86,26 @@ func (p *Plugin) Init(ctx *pluginpkg.Context) error {
 	a.POST("/projects/:id/stop", p.handler.StopProject)
 	a.POST("/projects/:id/rollback", p.handler.RollbackProject)
 
+	// Build cache (admin)
+	r.GET("/projects/:id/cache", p.handler.GetCacheInfo)
+	a.DELETE("/projects/:id/cache", p.handler.ClearCache)
+
+	// Environment cloning (admin)
+	a.POST("/projects/:id/clone-env", p.handler.CloneEnvVars)
+
+	// Cron jobs (admin mutations, read for list)
+	r.GET("/projects/:id/crons", p.handler.ListCronJobs)
+	a.POST("/projects/:id/crons", p.handler.CreateCronJob)
+	a.PUT("/projects/:id/crons/:cronId", p.handler.UpdateCronJob)
+	a.DELETE("/projects/:id/crons/:cronId", p.handler.DeleteCronJob)
+
+	// Extra processes (admin mutations, read for list)
+	r.GET("/projects/:id/processes", p.handler.ListExtraProcesses)
+	a.POST("/projects/:id/processes", p.handler.CreateExtraProcess)
+	a.PUT("/projects/:id/processes/:procId", p.handler.UpdateExtraProcess)
+	a.DELETE("/projects/:id/processes/:procId", p.handler.DeleteExtraProcess)
+	a.POST("/projects/:id/processes/:procId/restart", p.handler.RestartExtraProcess)
+
 	// Deployments & logs (read)
 	r.GET("/projects/:id/deployments", p.handler.GetDeployments)
 	r.GET("/projects/:id/logs", p.handler.GetBuildLog)
@@ -92,17 +113,37 @@ func (p *Plugin) Init(ctx *pluginpkg.Context) error {
 	// Webhook — public route (no JWT required, uses random token for auth)
 	ctx.PublicRouter.POST("/webhook/:token", p.handler.Webhook)
 
+	// Subscribe to cross-plugin build trigger (used by AI tool use via CoreAPI).
+	ctx.EventBus.Subscribe("deploy.trigger_build", func(e pluginpkg.Event) {
+		if pid, ok := e.Payload["project_id"]; ok {
+			var projectID uint
+			switch v := pid.(type) {
+			case uint:
+				projectID = v
+			case float64:
+				projectID = uint(v)
+			}
+			if projectID > 0 {
+				if err := p.svc.Build(projectID); err != nil {
+					ctx.Logger.Error("trigger_build via event failed", "project_id", projectID, "err", err)
+				}
+			}
+		}
+	})
+
 	ctx.Logger.Info("Deploy plugin routes registered")
 	return nil
 }
 
-// Start is called after Init. No background tasks needed.
+// Start is called after Init. Starts the cron scheduler.
 func (p *Plugin) Start() error {
+	p.svc.StartCronScheduler()
 	return nil
 }
 
 // Stop cleans up resources.
 func (p *Plugin) Stop() error {
+	p.svc.StopCronScheduler()
 	return nil
 }
 

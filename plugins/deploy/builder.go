@@ -29,11 +29,80 @@ type BuildResult struct {
 	ErrorMsg  string
 }
 
+// CacheDir returns the shared cache directory for a project.
+func (b *Builder) CacheDir(projectID uint) string {
+	return filepath.Join(b.dataDir, "cache", fmt.Sprintf("project_%d", projectID))
+}
+
+// ClearCache removes the build cache for a project.
+func (b *Builder) ClearCache(projectID uint) error {
+	return os.RemoveAll(b.CacheDir(projectID))
+}
+
+// CacheSize returns the total size of the build cache for a project in bytes.
+func (b *Builder) CacheSize(projectID uint) int64 {
+	var size int64
+	filepath.Walk(b.CacheDir(projectID), func(_ string, info os.FileInfo, _ error) error {
+		if info != nil && !info.IsDir() {
+			size += info.Size()
+		}
+		return nil
+	})
+	return size
+}
+
+// setupBuildCache prepares cache directories and returns extra env vars for the build.
+func (b *Builder) setupBuildCache(project *Project, logWriter *LogWriter) []string {
+	cacheDir := b.CacheDir(project.ID)
+	os.MkdirAll(cacheDir, 0755)
+
+	var extraEnv []string
+
+	switch {
+	case project.Framework == "go":
+		// Persistent Go module cache
+		goCache := filepath.Join(cacheDir, "gomod")
+		os.MkdirAll(goCache, 0755)
+		extraEnv = append(extraEnv, fmt.Sprintf("GOMODCACHE=%s", goCache))
+		goBuildCache := filepath.Join(cacheDir, "gobuild")
+		os.MkdirAll(goBuildCache, 0755)
+		extraEnv = append(extraEnv, fmt.Sprintf("GOCACHE=%s", goBuildCache))
+		logWriter.Write([]byte(fmt.Sprintf("==> Build cache: GOMODCACHE=%s, GOCACHE=%s\n", goCache, goBuildCache)))
+
+	case project.Framework == "nextjs" || project.Framework == "nuxt" || project.Framework == "vite" ||
+		project.Framework == "remix" || project.Framework == "express":
+		// npm cache for Node.js projects
+		npmCache := filepath.Join(cacheDir, "npm")
+		os.MkdirAll(npmCache, 0755)
+		extraEnv = append(extraEnv, fmt.Sprintf("npm_config_cache=%s", npmCache))
+		logWriter.Write([]byte(fmt.Sprintf("==> Build cache: npm_config_cache=%s\n", npmCache)))
+
+	case project.Framework == "flask" || project.Framework == "django":
+		// pip cache for Python projects
+		pipCache := filepath.Join(cacheDir, "pip")
+		os.MkdirAll(pipCache, 0755)
+		extraEnv = append(extraEnv, fmt.Sprintf("PIP_CACHE_DIR=%s", pipCache))
+		logWriter.Write([]byte(fmt.Sprintf("==> Build cache: PIP_CACHE_DIR=%s\n", pipCache)))
+
+	case project.Framework == "laravel":
+		// composer cache for PHP projects
+		composerCache := filepath.Join(cacheDir, "composer")
+		os.MkdirAll(composerCache, 0755)
+		extraEnv = append(extraEnv, fmt.Sprintf("COMPOSER_CACHE_DIR=%s", composerCache))
+		logWriter.Write([]byte(fmt.Sprintf("==> Build cache: COMPOSER_CACHE_DIR=%s\n", composerCache)))
+	}
+
+	return extraEnv
+}
+
 // Build executes the full build pipeline: clone/pull → install → build.
 // It writes all output to the provided LogWriter.
 func (b *Builder) Build(ctx context.Context, project *Project, logWriter *LogWriter) BuildResult {
 	start := time.Now()
 	projectDir := b.git.ProjectDir(project.ID)
+
+	// Setup build cache
+	cacheEnv := b.setupBuildCache(project, logWriter)
 
 	// Step 1: Clone or pull
 	logWriter.Write([]byte("=== Step 1/3: Fetching source code ===\n"))
@@ -60,7 +129,7 @@ func (b *Builder) Build(ctx context.Context, project *Project, logWriter *LogWri
 	// Step 2: Install dependencies
 	if project.InstallCmd != "" {
 		logWriter.Write([]byte("=== Step 2/3: Installing dependencies ===\n"))
-		if err := b.runCommand(ctx, projectDir, project.InstallCmd, project.EnvVarList, logWriter); err != nil {
+		if err := b.runCommand(ctx, projectDir, project.InstallCmd, project.EnvVarList, cacheEnv, logWriter); err != nil {
 			return BuildResult{Commit: commit, ErrorMsg: fmt.Sprintf("install failed: %v", err), Duration: time.Since(start)}
 		}
 		logWriter.Write([]byte("\n"))
@@ -71,7 +140,7 @@ func (b *Builder) Build(ctx context.Context, project *Project, logWriter *LogWri
 	// Step 3: Build
 	if project.BuildCommand != "" {
 		logWriter.Write([]byte("=== Step 3/3: Building project ===\n"))
-		if err := b.runCommand(ctx, projectDir, project.BuildCommand, project.EnvVarList, logWriter); err != nil {
+		if err := b.runCommand(ctx, projectDir, project.BuildCommand, project.EnvVarList, cacheEnv, logWriter); err != nil {
 			return BuildResult{Commit: commit, ErrorMsg: fmt.Sprintf("build failed: %v", err), Duration: time.Since(start)}
 		}
 		logWriter.Write([]byte("\n"))
@@ -87,8 +156,8 @@ func (b *Builder) Build(ctx context.Context, project *Project, logWriter *LogWri
 	}
 }
 
-// runCommand executes a shell command in the given directory with env vars.
-func (b *Builder) runCommand(ctx context.Context, dir, command string, envVars []EnvVar, logWriter *LogWriter) error {
+// runCommand executes a shell command in the given directory with env vars and extra env.
+func (b *Builder) runCommand(ctx context.Context, dir, command string, envVars []EnvVar, extraEnv []string, logWriter *LogWriter) error {
 	logWriter.Write([]byte(fmt.Sprintf("$ %s\n", command)))
 
 	cmd := exec.CommandContext(ctx, "bash", "-c", command)
@@ -99,10 +168,11 @@ func (b *Builder) runCommand(ctx context.Context, dir, command string, envVars [
 	// Build environment
 	env := os.Environ()
 	env = append(env, fmt.Sprintf("HOME=%s", dir))
-	env = append(env, fmt.Sprintf("NODE_ENV=production"))
+	env = append(env, "NODE_ENV=production")
 	for _, ev := range envVars {
 		env = append(env, fmt.Sprintf("%s=%s", ev.Key, ev.Value))
 	}
+	env = append(env, extraEnv...)
 	cmd.Env = env
 
 	return cmd.Run()
@@ -140,6 +210,17 @@ func NewPortAllocator(basePort int) *PortAllocator {
 // AllocatePort assigns a port based on the project ID to avoid conflicts.
 func (pa *PortAllocator) AllocatePort(projectID uint) int {
 	return pa.basePort + int(projectID)
+}
+
+// AlternatePort returns a different port for zero-downtime deployment.
+// It alternates between the primary range (basePort+ID) and secondary range (basePort+5000+ID).
+func (pa *PortAllocator) AlternatePort(currentPort int, projectID uint) int {
+	primary := pa.basePort + int(projectID)
+	alternate := primary + 5000
+	if currentPort == alternate {
+		return primary
+	}
+	return alternate
 }
 
 // GenerateEnvFile creates a .env file from env vars.

@@ -17,6 +17,7 @@ import (
 	"github.com/web-casa/webcasa/internal/database"
 	"github.com/web-casa/webcasa/internal/handler"
 	"github.com/web-casa/webcasa/internal/model"
+	"github.com/web-casa/webcasa/internal/notify"
 	"github.com/web-casa/webcasa/internal/plugin"
 	"github.com/web-casa/webcasa/internal/service"
 	"github.com/web-casa/webcasa/internal/versioncheck"
@@ -259,6 +260,15 @@ func main() {
 	protected.GET("/settings/all", settingH.GetAll)
 	adminOnly.PUT("/settings", settingH.Update)
 
+	// Notifications
+	notifier := notify.NewNotifier(db, slog.Default())
+	notifyH := handler.NewNotifyHandler(notifier)
+	protected.GET("/notify/channels", notifyH.ListChannels)
+	adminOnly.POST("/notify/channels", notifyH.CreateChannel)
+	adminOnly.PUT("/notify/channels/:id", notifyH.UpdateChannel)
+	adminOnly.DELETE("/notify/channels/:id", notifyH.DeleteChannel)
+	adminOnly.POST("/notify/channels/:id/test", notifyH.TestChannel)
+
 	// Certificates (admin only for mutations)
 	certMgrH := handler.NewCertificateHandler(db, cfg)
 	protected.GET("/certificates", certMgrH.List)
@@ -270,6 +280,28 @@ func main() {
 	adminPluginRouter := adminOnly.Group("/plugins")
 	publicPluginRouter := api.Group("/plugins") // public routes (no JWT) for webhooks etc.
 	pluginMgr := initPlugins(db, pluginRouter, adminPluginRouter, publicPluginRouter, hostSvc, caddyMgr, cfg)
+
+	// ============ Notification Integration ============
+	// Subscribe notifier to EventBus for deploy/backup/monitoring events
+	eventBus := pluginMgr.EventBus()
+	eventBus.Subscribe("deploy.*", func(e plugin.Event) {
+		title := formatEventTitle(e)
+		notifier.Send(notify.NotifyEvent{
+			Type: e.Type, Title: title, Message: formatEventMessage(e), Data: e.Payload, Time: e.Time,
+		})
+	})
+	eventBus.Subscribe("backup.*", func(e plugin.Event) {
+		title := formatEventTitle(e)
+		notifier.Send(notify.NotifyEvent{
+			Type: e.Type, Title: title, Message: formatEventMessage(e), Data: e.Payload, Time: e.Time,
+		})
+	})
+	eventBus.Subscribe("monitoring.alert.*", func(e plugin.Event) {
+		title := formatEventTitle(e)
+		notifier.Send(notify.NotifyEvent{
+			Type: e.Type, Title: title, Message: formatEventMessage(e), Data: e.Payload, Time: e.Time,
+		})
+	})
 
 	// ============ Version Checker ============
 	versionChecker := versioncheck.NewChecker(
@@ -306,8 +338,9 @@ func main() {
 // initPlugins creates the plugin manager and registers all compiled-in plugins.
 // New plugins are added here by calling pluginMgr.Register(...).
 func initPlugins(db *gorm.DB, protectedRouter *gin.RouterGroup, adminRouter *gin.RouterGroup, publicRouter *gin.RouterGroup, hostSvc *service.HostService, caddyMgr *caddy.Manager, cfg *config.Config) *plugin.Manager {
-	coreAPI := plugin.NewCoreAPI(db, hostSvc, caddyMgr)
+	coreAPI := plugin.NewCoreAPI(db, hostSvc, caddyMgr, cfg.DataDir)
 	pluginMgr := plugin.NewManager(db, protectedRouter, adminRouter, publicRouter, coreAPI, cfg.DataDir)
+	coreAPI.SetEventBus(pluginMgr.EventBus())
 
 	// ── Register plugins here ──
 	if err := pluginMgr.Register(dockerplugin.New()); err != nil {
@@ -398,6 +431,36 @@ func setupFrontend(r *gin.Engine) {
 	})
 
 	log.Println("✅ Serving frontend from web/dist")
+}
+
+// formatEventTitle generates a human-readable title for a notification event.
+func formatEventTitle(e plugin.Event) string {
+	projectName, _ := e.Payload["project_name"].(string)
+	switch e.Type {
+	case "deploy.build.failed":
+		return fmt.Sprintf("Build Failed: %s", projectName)
+	case "deploy.build.success":
+		return fmt.Sprintf("Build Success: %s", projectName)
+	case "deploy.trigger_build":
+		return fmt.Sprintf("Build Triggered: %s", projectName)
+	default:
+		return e.Type
+	}
+}
+
+// formatEventMessage generates a detailed message for a notification event.
+func formatEventMessage(e plugin.Event) string {
+	var parts []string
+	for k, v := range e.Payload {
+		if k == "log_tail" {
+			continue // skip large log content
+		}
+		parts = append(parts, fmt.Sprintf("%s: %v", k, v))
+	}
+	if len(parts) == 0 {
+		return e.Type
+	}
+	return strings.Join(parts, "\n")
 }
 
 // resetPassword handles the --reset-password CLI command

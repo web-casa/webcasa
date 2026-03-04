@@ -12,6 +12,11 @@ import (
 
 // DetectFramework analyses a project directory and returns the best-matching framework preset.
 func DetectFramework(dir string) FrameworkPreset {
+	// Highest priority: Dockerfile → Docker container deployment
+	if _, err := os.Stat(filepath.Join(dir, "Dockerfile")); err == nil {
+		return frameworkPresets["dockerfile"]
+	}
+
 	// Check package.json for Node.js frameworks
 	if preset := detectNodeFramework(dir); preset != nil {
 		return *preset

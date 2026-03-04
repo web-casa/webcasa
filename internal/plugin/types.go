@@ -54,6 +54,9 @@ type CoreAPI interface {
 	// Host management — lets plugins create reverse proxy entries automatically.
 	CreateHost(req CreateHostRequest) (uint, error)
 	DeleteHost(id uint) error
+	ListHosts() ([]map[string]interface{}, error)
+	GetHost(id uint) (map[string]interface{}, error)
+	UpdateHostUpstream(hostID uint, newUpstream string) error
 	ReloadCaddy() error
 
 	// Settings — shared key-value store.
@@ -63,6 +66,45 @@ type CoreAPI interface {
 	// GetDB returns the core database connection for read-only queries.
 	// Plugins should NOT write to core tables directly.
 	GetDB() *gorm.DB
+
+	// Cross-plugin queries — used by AI tool use.
+	ListProjects() ([]map[string]interface{}, error)
+	GetProject(id uint) (map[string]interface{}, error)
+	GetBuildLog(projectID uint, buildNum int) (string, error)
+	GetRuntimeLog(projectID uint, lines int) (string, error)
+	TriggerBuild(projectID uint) error
+	CreateProject(req CreateProjectRequest) (uint, error)
+	GetEnvSuggestions(framework string) ([]map[string]interface{}, error)
+	DockerPS() ([]map[string]interface{}, error)
+	DockerLogs(containerID string, tail int) (string, error)
+	GetMetrics() (map[string]interface{}, error)
+	RunCommand(cmd string, timeoutSec int) (string, error)
+
+	// Batch 2 additions
+	TriggerBackup() error
+	UpdateHost(id uint, req UpdateHostRequest) error
+	GetRecentAlerts() ([]map[string]interface{}, error)
+}
+
+// UpdateHostRequest describes fields that can be changed on an existing host via AI.
+type UpdateHostRequest struct {
+	Upstream     string `json:"upstream,omitempty"`
+	TLSMode      string `json:"tls_mode,omitempty"`      // auto, dns, custom, off
+	ForceHTTPS   *bool  `json:"force_https,omitempty"`
+	WebSocket    *bool  `json:"websocket,omitempty"`
+	Compression  *bool  `json:"compression,omitempty"`
+	Enabled      *bool  `json:"enabled,omitempty"`
+}
+
+// CreateProjectRequest is the set of fields needed to create a deployment project via AI.
+type CreateProjectRequest struct {
+	Name         string `json:"name"`
+	GitURL       string `json:"git_url"`
+	GitBranch    string `json:"git_branch"`
+	Domain       string `json:"domain"`
+	Framework    string `json:"framework"`     // optional, auto-detect if empty
+	DeployMode   string `json:"deploy_mode"`   // bare | docker, default: bare
+	AutoDeploy   bool   `json:"auto_deploy"`
 }
 
 // CreateHostRequest is the minimal set of fields a plugin needs to create a

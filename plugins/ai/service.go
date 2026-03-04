@@ -1,10 +1,14 @@
 package ai
 
 import (
+	"bufio"
 	"context"
+	"encoding/json"
 	"fmt"
 	"log/slog"
+	"os"
 	"strings"
+	"sync"
 
 	pluginpkg "github.com/web-casa/webcasa/internal/plugin"
 	"gorm.io/gorm"
@@ -17,17 +21,31 @@ type Service struct {
 	coreAPI     pluginpkg.CoreAPI
 	logger      *slog.Logger
 	jwtSecret   string // for API key encryption
+	tools       *ToolRegistry
+
+	// pendingConfirms tracks tool calls that require user confirmation.
+	// Key: pending_id, Value: channel that receives the approval decision.
+	pendingMu       sync.Mutex
+	pendingConfirms map[string]chan bool
 }
 
 // NewService creates a new AI assistant service.
 func NewService(db *gorm.DB, configStore *pluginpkg.ConfigStore, coreAPI pluginpkg.CoreAPI, logger *slog.Logger, jwtSecret string) *Service {
-	return &Service{
-		db:          db,
-		configStore: configStore,
-		coreAPI:     coreAPI,
-		logger:      logger,
-		jwtSecret:   jwtSecret,
+	toolReg := NewToolRegistry(coreAPI, logger)
+	RegisterBuiltinTools(toolReg)
+
+	svc := &Service{
+		db:              db,
+		configStore:     configStore,
+		coreAPI:         coreAPI,
+		logger:          logger,
+		jwtSecret:       jwtSecret,
+		tools:           toolReg,
+		pendingConfirms: make(map[string]chan bool),
 	}
+	// Set back-reference so tools that need AI generation can access the service.
+	toolReg.svc = svc
+	return svc
 }
 
 // ── Config ──
@@ -163,6 +181,258 @@ func (s *Service) Chat(ctx context.Context, req ChatRequest, userID uint, cb Str
 	return conv.ID, nil
 }
 
+// ResolveConfirmation resolves a pending tool confirmation.
+func (s *Service) ResolveConfirmation(pendingID string, approved bool) error {
+	s.pendingMu.Lock()
+	ch, ok := s.pendingConfirms[pendingID]
+	s.pendingMu.Unlock()
+
+	if !ok {
+		return fmt.Errorf("no pending confirmation found for ID %q", pendingID)
+	}
+
+	ch <- approved
+	return nil
+}
+
+// ── Chat with Tools ──
+
+// ChatWithTools handles a user message with tool use support.
+// The callback receives StreamEvents: text deltas, tool calls, tool results, and done.
+func (s *Service) ChatWithTools(ctx context.Context, req ChatRequest, userID uint, cb StreamEventCallback) (uint, error) {
+	client, err := s.getClient()
+	if err != nil {
+		return 0, err
+	}
+
+	var conv Conversation
+	if req.ConversationID > 0 {
+		if err := s.db.Where("user_id = ?", userID).First(&conv, req.ConversationID).Error; err != nil {
+			return 0, fmt.Errorf("conversation not found: %w", err)
+		}
+	} else {
+		title := req.Message
+		if len(title) > 30 {
+			title = title[:30] + "..."
+		}
+		conv = Conversation{Title: title, UserID: userID}
+		if err := s.db.Create(&conv).Error; err != nil {
+			return 0, fmt.Errorf("create conversation: %w", err)
+		}
+	}
+
+	// Save user message.
+	userMsg := Message{ConversationID: conv.ID, Role: "user", Content: req.Message}
+	s.db.Create(&userMsg)
+
+	// Build tool-use messages from conversation history.
+	var history []Message
+	s.db.Where("conversation_id = ?", conv.ID).Order("created_at ASC").Find(&history)
+	apiMessages := s.buildToolMessages(history, req.Context)
+
+	// Get tool schemas for the provider.
+	var toolSchemas []map[string]interface{}
+	if client.apiFormat == "anthropic-messages" {
+		toolSchemas = s.tools.AnthropicToolSchema()
+	} else {
+		toolSchemas = s.tools.OpenAIToolSchema()
+	}
+
+	// Tool use loop: max 5 rounds to prevent infinite loops.
+	const maxRounds = 5
+	var fullContent strings.Builder
+
+	for round := 0; round < maxRounds; round++ {
+		var pendingToolCalls []ToolCall
+		var roundText strings.Builder
+
+		err := client.ChatStreamWithTools(ctx, apiMessages, toolSchemas, func(event StreamEvent) error {
+			switch event.Type {
+			case "delta":
+				roundText.WriteString(event.Content)
+				return cb(event) // Forward text delta to frontend
+			case "tool_call":
+				pendingToolCalls = append(pendingToolCalls, *event.ToolCall)
+				return cb(event) // Forward tool_call to frontend
+			case "done":
+				// Don't forward done yet — check if we need another round
+			}
+			return nil
+		})
+		if err != nil {
+			return conv.ID, fmt.Errorf("stream round %d: %w", round, err)
+		}
+
+		// If no tool calls, we're done.
+		if len(pendingToolCalls) == 0 {
+			fullContent.WriteString(roundText.String())
+			break
+		}
+
+		// Record assistant message with tool calls in API messages.
+		assistantMsg := ToolUseMessage{
+			Role:      "assistant",
+			Content:   roundText.String(),
+			ToolCalls: pendingToolCalls,
+		}
+		apiMessages = append(apiMessages, assistantMsg)
+		fullContent.WriteString(roundText.String())
+
+		// Execute each tool call and add results.
+		for _, tc := range pendingToolCalls {
+			s.logger.Info("executing tool", "name", tc.Name, "id", tc.ID)
+
+			// Check if tool needs user confirmation.
+			tool := s.tools.Get(tc.Name)
+			if tool != nil && tool.NeedsConfirmation {
+				// Parse arguments for display.
+				var argsMap map[string]interface{}
+				json.Unmarshal([]byte(tc.Arguments), &argsMap)
+
+				pendingID := fmt.Sprintf("%s-%s", tc.ID, tc.Name)
+
+				// Create confirmation channel.
+				confirmCh := make(chan bool, 1)
+				s.pendingMu.Lock()
+				s.pendingConfirms[pendingID] = confirmCh
+				s.pendingMu.Unlock()
+
+				// Send confirm_required event to frontend.
+				confirmData, _ := json.Marshal(PendingConfirmation{
+					PendingID: pendingID,
+					ToolName:  tc.Name,
+					Arguments: argsMap,
+				})
+				cb(StreamEvent{
+					Type:    "confirm_required",
+					Content: string(confirmData),
+				})
+
+				// Wait for user decision (with context cancellation support).
+				var approved bool
+				select {
+				case approved = <-confirmCh:
+				case <-ctx.Done():
+					approved = false
+				}
+
+				// Cleanup.
+				s.pendingMu.Lock()
+				delete(s.pendingConfirms, pendingID)
+				s.pendingMu.Unlock()
+
+				if !approved {
+					resultContent := `{"status": "rejected", "message": "User rejected this action"}`
+					cb(StreamEvent{
+						Type:    "tool_result",
+						Content: resultContent,
+						ToolCall: &ToolCall{
+							ID:   tc.ID,
+							Name: tc.Name,
+						},
+					})
+					apiMessages = append(apiMessages, ToolUseMessage{
+						Role:       "tool",
+						Content:    resultContent,
+						ToolCallID: tc.ID,
+						ToolName:   tc.Name,
+					})
+					continue
+				}
+			}
+
+			result, execErr := s.tools.Execute(ctx, tc.Name, json.RawMessage(tc.Arguments))
+
+			var resultContent string
+			if execErr != nil {
+				resultContent = fmt.Sprintf(`{"error": %q}`, execErr.Error())
+			} else {
+				resultBytes, _ := json.Marshal(result)
+				resultContent = string(resultBytes)
+			}
+
+			// Send tool_result event to frontend.
+			cb(StreamEvent{
+				Type:    "tool_result",
+				Content: resultContent,
+				ToolCall: &ToolCall{
+					ID:   tc.ID,
+					Name: tc.Name,
+				},
+			})
+
+			// Add tool result to API messages for next round.
+			apiMessages = append(apiMessages, ToolUseMessage{
+				Role:       "tool",
+				Content:    resultContent,
+				ToolCallID: tc.ID,
+				ToolName:   tc.Name,
+			})
+		}
+	}
+
+	// Send final done event.
+	cb(StreamEvent{Type: "done"})
+
+	// Save assistant message (text portion).
+	if content := fullContent.String(); content != "" {
+		assistantMsg := Message{ConversationID: conv.ID, Role: "assistant", Content: content}
+		s.db.Create(&assistantMsg)
+	}
+
+	s.db.Model(&conv).UpdateColumn("updated_at", gorm.Expr("CURRENT_TIMESTAMP"))
+	return conv.ID, nil
+}
+
+// buildToolMessages constructs the ToolUseMessage slice from conversation history.
+func (s *Service) buildToolMessages(history []Message, pageContext string) []ToolUseMessage {
+	systemPrompt := `You are Web.Casa AI Assistant, a powerful server management assistant with access to tools.
+You can perform real actions on the server by calling tools. When a user asks you to do something, use the appropriate tool instead of just explaining how.
+
+Capabilities:
+- List and inspect reverse proxy sites (domains)
+- Create new reverse proxy sites
+- Update reverse proxy site configurations (upstream, TLS, WebSocket, compression) via natural language
+- Create deployment projects from Git repositories
+- List, inspect, and deploy projects
+- Read build and runtime logs
+- Suggest environment variables for different frameworks
+- Generate optimized Dockerfiles for any project type
+- Read server files and list directories
+- List Docker containers and read their logs
+- Check system metrics (CPU, memory, disk)
+- Run diagnostic shell commands
+- Trigger system backups
+- Diagnose runtime errors in running projects
+- Review project source code before deployment for security and best practices
+- Suggest rollback strategies based on deployment history and runtime status
+- Summarize monitoring alerts with trend analysis and recommendations
+
+Guidelines:
+- Use tools proactively when the user's intent is clear
+- After using tools, summarize the results concisely
+- For destructive actions, confirm with the user before proceeding
+- Use markdown formatting in your responses
+- Be concise and practical`
+
+	if pageContext != "" {
+		systemPrompt += "\n\nCurrent page context:\n" + pageContext
+	}
+
+	msgs := []ToolUseMessage{{Role: "system", Content: systemPrompt}}
+
+	// Include conversation history (limit to last 20 messages).
+	start := 0
+	if len(history) > 20 {
+		start = len(history) - 20
+	}
+	for _, m := range history[start:] {
+		msgs = append(msgs, ToolUseMessage{Role: m.Role, Content: m.Content})
+	}
+
+	return msgs
+}
+
 // ── Generate Compose ──
 
 // GenerateCompose converts a natural language description to a Docker Compose YAML.
@@ -189,6 +459,50 @@ Rules:
 	return client.ChatStream(ctx, messages, cb)
 }
 
+// ── Generate Dockerfile ──
+
+// GenerateDockerfile converts a natural language description to an optimized Dockerfile.
+func (s *Service) GenerateDockerfile(ctx context.Context, description string, cb StreamCallback) error {
+	client, err := s.getClient()
+	if err != nil {
+		return err
+	}
+
+	messages := []chatMessage{
+		{
+			Role: "system",
+			Content: `You are a Dockerfile expert. Convert the user's project description into an optimized, production-ready Dockerfile.
+Rules:
+- Output ONLY valid Dockerfile syntax, no explanations or markdown fences
+- Use multi-stage builds when appropriate (build stage + runtime stage)
+- Use slim/alpine base images to minimize image size (e.g. node:20-alpine, python:3.12-slim, golang:1.22-alpine)
+- Leverage Docker layer caching: COPY package*.json before COPY . for Node.js, COPY go.mod go.sum before COPY . for Go
+- Run as non-root user in production (add USER directive)
+- Include HEALTHCHECK where appropriate
+- Use ARG/ENV for configurable values
+- Add useful comments explaining important directives
+- Set appropriate EXPOSE ports
+- Use .dockerignore best practices in comments`,
+		},
+		{Role: "user", Content: description},
+	}
+
+	return client.ChatStream(ctx, messages, cb)
+}
+
+// GenerateDockerfileSync runs Dockerfile generation synchronously and returns the full content.
+func (s *Service) GenerateDockerfileSync(ctx context.Context, description string) (string, error) {
+	var result strings.Builder
+	err := s.GenerateDockerfile(ctx, description, func(delta string) error {
+		result.WriteString(delta)
+		return nil
+	})
+	if err != nil {
+		return "", err
+	}
+	return result.String(), nil
+}
+
 // ── Diagnose ──
 
 // Diagnose analyzes error logs and returns diagnosis + fix suggestions.
@@ -213,6 +527,235 @@ func (s *Service) Diagnose(ctx context.Context, req DiagnoseRequest, cb StreamCa
 	}
 
 	return client.ChatStream(ctx, messages, cb)
+}
+
+// DiagnoseSync runs AI diagnosis synchronously and returns the full response text.
+// Used for automated build failure diagnosis (no streaming needed).
+func (s *Service) DiagnoseSync(ctx context.Context, req DiagnoseRequest) (string, error) {
+	var result strings.Builder
+	err := s.Diagnose(ctx, req, func(delta string) error {
+		result.WriteString(delta)
+		return nil
+	})
+	if err != nil {
+		return "", err
+	}
+	return result.String(), nil
+}
+
+// ── Code Review ──
+
+// ReviewCode streams a code review for a project.
+func (s *Service) ReviewCode(ctx context.Context, projectID uint, cb StreamCallback) error {
+	client, err := s.getClient()
+	if err != nil {
+		return err
+	}
+
+	// Get project info and source files
+	proj, err := s.coreAPI.GetProject(projectID)
+	if err != nil {
+		return fmt.Errorf("project not found: %w", err)
+	}
+
+	projectName, _ := proj["name"].(string)
+	framework, _ := proj["framework"].(string)
+
+	// Read key files from project source directory.
+	fileContents := s.readProjectFiles(projectID)
+	if fileContents == "" {
+		return fmt.Errorf("no source files found for project %d", projectID)
+	}
+
+	prompt := fmt.Sprintf("Review the following source code for project %q (framework: %s).\n\nAnalyze for:\n1. Security vulnerabilities\n2. Configuration errors\n3. Performance issues\n4. Best practice violations\n5. Missing error handling\n\nFiles:\n%s", projectName, framework, fileContents)
+
+	messages := []chatMessage{
+		{
+			Role:    "system",
+			Content: "You are a senior code reviewer specializing in security and deployment readiness. Provide a structured review with severity levels (Critical/Warning/Info). Use markdown. Be specific with line references.",
+		},
+		{Role: "user", Content: prompt},
+	}
+
+	return client.ChatStream(ctx, messages, cb)
+}
+
+// ReviewCodeSync runs code review synchronously and returns the full text.
+func (s *Service) ReviewCodeSync(ctx context.Context, projectID uint) (string, error) {
+	var result strings.Builder
+	err := s.ReviewCode(ctx, projectID, func(delta string) error {
+		result.WriteString(delta)
+		return nil
+	})
+	if err != nil {
+		return "", err
+	}
+	return result.String(), nil
+}
+
+// readProjectFiles reads key source files from a project's source directory.
+func (s *Service) readProjectFiles(projectID uint) string {
+	// Determine the source directory via the data dir convention.
+	dataDir, _ := s.coreAPI.GetSetting("data_dir")
+	if dataDir == "" {
+		dataDir = "data/plugins/deploy"
+	}
+	srcDir := fmt.Sprintf("%s/sources/project_%d", dataDir, projectID)
+
+	keyFiles := []string{
+		"Dockerfile", "docker-compose.yml", "docker-compose.yaml",
+		"package.json", "go.mod", "composer.json", "requirements.txt",
+		"next.config.js", "next.config.mjs", "nuxt.config.ts",
+		".env.example", ".env.sample",
+		"main.go", "index.js", "server.js", "app.py", "manage.py",
+	}
+
+	var result strings.Builder
+	for _, name := range keyFiles {
+		path := srcDir + "/" + name
+		data, err := readFileSafe(path, 200) // max 200 lines
+		if err != nil {
+			continue
+		}
+		result.WriteString(fmt.Sprintf("\n--- %s ---\n%s\n", name, data))
+	}
+	return result.String()
+}
+
+// readFileSafe reads up to maxLines lines from a file, or returns error.
+func readFileSafe(path string, maxLines int) (string, error) {
+	f, err := os.Open(path)
+	if err != nil {
+		return "", err
+	}
+	defer f.Close()
+
+	scanner := bufio.NewScanner(f)
+	var lines []string
+	for scanner.Scan() && len(lines) < maxLines {
+		lines = append(lines, scanner.Text())
+	}
+	return strings.Join(lines, "\n"), nil
+}
+
+// ── Rollback Suggestion ──
+
+// SuggestRollbackSync analyzes a project and suggests whether to rollback.
+func (s *Service) SuggestRollbackSync(ctx context.Context, projectID uint) (string, error) {
+	client, err := s.getClient()
+	if err != nil {
+		return "", err
+	}
+
+	// Get project info
+	proj, err := s.coreAPI.GetProject(projectID)
+	if err != nil {
+		return "", fmt.Errorf("project not found: %w", err)
+	}
+
+	projectName, _ := proj["name"].(string)
+	framework, _ := proj["framework"].(string)
+	status, _ := proj["status"].(string)
+
+	// Get recent deployments
+	db := s.coreAPI.GetDB()
+	var deployments []struct {
+		BuildNum  int    `json:"build_num"`
+		Status    string `json:"status"`
+		Duration  int    `json:"duration"`
+		GitCommit string `json:"git_commit"`
+		CreatedAt string `json:"created_at"`
+	}
+	db.Table("plugin_deploy_deployments").
+		Where("project_id = ?", projectID).
+		Order("build_num DESC").
+		Limit(5).
+		Find(&deployments)
+
+	deploymentsJSON, _ := json.Marshal(deployments)
+
+	// Get runtime logs
+	runtimeLog, _ := s.coreAPI.GetRuntimeLog(projectID, 50)
+
+	prompt := fmt.Sprintf(`Analyze this project and advise on rollback:
+
+Project: %s (framework: %s, current status: %s)
+
+Recent 5 deployments:
+%s
+
+Recent runtime logs:
+%s
+
+Provide:
+1. Should the project be rolled back? (Yes/No)
+2. If yes, which build number to roll back to and why
+3. Brief risk assessment`, projectName, framework, status, string(deploymentsJSON), runtimeLog)
+
+	messages := []chatMessage{
+		{
+			Role:    "system",
+			Content: "You are a deployment expert. Analyze the project's deployment history and runtime status to make a rollback recommendation. Be concise and actionable. Use markdown.",
+		},
+		{Role: "user", Content: prompt},
+	}
+
+	var result strings.Builder
+	err = client.ChatStream(ctx, messages, func(delta string) error {
+		result.WriteString(delta)
+		return nil
+	})
+	if err != nil {
+		return "", err
+	}
+	return result.String(), nil
+}
+
+// ── Alert Summary ──
+
+// SummarizeAlertsSync generates an AI summary of recent monitoring alerts.
+func (s *Service) SummarizeAlertsSync(ctx context.Context) (string, error) {
+	client, err := s.getClient()
+	if err != nil {
+		return "", err
+	}
+
+	alerts, err := s.coreAPI.GetRecentAlerts()
+	if err != nil {
+		return "", fmt.Errorf("get alerts: %w", err)
+	}
+	if len(alerts) == 0 {
+		return "No recent alerts found. The system appears to be healthy.", nil
+	}
+
+	alertsJSON, _ := json.Marshal(alerts)
+
+	prompt := fmt.Sprintf(`Analyze these recent monitoring alerts and provide:
+1. Summary of alert trends (what's happening)
+2. Likely root causes
+3. Recommended actions to resolve the issues
+4. Priority assessment
+
+Alerts (most recent first):
+%s`, string(alertsJSON))
+
+	messages := []chatMessage{
+		{
+			Role:    "system",
+			Content: "You are a system monitoring expert. Analyze alert data to identify patterns, root causes, and provide actionable recommendations. Use markdown.",
+		},
+		{Role: "user", Content: prompt},
+	}
+
+	var result strings.Builder
+	err = client.ChatStream(ctx, messages, func(delta string) error {
+		result.WriteString(delta)
+		return nil
+	})
+	if err != nil {
+		return "", err
+	}
+	return result.String(), nil
 }
 
 // ── Internal helpers ──
