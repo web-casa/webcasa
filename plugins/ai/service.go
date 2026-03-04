@@ -71,11 +71,16 @@ func (s *Service) GetConfig() AIConfig {
 	if apiFormat == "" {
 		apiFormat = "openai-chat"
 	}
+	encEmbKey := s.configStore.Get("embedding_api_key")
+	embAPIKey, _ := Decrypt(encEmbKey, s.jwtSecret)
 	return AIConfig{
-		BaseURL:   s.configStore.Get("base_url"),
-		APIKey:    MaskAPIKey(apiKey),
-		Model:     s.configStore.Get("model"),
-		APIFormat: apiFormat,
+		BaseURL:          s.configStore.Get("base_url"),
+		APIKey:           MaskAPIKey(apiKey),
+		Model:            s.configStore.Get("model"),
+		APIFormat:        apiFormat,
+		EmbeddingModel:   s.configStore.Get("embedding_model"),
+		EmbeddingBaseURL: s.configStore.Get("embedding_base_url"),
+		EmbeddingAPIKey:  MaskAPIKey(embAPIKey),
 	}
 }
 
@@ -98,6 +103,23 @@ func (s *Service) UpdateConfig(cfg AIConfig) error {
 	if cfg.APIFormat != "" {
 		s.configStore.Set("api_format", cfg.APIFormat)
 	}
+	// Save embedding model (empty string disables embedding).
+	s.configStore.Set("embedding_model", cfg.EmbeddingModel)
+	// Save separate embedding API credentials.
+	if cfg.EmbeddingBaseURL != "" {
+		s.configStore.Set("embedding_base_url", strings.TrimRight(cfg.EmbeddingBaseURL, "/"))
+	} else {
+		s.configStore.Set("embedding_base_url", "")
+	}
+	if cfg.EmbeddingAPIKey != "" && !strings.Contains(cfg.EmbeddingAPIKey, "****") {
+		enc, err := Encrypt(cfg.EmbeddingAPIKey, s.jwtSecret)
+		if err != nil {
+			return fmt.Errorf("encrypt embedding api key: %w", err)
+		}
+		s.configStore.Set("embedding_api_key", enc)
+	}
+	// Re-initialize the embedding client with the new config.
+	s.initEmbeddingClient()
 	return nil
 }
 
@@ -434,40 +456,7 @@ func (s *Service) ChatWithTools(ctx context.Context, req ChatRequest, userID uin
 
 // buildToolMessages constructs the ToolUseMessage slice from conversation history.
 func (s *Service) buildToolMessages(history []Message, pageContext string) []ToolUseMessage {
-	systemPrompt := `You are Web.Casa AI Assistant, a powerful server management assistant with access to tools.
-You can perform real actions on the server by calling tools. When a user asks you to do something, use the appropriate tool instead of just explaining how.
-
-Capabilities:
-- List and inspect reverse proxy sites (domains)
-- Create new reverse proxy sites
-- Update reverse proxy site configurations (upstream, TLS, WebSocket, compression) via natural language
-- Create deployment projects from Git repositories
-- List, inspect, and deploy projects
-- Read build and runtime logs
-- Suggest environment variables for different frameworks
-- Generate optimized Dockerfiles for any project type
-- Read server files and list directories
-- List Docker containers and read their logs
-- Check system metrics (CPU, memory, disk)
-- Run diagnostic shell commands
-- Trigger system backups
-- Diagnose runtime errors in running projects
-- Review project source code before deployment for security and best practices
-- Suggest rollback strategies based on deployment history and runtime status
-- Summarize monitoring alerts with trend analysis and recommendations
-- List, create, and manage database instances (MySQL, PostgreSQL, MariaDB, Redis)
-- Create databases and users within instances, execute read-only SQL queries
-- List Docker Compose stacks, start/stop/restart containers
-- Run new Docker containers, pull images, get container resource stats
-- Search and install applications from the app store
-- Write, delete, and rename files on the server
-
-Guidelines:
-- Use tools proactively when the user's intent is clear
-- After using tools, summarize the results concisely
-- For destructive actions, confirm with the user before proceeding
-- Use markdown formatting in your responses
-- Be concise and practical`
+	systemPrompt := systemPromptToolUse
 
 	// Inject relevant memories from previous interactions.
 	if s.configStore.Get("memory_enabled") != "false" {
@@ -849,15 +838,7 @@ func (s *Service) getClient() (*LLMClient, error) {
 }
 
 func (s *Service) buildMessages(history []Message, pageContext string) []chatMessage {
-	systemPrompt := `You are Web.Casa AI Assistant, a helpful server management assistant.
-You help users with:
-- Docker container and Compose stack management
-- Project deployment and configuration
-- Caddy reverse proxy setup
-- Error diagnosis and troubleshooting
-- General server administration
-
-Be concise, practical, and provide code snippets when helpful. Use markdown formatting.`
+	systemPrompt := systemPromptBasic
 
 	// Inject relevant memories from previous interactions.
 	if s.configStore.Get("memory_enabled") != "false" {
@@ -894,28 +875,35 @@ Be concise, practical, and provide code snippets when helpful. Use markdown form
 }
 
 // initEmbeddingClient initializes the embedding client from saved config.
+// Uses separate embedding_base_url / embedding_api_key when provided,
+// otherwise falls back to the main chat base_url / api_key.
 func (s *Service) initEmbeddingClient() {
-	baseURL := s.configStore.Get("base_url")
-	encKey := s.configStore.Get("api_key")
-	apiFormat := s.configStore.Get("api_format")
-
-	if baseURL == "" || encKey == "" {
+	embModel := s.configStore.Get("embedding_model")
+	if embModel == "" {
+		// No embedding model configured — disable vector search, use keyword fallback.
+		s.memory.SetEmbeddingClient(nil)
 		return
 	}
 
-	// Anthropic does not support /v1/embeddings.
-	if apiFormat == "anthropic-messages" {
+	// Prefer dedicated embedding credentials if set.
+	baseURL := s.configStore.Get("embedding_base_url")
+	encKey := s.configStore.Get("embedding_api_key")
+
+	// Fall back to main chat credentials.
+	if baseURL == "" {
+		baseURL = s.configStore.Get("base_url")
+	}
+	if encKey == "" {
+		encKey = s.configStore.Get("api_key")
+	}
+
+	if baseURL == "" || encKey == "" {
 		return
 	}
 
 	apiKey, err := Decrypt(encKey, s.jwtSecret)
 	if err != nil {
 		return
-	}
-
-	embModel := s.configStore.Get("embedding_model")
-	if embModel == "" {
-		embModel = "text-embedding-3-small"
 	}
 
 	s.memory.SetEmbeddingClient(NewEmbeddingClient(baseURL, apiKey, embModel))

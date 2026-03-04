@@ -50,8 +50,12 @@ type DiagnoseRequest struct {
 
 // AIConfig holds the AI provider configuration.
 type AIConfig struct {
-	BaseURL   string `json:"base_url"`
-	APIKey    string `json:"api_key"` // masked in response
-	Model     string `json:"model"`
-	APIFormat string `json:"api_format"` // openai-chat | anthropic-messages | google-generativeai
+	BaseURL        string `json:"base_url"`
+	APIKey         string `json:"api_key"`         // masked in response
+	Model          string `json:"model"`
+	APIFormat      string `json:"api_format"`       // openai-chat | anthropic-messages | google-generativeai
+	EmbeddingModel string `json:"embedding_model"`  // model for /v1/embeddings (empty = disabled)
+	// Separate embedding API credentials (optional — falls back to main base_url/api_key if empty).
+	EmbeddingBaseURL string `json:"embedding_base_url,omitempty"`
+	EmbeddingAPIKey  string `json:"embedding_api_key,omitempty"` // masked in response
 }
