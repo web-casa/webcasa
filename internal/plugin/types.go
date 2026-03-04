@@ -84,6 +84,30 @@ type CoreAPI interface {
 	TriggerBackup() error
 	UpdateHost(id uint, req UpdateHostRequest) error
 	GetRecentAlerts() ([]map[string]interface{}, error)
+
+	// Batch 3: Database management
+	DatabaseListInstances() ([]map[string]interface{}, error)
+	DatabaseCreateInstance(req DatabaseCreateInstanceRequest) (uint, error)
+	DatabaseCreateDatabase(instanceID uint, name, charset string) error
+	DatabaseCreateUser(instanceID uint, username, password string, databases []string) error
+	DatabaseExecuteQuery(instanceID uint, database, query string) (map[string]interface{}, error)
+
+	// Batch 3: Docker extended
+	DockerListStacks() ([]map[string]interface{}, error)
+	DockerManageContainer(containerID, action string) error
+	DockerRunContainer(req DockerRunContainerRequest) (string, error)
+	DockerPullImage(image string) error
+	DockerGetContainerStats(containerID string) (map[string]interface{}, error)
+
+	// Batch 3: App Store
+	AppStoreSearchApps(query string) ([]map[string]interface{}, error)
+	AppStoreInstallApp(appID string, config map[string]interface{}) (uint, error)
+	AppStoreListInstalled() ([]map[string]interface{}, error)
+
+	// Batch 3: File write operations
+	FileWrite(path, content string) error
+	FileDelete(path string) error
+	FileRename(oldPath, newPath string) error
 }
 
 // UpdateHostRequest describes fields that can be changed on an existing host via AI.
@@ -148,4 +172,24 @@ type FrontendRoute struct {
 // frontend routes and sidebar menu items.
 type FrontendProvider interface {
 	FrontendManifest() FrontendManifest
+}
+
+// DatabaseCreateInstanceRequest holds parameters for creating a database instance.
+type DatabaseCreateInstanceRequest struct {
+	Engine       string `json:"engine"`        // mysql, postgres, mariadb, redis
+	Version      string `json:"version"`       // e.g. "8.0", "16", "7.2"
+	Name         string `json:"name"`          // display name
+	Port         int    `json:"port"`          // host port
+	RootPassword string `json:"root_password"` // root/admin password
+	MemoryLimit  string `json:"memory_limit"`  // e.g. "512m", "1g"
+}
+
+// DockerRunContainerRequest holds parameters for running a standalone container.
+type DockerRunContainerRequest struct {
+	Image         string            `json:"image"`          // e.g. "nginx:latest"
+	Name          string            `json:"name"`           // container name
+	Ports         []string          `json:"ports"`          // e.g. ["8080:80"]
+	Env           map[string]string `json:"env"`            // environment variables
+	Volumes       []string          `json:"volumes"`        // e.g. ["/data:/var/lib/data"]
+	RestartPolicy string            `json:"restart_policy"` // no, always, unless-stopped, on-failure
 }

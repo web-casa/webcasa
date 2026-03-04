@@ -328,6 +328,51 @@ func (h *Handler) Confirm(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"status": "ok"})
 }
 
+// ──────────────────────────────────────────────
+// Memory endpoints
+// ──────────────────────────────────────────────
+
+// ListMemories returns paginated AI memories.
+func (h *Handler) ListMemories(c *gin.Context) {
+	page, _ := strconv.Atoi(c.DefaultQuery("page", "1"))
+	pageSize, _ := strconv.Atoi(c.DefaultQuery("page_size", "20"))
+	category := c.Query("category")
+
+	memories, total, err := h.svc.memory.ListMemories(page, pageSize, category)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{
+		"memories": memories,
+		"total":    total,
+		"page":     page,
+	})
+}
+
+// DeleteMemory removes a single memory by ID.
+func (h *Handler) DeleteMemory(c *gin.Context) {
+	id, err := strconv.ParseUint(c.Param("id"), 10, 64)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid id"})
+		return
+	}
+	if err := h.svc.memory.DeleteMemory(uint(id)); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"status": "ok"})
+}
+
+// ClearMemories removes all AI memories.
+func (h *Handler) ClearMemories(c *gin.Context) {
+	if err := h.svc.memory.ClearAll(); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"status": "ok"})
+}
+
 // Diagnose analyses error logs and streams diagnosis (SSE).
 func (h *Handler) Diagnose(c *gin.Context) {
 	var req DiagnoseRequest

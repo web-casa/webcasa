@@ -500,6 +500,15 @@ func RegisterBuiltinTools(r *ToolRegistry) {
 		},
 	})
 
+	// Batch 3: Database, Docker, AppStore, File tools
+	registerDatabaseTools(r)
+	registerDockerExtraTools(r)
+	registerAppStoreTools(r)
+	registerFileWriteTools(r)
+
+	// Batch 5: Memory tools
+	registerMemoryTools(r)
+
 	// Batch 4 tools
 	registerBatch4Tools(r)
 
@@ -944,6 +953,712 @@ func registerBatch4Tools(r *ToolRegistry) {
 				return nil, err
 			}
 			return map[string]interface{}{"summary": summary}, nil
+		},
+	})
+}
+
+// ──────────────────────────────────────────────
+// Batch 3: Database tools
+// ──────────────────────────────────────────────
+
+func registerDatabaseTools(r *ToolRegistry) {
+	r.Register(&Tool{
+		Name:        "database_list_instances",
+		Description: "List all database instances (MySQL, PostgreSQL, MariaDB, Redis) managed by the panel, including their status and connection info.",
+		Parameters: jsonSchema(map[string]interface{}{
+			"type":       "object",
+			"properties": map[string]interface{}{},
+		}),
+		ReadOnly: true,
+		Handler: func(ctx context.Context, args json.RawMessage) (interface{}, error) {
+			return r.coreAPI.DatabaseListInstances()
+		},
+	})
+
+	r.Register(&Tool{
+		Name:        "database_create_instance",
+		Description: "Create a new database instance (MySQL, PostgreSQL, MariaDB, or Redis) running in a Docker container.",
+		Parameters: jsonSchema(map[string]interface{}{
+			"type": "object",
+			"properties": map[string]interface{}{
+				"engine": map[string]interface{}{
+					"type":        "string",
+					"description": "Database engine: mysql, postgres, mariadb, redis",
+					"enum":        []string{"mysql", "postgres", "mariadb", "redis"},
+				},
+				"version": map[string]interface{}{
+					"type":        "string",
+					"description": "Engine version, e.g. '8.0', '16', '7.2'",
+				},
+				"name": map[string]interface{}{
+					"type":        "string",
+					"description": "Display name for this instance",
+				},
+				"port": map[string]interface{}{
+					"type":        "number",
+					"description": "Host port to bind (e.g. 3306, 5432, 6379)",
+				},
+				"root_password": map[string]interface{}{
+					"type":        "string",
+					"description": "Root/admin password for the database",
+				},
+				"memory_limit": map[string]interface{}{
+					"type":        "string",
+					"description": "Memory limit, e.g. '512m', '1g'",
+				},
+			},
+			"required": []string{"engine", "name", "root_password"},
+		}),
+		ReadOnly:          false,
+		NeedsConfirmation: true,
+		AdminOnly:         true,
+		Handler: func(ctx context.Context, args json.RawMessage) (interface{}, error) {
+			var p pluginpkg.DatabaseCreateInstanceRequest
+			if err := json.Unmarshal(args, &p); err != nil {
+				return nil, fmt.Errorf("parse args: %w", err)
+			}
+			id, err := r.coreAPI.DatabaseCreateInstance(p)
+			if err != nil {
+				return nil, err
+			}
+			return map[string]interface{}{
+				"status":      "instance_creation_triggered",
+				"instance_id": id,
+			}, nil
+		},
+	})
+
+	r.Register(&Tool{
+		Name:        "database_create_database",
+		Description: "Create a new logical database within an existing database instance.",
+		Parameters: jsonSchema(map[string]interface{}{
+			"type": "object",
+			"properties": map[string]interface{}{
+				"instance_id": map[string]interface{}{
+					"type":        "number",
+					"description": "The database instance ID",
+				},
+				"name": map[string]interface{}{
+					"type":        "string",
+					"description": "Database name to create",
+				},
+				"charset": map[string]interface{}{
+					"type":        "string",
+					"description": "Character set (default: utf8mb4 for MySQL, utf8 for PostgreSQL)",
+				},
+			},
+			"required": []string{"instance_id", "name"},
+		}),
+		ReadOnly:          false,
+		NeedsConfirmation: true,
+		AdminOnly:         true,
+		Handler: func(ctx context.Context, args json.RawMessage) (interface{}, error) {
+			var p struct {
+				InstanceID uint   `json:"instance_id"`
+				Name       string `json:"name"`
+				Charset    string `json:"charset"`
+			}
+			if err := json.Unmarshal(args, &p); err != nil {
+				return nil, fmt.Errorf("parse args: %w", err)
+			}
+			if err := r.coreAPI.DatabaseCreateDatabase(p.InstanceID, p.Name, p.Charset); err != nil {
+				return nil, err
+			}
+			return map[string]interface{}{"status": "created", "database": p.Name}, nil
+		},
+	})
+
+	r.Register(&Tool{
+		Name:        "database_create_user",
+		Description: "Create a database user and grant access to specified databases.",
+		Parameters: jsonSchema(map[string]interface{}{
+			"type": "object",
+			"properties": map[string]interface{}{
+				"instance_id": map[string]interface{}{
+					"type":        "number",
+					"description": "The database instance ID",
+				},
+				"username": map[string]interface{}{
+					"type":        "string",
+					"description": "Username to create",
+				},
+				"password": map[string]interface{}{
+					"type":        "string",
+					"description": "Password for the new user",
+				},
+				"databases": map[string]interface{}{
+					"type":        "array",
+					"items":       map[string]interface{}{"type": "string"},
+					"description": "List of database names to grant access to",
+				},
+			},
+			"required": []string{"instance_id", "username", "password"},
+		}),
+		ReadOnly:          false,
+		NeedsConfirmation: true,
+		AdminOnly:         true,
+		Handler: func(ctx context.Context, args json.RawMessage) (interface{}, error) {
+			var p struct {
+				InstanceID uint     `json:"instance_id"`
+				Username   string   `json:"username"`
+				Password   string   `json:"password"`
+				Databases  []string `json:"databases"`
+			}
+			if err := json.Unmarshal(args, &p); err != nil {
+				return nil, fmt.Errorf("parse args: %w", err)
+			}
+			if err := r.coreAPI.DatabaseCreateUser(p.InstanceID, p.Username, p.Password, p.Databases); err != nil {
+				return nil, err
+			}
+			return map[string]interface{}{"status": "created", "username": p.Username}, nil
+		},
+	})
+
+	r.Register(&Tool{
+		Name:        "database_execute_query",
+		Description: "Execute a read-only SQL query (SELECT, SHOW, DESCRIBE, EXPLAIN) on a database instance. Write operations are blocked for safety.",
+		Parameters: jsonSchema(map[string]interface{}{
+			"type": "object",
+			"properties": map[string]interface{}{
+				"instance_id": map[string]interface{}{
+					"type":        "number",
+					"description": "The database instance ID",
+				},
+				"database": map[string]interface{}{
+					"type":        "string",
+					"description": "Database name to query (optional for SHOW commands)",
+				},
+				"query": map[string]interface{}{
+					"type":        "string",
+					"description": "SQL query to execute (read-only: SELECT, SHOW, DESCRIBE, EXPLAIN)",
+				},
+			},
+			"required": []string{"instance_id", "query"},
+		}),
+		ReadOnly: true,
+		Handler: func(ctx context.Context, args json.RawMessage) (interface{}, error) {
+			var p struct {
+				InstanceID uint   `json:"instance_id"`
+				Database   string `json:"database"`
+				Query      string `json:"query"`
+			}
+			if err := json.Unmarshal(args, &p); err != nil {
+				return nil, fmt.Errorf("parse args: %w", err)
+			}
+			return r.coreAPI.DatabaseExecuteQuery(p.InstanceID, p.Database, p.Query)
+		},
+	})
+}
+
+// ──────────────────────────────────────────────
+// Batch 3: Docker extra tools
+// ──────────────────────────────────────────────
+
+func registerDockerExtraTools(r *ToolRegistry) {
+	r.Register(&Tool{
+		Name:        "docker_list_stacks",
+		Description: "List all Docker Compose stacks managed by the panel, including their status.",
+		Parameters: jsonSchema(map[string]interface{}{
+			"type":       "object",
+			"properties": map[string]interface{}{},
+		}),
+		ReadOnly: true,
+		Handler: func(ctx context.Context, args json.RawMessage) (interface{}, error) {
+			return r.coreAPI.DockerListStacks()
+		},
+	})
+
+	r.Register(&Tool{
+		Name:        "docker_manage_container",
+		Description: "Start, stop, or restart a Docker container by its ID or name.",
+		Parameters: jsonSchema(map[string]interface{}{
+			"type": "object",
+			"properties": map[string]interface{}{
+				"container_id": map[string]interface{}{
+					"type":        "string",
+					"description": "The container ID or name",
+				},
+				"action": map[string]interface{}{
+					"type":        "string",
+					"description": "Action to perform: start, stop, restart",
+					"enum":        []string{"start", "stop", "restart"},
+				},
+			},
+			"required": []string{"container_id", "action"},
+		}),
+		ReadOnly:          false,
+		NeedsConfirmation: true,
+		AdminOnly:         true,
+		Handler: func(ctx context.Context, args json.RawMessage) (interface{}, error) {
+			var p struct {
+				ContainerID string `json:"container_id"`
+				Action      string `json:"action"`
+			}
+			if err := json.Unmarshal(args, &p); err != nil {
+				return nil, fmt.Errorf("parse args: %w", err)
+			}
+			if err := r.coreAPI.DockerManageContainer(p.ContainerID, p.Action); err != nil {
+				return nil, err
+			}
+			return map[string]interface{}{
+				"status":       p.Action + "ed",
+				"container_id": p.ContainerID,
+			}, nil
+		},
+	})
+
+	r.Register(&Tool{
+		Name:        "docker_run_container",
+		Description: "Create and run a new Docker container from an image. Supports port mapping, environment variables, volumes, and restart policy.",
+		Parameters: jsonSchema(map[string]interface{}{
+			"type": "object",
+			"properties": map[string]interface{}{
+				"image": map[string]interface{}{
+					"type":        "string",
+					"description": "Docker image, e.g. 'nginx:latest', 'redis:7-alpine'",
+				},
+				"name": map[string]interface{}{
+					"type":        "string",
+					"description": "Container name",
+				},
+				"ports": map[string]interface{}{
+					"type":        "array",
+					"items":       map[string]interface{}{"type": "string"},
+					"description": "Port mappings, e.g. ['8080:80', '443:443']",
+				},
+				"env": map[string]interface{}{
+					"type":        "object",
+					"description": "Environment variables as key-value pairs",
+				},
+				"volumes": map[string]interface{}{
+					"type":        "array",
+					"items":       map[string]interface{}{"type": "string"},
+					"description": "Volume mounts, e.g. ['/data:/var/lib/data']",
+				},
+				"restart_policy": map[string]interface{}{
+					"type":        "string",
+					"description": "Restart policy: no, always, unless-stopped, on-failure",
+					"enum":        []string{"no", "always", "unless-stopped", "on-failure"},
+				},
+			},
+			"required": []string{"image"},
+		}),
+		ReadOnly:          false,
+		NeedsConfirmation: true,
+		AdminOnly:         true,
+		Handler: func(ctx context.Context, args json.RawMessage) (interface{}, error) {
+			var p pluginpkg.DockerRunContainerRequest
+			if err := json.Unmarshal(args, &p); err != nil {
+				return nil, fmt.Errorf("parse args: %w", err)
+			}
+			containerID, err := r.coreAPI.DockerRunContainer(p)
+			if err != nil {
+				return nil, err
+			}
+			return map[string]interface{}{
+				"status":       "running",
+				"container_id": containerID,
+			}, nil
+		},
+	})
+
+	r.Register(&Tool{
+		Name:        "docker_pull_image",
+		Description: "Pull a Docker image from a registry. Use this before running a container if the image is not available locally.",
+		Parameters: jsonSchema(map[string]interface{}{
+			"type": "object",
+			"properties": map[string]interface{}{
+				"image": map[string]interface{}{
+					"type":        "string",
+					"description": "Image name with optional tag, e.g. 'nginx:latest', 'postgres:16'",
+				},
+			},
+			"required": []string{"image"},
+		}),
+		ReadOnly:          false,
+		NeedsConfirmation: true,
+		AdminOnly:         true,
+		Handler: func(ctx context.Context, args json.RawMessage) (interface{}, error) {
+			var p struct {
+				Image string `json:"image"`
+			}
+			if err := json.Unmarshal(args, &p); err != nil {
+				return nil, fmt.Errorf("parse args: %w", err)
+			}
+			if err := r.coreAPI.DockerPullImage(p.Image); err != nil {
+				return nil, err
+			}
+			return map[string]interface{}{"status": "pulled", "image": p.Image}, nil
+		},
+	})
+
+	r.Register(&Tool{
+		Name:        "docker_get_container_stats",
+		Description: "Get real-time CPU, memory, network, and disk I/O statistics for a Docker container.",
+		Parameters: jsonSchema(map[string]interface{}{
+			"type": "object",
+			"properties": map[string]interface{}{
+				"container_id": map[string]interface{}{
+					"type":        "string",
+					"description": "The container ID or name",
+				},
+			},
+			"required": []string{"container_id"},
+		}),
+		ReadOnly: true,
+		Handler: func(ctx context.Context, args json.RawMessage) (interface{}, error) {
+			var p struct {
+				ContainerID string `json:"container_id"`
+			}
+			if err := json.Unmarshal(args, &p); err != nil {
+				return nil, fmt.Errorf("parse args: %w", err)
+			}
+			return r.coreAPI.DockerGetContainerStats(p.ContainerID)
+		},
+	})
+}
+
+// ──────────────────────────────────────────────
+// Batch 3: App Store tools
+// ──────────────────────────────────────────────
+
+func registerAppStoreTools(r *ToolRegistry) {
+	r.Register(&Tool{
+		Name:        "appstore_search_apps",
+		Description: "Search the app store for available applications by name or description.",
+		Parameters: jsonSchema(map[string]interface{}{
+			"type": "object",
+			"properties": map[string]interface{}{
+				"query": map[string]interface{}{
+					"type":        "string",
+					"description": "Search query (app name or keyword)",
+				},
+			},
+			"required": []string{"query"},
+		}),
+		ReadOnly: true,
+		Handler: func(ctx context.Context, args json.RawMessage) (interface{}, error) {
+			var p struct {
+				Query string `json:"query"`
+			}
+			if err := json.Unmarshal(args, &p); err != nil {
+				return nil, fmt.Errorf("parse args: %w", err)
+			}
+			return r.coreAPI.AppStoreSearchApps(p.Query)
+		},
+	})
+
+	r.Register(&Tool{
+		Name:        "appstore_install_app",
+		Description: "Install an application from the app store. The installation runs asynchronously via Docker.",
+		Parameters: jsonSchema(map[string]interface{}{
+			"type": "object",
+			"properties": map[string]interface{}{
+				"app_id": map[string]interface{}{
+					"type":        "string",
+					"description": "The app ID to install",
+				},
+				"config": map[string]interface{}{
+					"type":        "object",
+					"description": "Configuration parameters for the app (varies per app)",
+				},
+			},
+			"required": []string{"app_id"},
+		}),
+		ReadOnly:          false,
+		NeedsConfirmation: true,
+		AdminOnly:         true,
+		Handler: func(ctx context.Context, args json.RawMessage) (interface{}, error) {
+			var p struct {
+				AppID  string                 `json:"app_id"`
+				Config map[string]interface{} `json:"config"`
+			}
+			if err := json.Unmarshal(args, &p); err != nil {
+				return nil, fmt.Errorf("parse args: %w", err)
+			}
+			id, err := r.coreAPI.AppStoreInstallApp(p.AppID, p.Config)
+			if err != nil {
+				return nil, err
+			}
+			return map[string]interface{}{
+				"status":       "install_triggered",
+				"installed_id": id,
+			}, nil
+		},
+	})
+
+	r.Register(&Tool{
+		Name:        "appstore_list_installed",
+		Description: "List all applications installed from the app store with their status.",
+		Parameters: jsonSchema(map[string]interface{}{
+			"type":       "object",
+			"properties": map[string]interface{}{},
+		}),
+		ReadOnly: true,
+		Handler: func(ctx context.Context, args json.RawMessage) (interface{}, error) {
+			return r.coreAPI.AppStoreListInstalled()
+		},
+	})
+}
+
+// ──────────────────────────────────────────────
+// Batch 3: File write tools
+// ──────────────────────────────────────────────
+
+func registerFileWriteTools(r *ToolRegistry) {
+	r.Register(&Tool{
+		Name:        "write_file",
+		Description: "Create or overwrite a file on the server. Restricted to safe directories. Max file size: 1MB.",
+		Parameters: jsonSchema(map[string]interface{}{
+			"type": "object",
+			"properties": map[string]interface{}{
+				"path": map[string]interface{}{
+					"type":        "string",
+					"description": "Absolute file path to write",
+				},
+				"content": map[string]interface{}{
+					"type":        "string",
+					"description": "File content to write",
+				},
+			},
+			"required": []string{"path", "content"},
+		}),
+		ReadOnly:          false,
+		NeedsConfirmation: true,
+		AdminOnly:         true,
+		Handler: func(ctx context.Context, args json.RawMessage) (interface{}, error) {
+			var p struct {
+				Path    string `json:"path"`
+				Content string `json:"content"`
+			}
+			if err := json.Unmarshal(args, &p); err != nil {
+				return nil, fmt.Errorf("parse args: %w", err)
+			}
+			if err := r.coreAPI.FileWrite(p.Path, p.Content); err != nil {
+				return nil, err
+			}
+			return map[string]interface{}{"status": "written", "path": p.Path, "size": len(p.Content)}, nil
+		},
+	})
+
+	r.Register(&Tool{
+		Name:        "delete_file",
+		Description: "Delete a file or directory on the server. Restricted to safe directories. Use with caution.",
+		Parameters: jsonSchema(map[string]interface{}{
+			"type": "object",
+			"properties": map[string]interface{}{
+				"path": map[string]interface{}{
+					"type":        "string",
+					"description": "Absolute path to delete",
+				},
+			},
+			"required": []string{"path"},
+		}),
+		ReadOnly:          false,
+		NeedsConfirmation: true,
+		AdminOnly:         true,
+		Handler: func(ctx context.Context, args json.RawMessage) (interface{}, error) {
+			var p struct {
+				Path string `json:"path"`
+			}
+			if err := json.Unmarshal(args, &p); err != nil {
+				return nil, fmt.Errorf("parse args: %w", err)
+			}
+			if err := r.coreAPI.FileDelete(p.Path); err != nil {
+				return nil, err
+			}
+			return map[string]interface{}{"status": "deleted", "path": p.Path}, nil
+		},
+	})
+
+	r.Register(&Tool{
+		Name:        "rename_file",
+		Description: "Rename or move a file/directory on the server. Both source and destination must be in safe directories.",
+		Parameters: jsonSchema(map[string]interface{}{
+			"type": "object",
+			"properties": map[string]interface{}{
+				"old_path": map[string]interface{}{
+					"type":        "string",
+					"description": "Current absolute path",
+				},
+				"new_path": map[string]interface{}{
+					"type":        "string",
+					"description": "New absolute path",
+				},
+			},
+			"required": []string{"old_path", "new_path"},
+		}),
+		ReadOnly:          false,
+		NeedsConfirmation: true,
+		AdminOnly:         true,
+		Handler: func(ctx context.Context, args json.RawMessage) (interface{}, error) {
+			var p struct {
+				OldPath string `json:"old_path"`
+				NewPath string `json:"new_path"`
+			}
+			if err := json.Unmarshal(args, &p); err != nil {
+				return nil, fmt.Errorf("parse args: %w", err)
+			}
+			if err := r.coreAPI.FileRename(p.OldPath, p.NewPath); err != nil {
+				return nil, err
+			}
+			return map[string]interface{}{"status": "renamed", "old_path": p.OldPath, "new_path": p.NewPath}, nil
+		},
+	})
+}
+
+// ──────────────────────────────────────────────
+// Batch 5: Memory tools
+// ──────────────────────────────────────────────
+
+func registerMemoryTools(r *ToolRegistry) {
+	r.Register(&Tool{
+		Name:        "save_memory",
+		Description: "Save a fact or piece of information to persistent memory for future conversations. Use this to remember server configurations, troubleshooting results, user preferences, and deployment details.",
+		Parameters: jsonSchema(map[string]interface{}{
+			"type": "object",
+			"properties": map[string]interface{}{
+				"content": map[string]interface{}{
+					"type":        "string",
+					"description": "The fact or information to remember",
+				},
+				"category": map[string]interface{}{
+					"type":        "string",
+					"description": "Category: server_config, troubleshooting, user_preference, deployment, general",
+					"enum":        []string{"server_config", "troubleshooting", "user_preference", "deployment", "general"},
+				},
+				"importance": map[string]interface{}{
+					"type":        "number",
+					"description": "Importance score from 0.0 to 1.0 (default: 0.5)",
+				},
+			},
+			"required": []string{"content"},
+		}),
+		ReadOnly: false,
+		Handler: func(ctx context.Context, args json.RawMessage) (interface{}, error) {
+			var p struct {
+				Content    string  `json:"content"`
+				Category   string  `json:"category"`
+				Importance float32 `json:"importance"`
+			}
+			if err := json.Unmarshal(args, &p); err != nil {
+				return nil, fmt.Errorf("parse args: %w", err)
+			}
+			if p.Importance == 0 {
+				p.Importance = 0.5
+			}
+			mem, err := r.svc.memory.SaveMemory(p.Content, p.Category, p.Importance, nil)
+			if err != nil {
+				return nil, err
+			}
+			return map[string]interface{}{
+				"status":   "saved",
+				"id":       mem.ID,
+				"category": mem.Category,
+			}, nil
+		},
+	})
+
+	r.Register(&Tool{
+		Name:        "search_memory",
+		Description: "Search persistent memory for relevant facts from previous conversations. Use this to recall server configurations, past troubleshooting, user preferences, etc.",
+		Parameters: jsonSchema(map[string]interface{}{
+			"type": "object",
+			"properties": map[string]interface{}{
+				"query": map[string]interface{}{
+					"type":        "string",
+					"description": "Search query describing what to look for",
+				},
+				"limit": map[string]interface{}{
+					"type":        "number",
+					"description": "Maximum number of results (default: 8)",
+				},
+			},
+			"required": []string{"query"},
+		}),
+		ReadOnly: true,
+		Handler: func(ctx context.Context, args json.RawMessage) (interface{}, error) {
+			var p struct {
+				Query string `json:"query"`
+				Limit int    `json:"limit"`
+			}
+			if err := json.Unmarshal(args, &p); err != nil {
+				return nil, fmt.Errorf("parse args: %w", err)
+			}
+			memories, err := r.svc.memory.SearchMemories(p.Query, p.Limit)
+			if err != nil {
+				return nil, err
+			}
+			return map[string]interface{}{
+				"count":    len(memories),
+				"memories": memories,
+			}, nil
+		},
+	})
+
+	r.Register(&Tool{
+		Name:        "list_memories",
+		Description: "List all stored memories with optional category filter. Returns paginated results.",
+		Parameters: jsonSchema(map[string]interface{}{
+			"type": "object",
+			"properties": map[string]interface{}{
+				"category": map[string]interface{}{
+					"type":        "string",
+					"description": "Filter by category (optional)",
+				},
+				"page": map[string]interface{}{
+					"type":        "number",
+					"description": "Page number (default: 1)",
+				},
+			},
+		}),
+		ReadOnly: true,
+		Handler: func(ctx context.Context, args json.RawMessage) (interface{}, error) {
+			var p struct {
+				Category string `json:"category"`
+				Page     int    `json:"page"`
+			}
+			if err := json.Unmarshal(args, &p); err != nil {
+				return nil, fmt.Errorf("parse args: %w", err)
+			}
+			memories, total, err := r.svc.memory.ListMemories(p.Page, 20, p.Category)
+			if err != nil {
+				return nil, err
+			}
+			return map[string]interface{}{
+				"total":    total,
+				"page":     p.Page,
+				"memories": memories,
+			}, nil
+		},
+	})
+
+	r.Register(&Tool{
+		Name:        "delete_memory",
+		Description: "Delete a specific memory by its ID. Use this to remove outdated or incorrect information.",
+		Parameters: jsonSchema(map[string]interface{}{
+			"type": "object",
+			"properties": map[string]interface{}{
+				"id": map[string]interface{}{
+					"type":        "number",
+					"description": "The memory ID to delete",
+				},
+			},
+			"required": []string{"id"},
+		}),
+		ReadOnly:          false,
+		NeedsConfirmation: true,
+		Handler: func(ctx context.Context, args json.RawMessage) (interface{}, error) {
+			var p struct {
+				ID uint `json:"id"`
+			}
+			if err := json.Unmarshal(args, &p); err != nil {
+				return nil, fmt.Errorf("parse args: %w", err)
+			}
+			if err := r.svc.memory.DeleteMemory(p.ID); err != nil {
+				return nil, err
+			}
+			return map[string]interface{}{"status": "deleted", "id": p.ID}, nil
 		},
 	})
 }

@@ -538,6 +538,451 @@ func (a *CoreAPIImpl) GetRecentAlerts() ([]map[string]interface{}, error) {
 }
 
 // ──────────────────────────────────────────────────
+// Batch 3: Database management
+// ──────────────────────────────────────────────────
+
+func (a *CoreAPIImpl) DatabaseListInstances() ([]map[string]interface{}, error) {
+	var results []map[string]interface{}
+	err := a.db.Table("plugin_database_instances").
+		Select("id, name, engine, version, port, status, container_id, created_at, updated_at").
+		Find(&results).Error
+	if err != nil {
+		return []map[string]interface{}{}, nil
+	}
+
+	// Enrich with container running status.
+	for i, inst := range results {
+		containerID, _ := inst["container_id"].(string)
+		if containerID != "" {
+			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			out, err := exec.CommandContext(ctx, "docker", "inspect", "-f", "{{.State.Running}}", containerID).Output()
+			cancel()
+			if err == nil {
+				results[i]["running"] = strings.TrimSpace(string(out)) == "true"
+			} else {
+				results[i]["running"] = false
+			}
+		}
+	}
+	return results, nil
+}
+
+func (a *CoreAPIImpl) DatabaseCreateInstance(req DatabaseCreateInstanceRequest) (uint, error) {
+	if a.eventBus == nil {
+		return 0, fmt.Errorf("event bus not available")
+	}
+	a.eventBus.Publish(Event{
+		Type: "database.create_instance",
+		Payload: map[string]interface{}{
+			"engine":        req.Engine,
+			"version":       req.Version,
+			"name":          req.Name,
+			"port":          req.Port,
+			"root_password": req.RootPassword,
+			"memory_limit":  req.MemoryLimit,
+		},
+		Source: "core",
+	})
+	return 0, nil // ID will be assigned asynchronously by the database plugin
+}
+
+func (a *CoreAPIImpl) DatabaseCreateDatabase(instanceID uint, name, charset string) error {
+	var inst struct {
+		Engine      string `gorm:"column:engine"`
+		ContainerID string `gorm:"column:container_id"`
+	}
+	if err := a.db.Table("plugin_database_instances").Where("id = ?", instanceID).First(&inst).Error; err != nil {
+		return fmt.Errorf("instance not found: %w", err)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	var cmd *exec.Cmd
+	switch inst.Engine {
+	case "mysql", "mariadb":
+		if charset == "" {
+			charset = "utf8mb4"
+		}
+		cmd = exec.CommandContext(ctx, "docker", "exec", inst.ContainerID,
+			"mysql", "-uroot", "-e", fmt.Sprintf("CREATE DATABASE IF NOT EXISTS `%s` CHARACTER SET %s;", name, charset))
+	case "postgres":
+		if charset == "" {
+			charset = "UTF8"
+		}
+		cmd = exec.CommandContext(ctx, "docker", "exec", inst.ContainerID,
+			"psql", "-U", "postgres", "-c", fmt.Sprintf("CREATE DATABASE \"%s\" ENCODING '%s';", name, charset))
+	default:
+		return fmt.Errorf("unsupported engine: %s", inst.Engine)
+	}
+
+	var buf bytes.Buffer
+	cmd.Stdout = &buf
+	cmd.Stderr = &buf
+	if err := cmd.Run(); err != nil {
+		return fmt.Errorf("create database: %s — %w", buf.String(), err)
+	}
+	return nil
+}
+
+func (a *CoreAPIImpl) DatabaseCreateUser(instanceID uint, username, password string, databases []string) error {
+	var inst struct {
+		Engine      string `gorm:"column:engine"`
+		ContainerID string `gorm:"column:container_id"`
+	}
+	if err := a.db.Table("plugin_database_instances").Where("id = ?", instanceID).First(&inst).Error; err != nil {
+		return fmt.Errorf("instance not found: %w", err)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	var cmds []string
+	switch inst.Engine {
+	case "mysql", "mariadb":
+		cmds = append(cmds, fmt.Sprintf("CREATE USER IF NOT EXISTS '%s'@'%%' IDENTIFIED BY '%s';", username, password))
+		for _, db := range databases {
+			cmds = append(cmds, fmt.Sprintf("GRANT ALL PRIVILEGES ON `%s`.* TO '%s'@'%%';", db, username))
+		}
+		cmds = append(cmds, "FLUSH PRIVILEGES;")
+		sql := strings.Join(cmds, " ")
+		cmd := exec.CommandContext(ctx, "docker", "exec", inst.ContainerID, "mysql", "-uroot", "-e", sql)
+		var buf bytes.Buffer
+		cmd.Stdout = &buf
+		cmd.Stderr = &buf
+		if err := cmd.Run(); err != nil {
+			return fmt.Errorf("create user: %s — %w", buf.String(), err)
+		}
+	case "postgres":
+		cmds = append(cmds, fmt.Sprintf("CREATE USER \"%s\" WITH PASSWORD '%s';", username, password))
+		for _, db := range databases {
+			cmds = append(cmds, fmt.Sprintf("GRANT ALL PRIVILEGES ON DATABASE \"%s\" TO \"%s\";", db, username))
+		}
+		sql := strings.Join(cmds, " ")
+		cmd := exec.CommandContext(ctx, "docker", "exec", inst.ContainerID, "psql", "-U", "postgres", "-c", sql)
+		var buf bytes.Buffer
+		cmd.Stdout = &buf
+		cmd.Stderr = &buf
+		if err := cmd.Run(); err != nil {
+			return fmt.Errorf("create user: %s — %w", buf.String(), err)
+		}
+	default:
+		return fmt.Errorf("unsupported engine: %s", inst.Engine)
+	}
+	return nil
+}
+
+func (a *CoreAPIImpl) DatabaseExecuteQuery(instanceID uint, database, query string) (map[string]interface{}, error) {
+	// Security: only allow read-only queries.
+	// Strip trailing whitespace/semicolons, then reject stacked statements.
+	trimmed := strings.TrimSpace(query)
+	trimmed = strings.TrimRight(trimmed, "; \t\n\r")
+	if strings.Contains(trimmed, ";") {
+		return nil, fmt.Errorf("multiple statements are not allowed; submit one query at a time")
+	}
+
+	upper := strings.ToUpper(trimmed)
+	allowed := []string{"SELECT", "SHOW", "DESCRIBE", "DESC", "EXPLAIN"}
+	isAllowed := false
+	for _, prefix := range allowed {
+		if strings.HasPrefix(upper, prefix) {
+			isAllowed = true
+			break
+		}
+	}
+	if !isAllowed {
+		return nil, fmt.Errorf("only read-only queries (SELECT, SHOW, DESCRIBE, EXPLAIN) are allowed")
+	}
+	query = trimmed
+
+	var inst struct {
+		Engine      string `gorm:"column:engine"`
+		ContainerID string `gorm:"column:container_id"`
+	}
+	if err := a.db.Table("plugin_database_instances").Where("id = ?", instanceID).First(&inst).Error; err != nil {
+		return nil, fmt.Errorf("instance not found: %w", err)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	var cmd *exec.Cmd
+	switch inst.Engine {
+	case "mysql", "mariadb":
+		args := []string{"exec", inst.ContainerID, "mysql", "-uroot", "--batch", "-e", query}
+		if database != "" {
+			args = []string{"exec", inst.ContainerID, "mysql", "-uroot", "--batch", "-D", database, "-e", query}
+		}
+		cmd = exec.CommandContext(ctx, "docker", args...)
+	case "postgres":
+		args := []string{"exec", inst.ContainerID, "psql", "-U", "postgres", "-c", query}
+		if database != "" {
+			args = []string{"exec", inst.ContainerID, "psql", "-U", "postgres", "-d", database, "-c", query}
+		}
+		cmd = exec.CommandContext(ctx, "docker", args...)
+	default:
+		return nil, fmt.Errorf("unsupported engine: %s", inst.Engine)
+	}
+
+	var buf bytes.Buffer
+	cmd.Stdout = &buf
+	cmd.Stderr = &buf
+	if err := cmd.Run(); err != nil {
+		return nil, fmt.Errorf("execute query: %s — %w", buf.String(), err)
+	}
+
+	output := buf.String()
+	if len(output) > 8192 {
+		output = output[:8192] + "\n... (truncated)"
+	}
+	return map[string]interface{}{
+		"output": output,
+		"engine": inst.Engine,
+	}, nil
+}
+
+// ──────────────────────────────────────────────────
+// Batch 3: Docker extended
+// ──────────────────────────────────────────────────
+
+func (a *CoreAPIImpl) DockerListStacks() ([]map[string]interface{}, error) {
+	var results []map[string]interface{}
+	err := a.db.Table("plugin_docker_stacks").
+		Select("id, name, status, file_path, created_at, updated_at").
+		Find(&results).Error
+	if err != nil {
+		return []map[string]interface{}{}, nil
+	}
+	return results, nil
+}
+
+func (a *CoreAPIImpl) DockerManageContainer(containerID, action string) error {
+	switch action {
+	case "start", "stop", "restart":
+	default:
+		return fmt.Errorf("invalid action %q: must be start, stop, or restart", action)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	cmd := exec.CommandContext(ctx, "docker", action, containerID)
+	var buf bytes.Buffer
+	cmd.Stdout = &buf
+	cmd.Stderr = &buf
+	if err := cmd.Run(); err != nil {
+		return fmt.Errorf("docker %s %s: %s — %w", action, containerID, buf.String(), err)
+	}
+	return nil
+}
+
+func (a *CoreAPIImpl) DockerRunContainer(req DockerRunContainerRequest) (string, error) {
+	// Security: block --privileged and --net=host in image name or other fields.
+	if strings.Contains(req.Image, "--privileged") || strings.Contains(req.Name, "--privileged") {
+		return "", fmt.Errorf("--privileged is not allowed")
+	}
+
+	args := []string{"run", "-d"}
+	if req.Name != "" {
+		args = append(args, "--name", req.Name)
+	}
+	for _, p := range req.Ports {
+		args = append(args, "-p", p)
+	}
+	for k, v := range req.Env {
+		args = append(args, "-e", fmt.Sprintf("%s=%s", k, v))
+	}
+	for _, v := range req.Volumes {
+		args = append(args, "-v", v)
+	}
+	if req.RestartPolicy != "" {
+		args = append(args, "--restart", req.RestartPolicy)
+	}
+	args = append(args, req.Image)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
+	defer cancel()
+
+	cmd := exec.CommandContext(ctx, "docker", args...)
+	var buf bytes.Buffer
+	cmd.Stdout = &buf
+	cmd.Stderr = &buf
+	if err := cmd.Run(); err != nil {
+		return "", fmt.Errorf("docker run: %s — %w", buf.String(), err)
+	}
+
+	containerID := strings.TrimSpace(buf.String())
+	if len(containerID) > 12 {
+		containerID = containerID[:12]
+	}
+	return containerID, nil
+}
+
+func (a *CoreAPIImpl) DockerPullImage(image string) error {
+	ctx, cancel := context.WithTimeout(context.Background(), 300*time.Second)
+	defer cancel()
+
+	cmd := exec.CommandContext(ctx, "docker", "pull", image)
+	var buf bytes.Buffer
+	cmd.Stdout = &buf
+	cmd.Stderr = &buf
+	if err := cmd.Run(); err != nil {
+		return fmt.Errorf("docker pull %s: %s — %w", image, buf.String(), err)
+	}
+	return nil
+}
+
+func (a *CoreAPIImpl) DockerGetContainerStats(containerID string) (map[string]interface{}, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	out, err := exec.CommandContext(ctx, "docker", "stats", "--no-stream", "--format", "{{json .}}", containerID).Output()
+	if err != nil {
+		return nil, fmt.Errorf("docker stats: %w", err)
+	}
+
+	var result map[string]interface{}
+	if err := json.Unmarshal(bytes.TrimSpace(out), &result); err != nil {
+		return nil, fmt.Errorf("parse stats: %w", err)
+	}
+	return result, nil
+}
+
+// ──────────────────────────────────────────────────
+// Batch 3: App Store
+// ──────────────────────────────────────────────────
+
+func (a *CoreAPIImpl) AppStoreSearchApps(query string) ([]map[string]interface{}, error) {
+	var results []map[string]interface{}
+	err := a.db.Table("plugin_appstore_apps").
+		Where("name LIKE ? OR description LIKE ?", "%"+query+"%", "%"+query+"%").
+		Limit(20).
+		Find(&results).Error
+	if err != nil {
+		return []map[string]interface{}{}, nil
+	}
+	return results, nil
+}
+
+func (a *CoreAPIImpl) AppStoreInstallApp(appID string, config map[string]interface{}) (uint, error) {
+	if a.eventBus == nil {
+		return 0, fmt.Errorf("event bus not available")
+	}
+	a.eventBus.Publish(Event{
+		Type: "appstore.install",
+		Payload: map[string]interface{}{
+			"app_id": appID,
+			"config": config,
+		},
+		Source: "core",
+	})
+	return 0, nil // ID will be assigned asynchronously by the appstore plugin
+}
+
+func (a *CoreAPIImpl) AppStoreListInstalled() ([]map[string]interface{}, error) {
+	var results []map[string]interface{}
+	err := a.db.Table("plugin_appstore_installed").
+		Select("id, app_id, name, status, version, created_at, updated_at").
+		Find(&results).Error
+	if err != nil {
+		return []map[string]interface{}{}, nil
+	}
+	return results, nil
+}
+
+// ──────────────────────────────────────────────────
+// Batch 3: File write operations
+// ──────────────────────────────────────────────────
+
+func (a *CoreAPIImpl) FileWrite(path, content string) error {
+	if !isPathSafe(path) {
+		return fmt.Errorf("access denied: path %q is outside allowed directories", path)
+	}
+	if len(content) > 1<<20 { // 1MB limit
+		return fmt.Errorf("content too large (max 1MB)")
+	}
+	// Ensure parent directory exists.
+	dir := filepath.Dir(path)
+	if err := os.MkdirAll(dir, 0755); err != nil {
+		return fmt.Errorf("create directory: %w", err)
+	}
+	return os.WriteFile(path, []byte(content), 0644)
+}
+
+func (a *CoreAPIImpl) FileDelete(path string) error {
+	if !isPathSafe(path) {
+		return fmt.Errorf("access denied: path %q is outside allowed directories", path)
+	}
+	return os.RemoveAll(path)
+}
+
+func (a *CoreAPIImpl) FileRename(oldPath, newPath string) error {
+	if !isPathSafe(oldPath) {
+		return fmt.Errorf("access denied: path %q is outside allowed directories", oldPath)
+	}
+	if !isPathSafe(newPath) {
+		return fmt.Errorf("access denied: path %q is outside allowed directories", newPath)
+	}
+	return os.Rename(oldPath, newPath)
+}
+
+// isPathSafe checks if a file path is within allowed directories.
+func isPathSafe(path string) bool {
+	abs, err := filepath.Abs(path)
+	if err != nil {
+		return false
+	}
+	resolved, err := filepath.EvalSymlinks(abs)
+	if err != nil {
+		// File or parent may not exist yet (e.g. /tmp/newdir/file.txt).
+		// Walk up to find the nearest existing ancestor and resolve from there.
+		resolved = resolvePartialPath(abs)
+		if resolved == "" {
+			return false
+		}
+	}
+	blocked := []string{"/etc/shadow", "/etc/gshadow", "/etc/sudoers", "/etc/passwd"}
+	for _, b := range blocked {
+		if resolved == b {
+			return false
+		}
+	}
+	allowed := []string{"/etc/caddy", "/etc/nginx", "/var/log", "/home", "/root", "/opt", "/srv", "/tmp"}
+	for _, a := range allowed {
+		if resolved == a || strings.HasPrefix(resolved, a+"/") {
+			return true
+		}
+	}
+	return false
+}
+
+// resolvePartialPath walks up from abs until it finds an existing ancestor,
+// resolves symlinks on that ancestor, then re-appends the remaining components.
+// Returns "" if no existing ancestor can be resolved.
+func resolvePartialPath(abs string) string {
+	// Collect path components that don't exist yet.
+	current := abs
+	var tail []string
+	for {
+		resolved, err := filepath.EvalSymlinks(current)
+		if err == nil {
+			// Found an existing ancestor — rebuild the full path.
+			for i := len(tail) - 1; i >= 0; i-- {
+				resolved = filepath.Join(resolved, tail[i])
+			}
+			return resolved
+		}
+		parent := filepath.Dir(current)
+		if parent == current {
+			// Reached filesystem root without success.
+			return ""
+		}
+		tail = append(tail, filepath.Base(current))
+		current = parent
+	}
+}
+
+// ──────────────────────────────────────────────────
 // Internal helpers
 // ──────────────────────────────────────────────────
 

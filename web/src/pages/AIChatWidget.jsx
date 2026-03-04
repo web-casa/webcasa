@@ -1,12 +1,13 @@
 import { useState, useEffect, useRef, useCallback } from 'react'
 import { Box, Flex, Text, Button, TextField, Badge, Separator } from '@radix-ui/themes'
-import { Bot, X, Send, Plus, Trash2, MessageSquare, Sparkles, Loader2, SquareTerminal, Minus, Maximize2, Minimize2, Wrench, ChevronDown, ChevronRight, CheckCircle2, AlertCircle, ShieldAlert } from 'lucide-react'
+import { Bot, X, Send, Plus, Trash2, MessageSquare, Sparkles, Loader2, SquareTerminal, Minus, Maximize2, Minimize2, Wrench, ChevronDown, ChevronRight, CheckCircle2, AlertCircle, ShieldAlert, Square, TriangleAlert } from 'lucide-react'
 import { Terminal } from '@xterm/xterm'
 import { FitAddon } from '@xterm/addon-fit'
 import { WebLinksAddon } from '@xterm/addon-web-links'
 import '@xterm/xterm/css/xterm.css'
 import { aiAPI, fileManagerAPI } from '../api/index.js'
 import { useTranslation } from 'react-i18next'
+import { useAIChatStore } from '../stores/aiChat.js'
 
 // ============ Inline Terminal Tab ============
 function InlineTerminalTab({ active, wsUrl, tabId }) {
@@ -434,7 +435,7 @@ function ConfirmationCard({ confirmation, onRespond, t }) {
 // ============ AI Chat Widget + Floating Buttons ============
 export default function AIChatWidget() {
     const { t } = useTranslation()
-    const [aiOpen, setAiOpen] = useState(false)
+    const { isOpen: aiOpen, open: openAiChat, close: closeAiChat, toggle: toggleAiChat } = useAIChatStore()
     const [termOpen, setTermOpen] = useState(false)
     const [conversations, setConversations] = useState([])
     const [currentConv, setCurrentConv] = useState(null)
@@ -443,6 +444,8 @@ export default function AIChatWidget() {
     const [streaming, setStreaming] = useState(false)
     const [configured, setConfigured] = useState(null)
     const [confirmations, setConfirmations] = useState([])
+    const [fullscreen, setFullscreen] = useState(false)
+    const [riskAccepted, setRiskAccepted] = useState(() => localStorage.getItem('ai_risk_accepted') === '1')
     const messagesEndRef = useRef(null)
     const abortRef = useRef(null)
 
@@ -453,13 +456,13 @@ export default function AIChatWidget() {
     useEffect(() => { scrollToBottom() }, [messages, scrollToBottom])
 
     useEffect(() => {
-        if (aiOpen && configured === null) {
+        if (aiOpen) {
             aiAPI.getConfig().then(res => {
                 const cfg = res.data
-                setConfigured(!!(cfg.base_url && cfg.model && cfg.api_key !== '****' && cfg.api_key !== ''))
+                setConfigured(!!(cfg.base_url && cfg.model && cfg.api_key && cfg.api_key !== '' && !cfg.api_key.match(/^\*+$/)))
             }).catch(() => setConfigured(false))
         }
-    }, [aiOpen, configured])
+    }, [aiOpen])
 
     useEffect(() => {
         if (aiOpen && configured) {
@@ -673,6 +676,14 @@ export default function AIChatWidget() {
         }
     }
 
+    const handleAbort = useCallback(() => {
+        if (abortRef.current) {
+            abortRef.current.abort()
+            abortRef.current = null
+            setStreaming(false)
+        }
+    }, [])
+
     const handleKeyDown = (e) => {
         if (e.key === 'Enter' && !e.shiftKey) {
             e.preventDefault()
@@ -724,7 +735,7 @@ export default function AIChatWidget() {
 
                     {/* AI chat button */}
                     <button
-                        onClick={() => setAiOpen(true)}
+                        onClick={() => openAiChat()}
                         style={{
                             width: 52,
                             height: 52,
@@ -751,7 +762,22 @@ export default function AIChatWidget() {
             {/* AI Chat panel */}
             {aiOpen && (
                 <Box
-                    style={{
+                    style={fullscreen ? {
+                        position: 'fixed',
+                        top: 0,
+                        left: 0,
+                        right: 0,
+                        bottom: 0,
+                        width: '100vw',
+                        height: '100vh',
+                        borderRadius: 0,
+                        background: 'var(--color-background)',
+                        border: 'none',
+                        zIndex: 1100,
+                        display: 'flex',
+                        flexDirection: 'column',
+                        overflow: 'hidden',
+                    } : {
                         position: 'fixed',
                         bottom: termOpen ? 'calc(300px + 16px)' : 24,
                         right: 24,
@@ -778,10 +804,18 @@ export default function AIChatWidget() {
                             {streaming && <Badge size="1" color="green"><Loader2 size={10} className="spin" /> {t('ai.thinking')}</Badge>}
                         </Flex>
                         <Flex gap="1">
+                            {streaming && (
+                                <Button variant="ghost" size="1" color="red" onClick={handleAbort} title={t('ai.stop')}>
+                                    <Square size={14} />
+                                </Button>
+                            )}
                             <Button variant="ghost" size="1" onClick={newConversation} title={t('ai.new_chat')}>
                                 <Plus size={16} />
                             </Button>
-                            <Button variant="ghost" size="1" onClick={() => setAiOpen(false)}>
+                            <Button variant="ghost" size="1" onClick={() => setFullscreen(f => !f)} title={fullscreen ? t('ai.exit_fullscreen') : t('ai.fullscreen')}>
+                                {fullscreen ? <Minimize2 size={16} /> : <Maximize2 size={16} />}
+                            </Button>
+                            <Button variant="ghost" size="1" onClick={() => { closeAiChat(); setFullscreen(false) }}>
                                 <X size={16} />
                             </Button>
                         </Flex>
@@ -791,8 +825,38 @@ export default function AIChatWidget() {
                         <Flex direction="column" align="center" justify="center" style={{ flex: 1 }} gap="3" p="4">
                             <Sparkles size={48} style={{ opacity: 0.3 }} />
                             <Text size="2" color="gray" align="center">{t('ai.not_configured')}</Text>
-                            <Button variant="soft" size="2" onClick={() => { setAiOpen(false); window.location.href = '/settings' }}>
+                            <Button variant="soft" size="2" onClick={() => { closeAiChat(); window.location.href = '/settings' }}>
                                 {t('ai.go_settings')}
+                            </Button>
+                        </Flex>
+                    ) : !riskAccepted ? (
+                        <Flex direction="column" align="center" justify="center" style={{ flex: 1 }} gap="3" p="5">
+                            <Box style={{
+                                width: 56, height: 56, borderRadius: '50%',
+                                background: 'var(--amber-3)', display: 'flex',
+                                alignItems: 'center', justifyContent: 'center',
+                            }}>
+                                <TriangleAlert size={28} style={{ color: 'var(--amber-9)' }} />
+                            </Box>
+                            <Text size="4" weight="bold" align="center">{t('ai.risk_title')}</Text>
+                            <Box style={{
+                                background: 'var(--amber-2)', border: '1px solid var(--amber-6)',
+                                borderRadius: 8, padding: '12px 16px',
+                            }}>
+                                <Text size="2" style={{ lineHeight: 1.7, display: 'block', whiteSpace: 'pre-line' }}>
+                                    {t('ai.risk_description')}
+                                </Text>
+                            </Box>
+                            <Button
+                                size="3"
+                                color="amber"
+                                style={{ width: '100%' }}
+                                onClick={() => {
+                                    localStorage.setItem('ai_risk_accepted', '1')
+                                    setRiskAccepted(true)
+                                }}
+                            >
+                                {t('ai.risk_accept')}
                             </Button>
                         </Flex>
                     ) : (
@@ -902,9 +966,15 @@ export default function AIChatWidget() {
                                                 onKeyDown={handleKeyDown}
                                                 disabled={streaming}
                                             />
-                                            <Button size="2" disabled={streaming || !input.trim()} onClick={sendMessage}>
-                                                <Send size={14} />
-                                            </Button>
+                                            {streaming ? (
+                                                <Button size="2" color="red" variant="soft" onClick={handleAbort} title={t('ai.stop')}>
+                                                    <Square size={14} />
+                                                </Button>
+                                            ) : (
+                                                <Button size="2" disabled={!input.trim()} onClick={sendMessage}>
+                                                    <Send size={14} />
+                                                </Button>
+                                            )}
                                         </Flex>
                                     </Box>
                                 </Flex>
@@ -922,9 +992,15 @@ export default function AIChatWidget() {
                                             onKeyDown={handleKeyDown}
                                             disabled={streaming}
                                         />
-                                        <Button size="2" disabled={streaming || !input.trim()} onClick={sendMessage}>
-                                            <Send size={14} />
-                                        </Button>
+                                        {streaming ? (
+                                            <Button size="2" color="red" variant="soft" onClick={handleAbort} title={t('ai.stop')}>
+                                                <Square size={14} />
+                                            </Button>
+                                        ) : (
+                                            <Button size="2" disabled={!input.trim()} onClick={sendMessage}>
+                                                <Send size={14} />
+                                            </Button>
+                                        )}
                                     </Flex>
                                 </Box>
                             )}

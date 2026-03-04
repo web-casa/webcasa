@@ -199,9 +199,25 @@ export default function PluginsPage() {
                                     </Flex>
                                     <Text size="2" color="gray">{p.description}</Text>
                                     {p.dependencies?.length > 0 && (
-                                        <Text size="1" color="gray">
-                                            {t('plugins.depends_on')}: {p.dependencies.join(', ')}
-                                        </Text>
+                                        <Flex align="center" gap="1" wrap="wrap" mt="1">
+                                            <Text size="1" color="gray">{t('plugins.depends_on')}:</Text>
+                                            {p.dependencies.map((dep) => {
+                                                const depPlugin = plugins.find((pp) => pp.id === dep)
+                                                const isDepEnabled = depPlugin?.enabled
+                                                return (
+                                                    <Badge
+                                                        key={dep}
+                                                        color={isDepEnabled ? 'green' : 'red'}
+                                                        variant="surface"
+                                                        size="1"
+                                                        style={{ cursor: 'default' }}
+                                                    >
+                                                        <Power size={10} />
+                                                        {depPlugin?.name || dep}
+                                                    </Badge>
+                                                )
+                                            })}
+                                        </Flex>
                                     )}
                                 </Flex>
                                 <Flex align="center" gap="2">

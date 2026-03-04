@@ -464,6 +464,13 @@ func (m *Manager) sortedIDs() []string {
 	for id := range m.plugins {
 		ids = append(ids, id)
 	}
-	sort.Strings(ids)
+	sort.Slice(ids, func(i, j int) bool {
+		pi := m.plugins[ids[i]].Metadata().Priority
+		pj := m.plugins[ids[j]].Metadata().Priority
+		if pi != pj {
+			return pi < pj
+		}
+		return ids[i] < ids[j]
+	})
 	return ids
 }

@@ -1307,7 +1307,11 @@ function AITab({ showMessage }) {
 
     const handleTest = async () => {
         setTesting(true); setTestResult(null)
-        try { await aiAPI.testConnection(); setTestResult({ ok: true, msg: t('ai.connection_ok') }) }
+        try {
+            await aiAPI.updateConfig(config)
+            await aiAPI.testConnection()
+            setTestResult({ ok: true, msg: t('ai.connection_ok') })
+        }
         catch (e) { setTestResult({ ok: false, msg: e.response?.data?.error || e.message }) }
         finally { setTesting(false) }
     }

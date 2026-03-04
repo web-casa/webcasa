@@ -66,6 +66,34 @@ func (s *stubCoreAPI) RunCommand(cmd string, timeoutSec int) (string, error) {
 func (s *stubCoreAPI) TriggerBackup() error                                    { return nil }
 func (s *stubCoreAPI) UpdateHost(id uint, req pluginpkg.UpdateHostRequest) error { return nil }
 func (s *stubCoreAPI) GetRecentAlerts() ([]map[string]interface{}, error)      { return nil, nil }
+func (s *stubCoreAPI) DatabaseListInstances() ([]map[string]interface{}, error) { return nil, nil }
+func (s *stubCoreAPI) DatabaseCreateInstance(req pluginpkg.DatabaseCreateInstanceRequest) (uint, error) {
+	return 0, nil
+}
+func (s *stubCoreAPI) DatabaseCreateDatabase(instanceID uint, name, charset string) error { return nil }
+func (s *stubCoreAPI) DatabaseCreateUser(instanceID uint, username, password string, databases []string) error {
+	return nil
+}
+func (s *stubCoreAPI) DatabaseExecuteQuery(instanceID uint, database, query string) (map[string]interface{}, error) {
+	return nil, nil
+}
+func (s *stubCoreAPI) DockerListStacks() ([]map[string]interface{}, error)                  { return nil, nil }
+func (s *stubCoreAPI) DockerManageContainer(containerID, action string) error               { return nil }
+func (s *stubCoreAPI) DockerRunContainer(req pluginpkg.DockerRunContainerRequest) (string, error) {
+	return "", nil
+}
+func (s *stubCoreAPI) DockerPullImage(image string) error { return nil }
+func (s *stubCoreAPI) DockerGetContainerStats(containerID string) (map[string]interface{}, error) {
+	return nil, nil
+}
+func (s *stubCoreAPI) AppStoreSearchApps(query string) ([]map[string]interface{}, error) { return nil, nil }
+func (s *stubCoreAPI) AppStoreInstallApp(appID string, config map[string]interface{}) (uint, error) {
+	return 0, nil
+}
+func (s *stubCoreAPI) AppStoreListInstalled() ([]map[string]interface{}, error) { return nil, nil }
+func (s *stubCoreAPI) FileWrite(path, content string) error                     { return nil }
+func (s *stubCoreAPI) FileDelete(path string) error                             { return nil }
+func (s *stubCoreAPI) FileRename(oldPath, newPath string) error                 { return nil }
 
 func newTestRegistry() *ToolRegistry {
 	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError}))

@@ -20,6 +20,7 @@ import {
 import { useAuthStore } from '../stores/auth.js'
 import { useThemeStore } from '../stores/theme.js'
 import { usePluginNavStore } from '../stores/pluginNav.js'
+import { useAIChatStore } from '../stores/aiChat.js'
 import { dashboardAPI } from '../api/index.js'
 import { useTranslation } from 'react-i18next'
 import logoImg from '../assets/logo.png'
@@ -58,6 +59,7 @@ export default function Layout() {
     const { user, logout } = useAuthStore()
     const { theme, toggle: toggleTheme } = useThemeStore()
     const { navItems: pluginNavItems, refresh: refreshPluginNav } = usePluginNavStore()
+    const openAiChat = useAIChatStore((s) => s.open)
     const [version, setVersion] = useState('')
     const [isMobile, setIsMobile] = useState(() =>
         typeof window !== 'undefined' && window.matchMedia('(max-width: 767px)').matches
@@ -95,11 +97,23 @@ export default function Layout() {
 
     // Build dynamic nav items from plugin manifests
     const dynamicNavItems = useMemo(() => {
-        return pluginNavItems.map((item) => ({
-            to: item.to,
+        return pluginNavItems
+            .filter((item) => item.pluginId !== 'ai')
+            .map((item) => ({
+                to: item.to,
+                icon: resolveIcon(item.icon),
+                label: currentLang === 'zh' && item.labelZh ? item.labelZh : item.label,
+            }))
+    }, [pluginNavItems, currentLang])
+
+    // Check if AI plugin is enabled in sidebar
+    const aiNavItem = useMemo(() => {
+        const item = pluginNavItems.find((item) => item.pluginId === 'ai')
+        if (!item) return null
+        return {
             icon: resolveIcon(item.icon),
             label: currentLang === 'zh' && item.labelZh ? item.labelZh : item.label,
-        }))
+        }
     }, [pluginNavItems, currentLang])
 
     // Close sidebar on navigation (mobile)
@@ -151,7 +165,7 @@ export default function Layout() {
                     ))}
 
                     {/* Dynamic plugin items */}
-                    {dynamicNavItems.length > 0 && (
+                    {(dynamicNavItems.length > 0 || aiNavItem) && (
                         <>
                             <Separator size="4" my="1" style={{ background: 'var(--cp-border)', opacity: 0.5 }} />
                             {dynamicNavItems.map((item) => (
@@ -163,6 +177,15 @@ export default function Layout() {
                                     onClick={handleNavClick}
                                 />
                             ))}
+                            {aiNavItem && (
+                                <button
+                                    className="sidebar-link"
+                                    onClick={() => { openAiChat(); handleNavClick() }}
+                                >
+                                    <aiNavItem.icon size={18} />
+                                    <span>{aiNavItem.label}</span>
+                                </button>
+                            )}
                         </>
                     )}
 

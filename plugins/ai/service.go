@@ -9,6 +9,7 @@ import (
 	"os"
 	"strings"
 	"sync"
+	"time"
 
 	pluginpkg "github.com/web-casa/webcasa/internal/plugin"
 	"gorm.io/gorm"
@@ -22,6 +23,7 @@ type Service struct {
 	logger      *slog.Logger
 	jwtSecret   string // for API key encryption
 	tools       *ToolRegistry
+	memory      *MemoryService
 
 	// pendingConfirms tracks tool calls that require user confirmation.
 	// Key: pending_id, Value: pendingEntry with user ownership and approval channel.
@@ -40,6 +42,8 @@ func NewService(db *gorm.DB, configStore *pluginpkg.ConfigStore, coreAPI pluginp
 	toolReg := NewToolRegistry(coreAPI, logger)
 	RegisterBuiltinTools(toolReg)
 
+	memorySvc := NewMemoryService(db, logger)
+
 	svc := &Service{
 		db:              db,
 		configStore:     configStore,
@@ -47,10 +51,13 @@ func NewService(db *gorm.DB, configStore *pluginpkg.ConfigStore, coreAPI pluginp
 		logger:          logger,
 		jwtSecret:       jwtSecret,
 		tools:           toolReg,
+		memory:          memorySvc,
 		pendingConfirms: make(map[string]*pendingEntry),
 	}
 	// Set back-reference so tools that need AI generation can access the service.
 	toolReg.svc = svc
+	// Initialize embedding client from saved config.
+	svc.initEmbeddingClient()
 	return svc
 }
 
@@ -413,6 +420,15 @@ func (s *Service) ChatWithTools(ctx context.Context, req ChatRequest, userID uin
 	}
 
 	s.db.Model(&conv).UpdateColumn("updated_at", gorm.Expr("CURRENT_TIMESTAMP"))
+
+	// Async memory extraction after conversation turn.
+	if s.configStore.Get("memory_enabled") != "false" && s.configStore.Get("auto_extract") != "false" {
+		convID := conv.ID
+		userMessage := req.Message
+		assistantResponse := fullContent.String()
+		go s.extractMemories(convID, userMessage, assistantResponse)
+	}
+
 	return conv.ID, nil
 }
 
@@ -439,6 +455,12 @@ Capabilities:
 - Review project source code before deployment for security and best practices
 - Suggest rollback strategies based on deployment history and runtime status
 - Summarize monitoring alerts with trend analysis and recommendations
+- List, create, and manage database instances (MySQL, PostgreSQL, MariaDB, Redis)
+- Create databases and users within instances, execute read-only SQL queries
+- List Docker Compose stacks, start/stop/restart containers
+- Run new Docker containers, pull images, get container resource stats
+- Search and install applications from the app store
+- Write, delete, and rename files on the server
 
 Guidelines:
 - Use tools proactively when the user's intent is clear
@@ -446,6 +468,22 @@ Guidelines:
 - For destructive actions, confirm with the user before proceeding
 - Use markdown formatting in your responses
 - Be concise and practical`
+
+	// Inject relevant memories from previous interactions.
+	if s.configStore.Get("memory_enabled") != "false" {
+		var query string
+		for i := len(history) - 1; i >= 0; i-- {
+			if history[i].Role == "user" {
+				query = history[i].Content
+				break
+			}
+		}
+		if query != "" {
+			if memCtx, err := s.memory.BuildMemoryContext(query, 8); err == nil && memCtx != "" {
+				systemPrompt += "\n\n" + memCtx
+			}
+		}
+	}
 
 	if pageContext != "" {
 		systemPrompt += "\n\nCurrent page context:\n" + pageContext
@@ -821,6 +859,22 @@ You help users with:
 
 Be concise, practical, and provide code snippets when helpful. Use markdown formatting.`
 
+	// Inject relevant memories from previous interactions.
+	if s.configStore.Get("memory_enabled") != "false" {
+		var query string
+		for i := len(history) - 1; i >= 0; i-- {
+			if history[i].Role == "user" {
+				query = history[i].Content
+				break
+			}
+		}
+		if query != "" {
+			if memCtx, err := s.memory.BuildMemoryContext(query, 8); err == nil && memCtx != "" {
+				systemPrompt += "\n\n" + memCtx
+			}
+		}
+	}
+
 	if pageContext != "" {
 		systemPrompt += "\n\nCurrent page context:\n" + pageContext
 	}
@@ -837,4 +891,110 @@ Be concise, practical, and provide code snippets when helpful. Use markdown form
 	}
 
 	return msgs
+}
+
+// initEmbeddingClient initializes the embedding client from saved config.
+func (s *Service) initEmbeddingClient() {
+	baseURL := s.configStore.Get("base_url")
+	encKey := s.configStore.Get("api_key")
+	apiFormat := s.configStore.Get("api_format")
+
+	if baseURL == "" || encKey == "" {
+		return
+	}
+
+	// Anthropic does not support /v1/embeddings.
+	if apiFormat == "anthropic-messages" {
+		return
+	}
+
+	apiKey, err := Decrypt(encKey, s.jwtSecret)
+	if err != nil {
+		return
+	}
+
+	embModel := s.configStore.Get("embedding_model")
+	if embModel == "" {
+		embModel = "text-embedding-3-small"
+	}
+
+	s.memory.SetEmbeddingClient(NewEmbeddingClient(baseURL, apiKey, embModel))
+}
+
+// extractMemories uses the LLM to extract key facts from a conversation turn.
+func (s *Service) extractMemories(convID uint, userMessage, assistantResponse string) {
+	if userMessage == "" && assistantResponse == "" {
+		return
+	}
+
+	client, err := s.getClient()
+	if err != nil {
+		return
+	}
+
+	prompt := fmt.Sprintf(`Extract key facts worth remembering from this conversation exchange for future reference.
+Rules:
+- Only extract concrete, reusable facts about THIS server
+- Skip generic knowledge that any AI would know
+- Each fact on a new line, format: [category|importance] fact
+- Categories: server_config, troubleshooting, user_preference, deployment, general
+- Importance: 0.0-1.0 (higher = more useful to remember)
+- Output ONLY the extracted facts, nothing else. If none, output nothing.
+
+User: %s
+Assistant: %s`, userMessage, assistantResponse)
+
+	messages := []chatMessage{
+		{Role: "system", Content: "You extract and summarize key facts from conversations. Output only structured facts, no explanations."},
+		{Role: "user", Content: prompt},
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	var result strings.Builder
+	if err := client.ChatStream(ctx, messages, func(delta string) error {
+		result.WriteString(delta)
+		return nil
+	}); err != nil {
+		s.logger.Warn("memory extraction failed", "err", err)
+		return
+	}
+
+	// Parse extracted facts.
+	lines := strings.Split(result.String(), "\n")
+	for _, line := range lines {
+		line = strings.TrimSpace(line)
+		if line == "" || !strings.HasPrefix(line, "[") {
+			continue
+		}
+
+		// Parse [category|importance] fact
+		closeBracket := strings.Index(line, "]")
+		if closeBracket < 0 {
+			continue
+		}
+		meta := line[1:closeBracket]
+		fact := strings.TrimSpace(line[closeBracket+1:])
+		if fact == "" {
+			continue
+		}
+
+		category := "general"
+		importance := float32(0.5)
+
+		parts := strings.SplitN(meta, "|", 2)
+		if len(parts) >= 1 {
+			category = strings.TrimSpace(parts[0])
+		}
+		if len(parts) >= 2 {
+			if v, err := fmt.Sscanf(parts[1], "%f", &importance); err != nil || v == 0 {
+				importance = 0.5
+			}
+		}
+
+		if _, err := s.memory.SaveMemory(fact, category, importance, &convID); err != nil {
+			s.logger.Warn("failed to save extracted memory", "err", err, "fact", fact)
+		}
+	}
 }

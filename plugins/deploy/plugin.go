@@ -27,7 +27,7 @@ func (p *Plugin) Metadata() pluginpkg.Metadata {
 		Version:     "1.0.0",
 		Description: "Source code deployment for Node.js, Go, PHP, Python projects with auto-detection and process management",
 		Author:      "Web.Casa",
-		Priority:    20,
+		Priority:    5,
 		Icon:        "Rocket",
 		Category:    "deploy",
 	}

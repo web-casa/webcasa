@@ -40,7 +40,7 @@ func (p *Plugin) Metadata() pluginpkg.Metadata {
 // Init initialises the AI plugin: migrates DB, registers routes.
 func (p *Plugin) Init(ctx *pluginpkg.Context) error {
 	// Migrate models.
-	if err := ctx.DB.AutoMigrate(&Conversation{}, &Message{}); err != nil {
+	if err := ctx.DB.AutoMigrate(&Conversation{}, &Message{}, &Memory{}); err != nil {
 		return fmt.Errorf("migrate: %w", err)
 	}
 
@@ -93,6 +93,11 @@ func (p *Plugin) Init(ctx *pluginpkg.Context) error {
 	r.POST("/generate-dockerfile", p.handler.GenerateDockerfile)
 	r.POST("/diagnose", p.handler.Diagnose)
 	r.POST("/review-code", p.handler.ReviewCode)
+
+	// Memory management
+	r.GET("/memories", p.handler.ListMemories)
+	a.DELETE("/memories/:id", p.handler.DeleteMemory)
+	a.POST("/memories/clear", p.handler.ClearMemories)
 
 	// Subscribe to build failure events for auto-diagnosis
 	db := ctx.DB
