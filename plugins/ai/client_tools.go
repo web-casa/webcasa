@@ -110,7 +110,7 @@ func (c *LLMClient) chatToolsOpenAI(ctx context.Context, messages []ToolUseMessa
 		return err
 	}
 
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.baseURL+"/v1/chat/completions", bytes.NewReader(payload))
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.openAIChatURL(), bytes.NewReader(payload))
 	if err != nil {
 		return err
 	}
@@ -318,7 +318,7 @@ func (c *LLMClient) chatToolsAnthropic(ctx context.Context, messages []ToolUseMe
 		return err
 	}
 
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.baseURL+"/v1/messages", bytes.NewReader(payload))
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.anthropicMessagesURL(), bytes.NewReader(payload))
 	if err != nil {
 		return err
 	}

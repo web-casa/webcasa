@@ -563,6 +563,20 @@ export default function AIChatWidget() {
                 signal: controller.signal,
             })
 
+            if (!response.ok) {
+                let errMsg = `HTTP ${response.status}`
+                try {
+                    const errBody = await response.json()
+                    errMsg = errBody.error || errMsg
+                } catch { /* not JSON */ }
+                setMessages(prev => {
+                    const updated = [...prev]
+                    updated[updated.length - 1] = { ...updated[updated.length - 1], content: `**Error:** ${errMsg}` }
+                    return updated
+                })
+                return
+            }
+
             const reader = response.body.getReader()
             const decoder = new TextDecoder()
             let fullContent = ''
@@ -661,6 +675,17 @@ export default function AIChatWidget() {
                         dataBuffer = ''
                     }
                 }
+            }
+            // If stream ended without any content, show a hint.
+            if (!fullContent && toolCalls.length === 0) {
+                setMessages(prev => {
+                    const updated = [...prev]
+                    const last = updated[updated.length - 1]
+                    if (!last.content) {
+                        updated[updated.length - 1] = { ...last, content: t('ai.empty_response') }
+                    }
+                    return updated
+                })
             }
         } catch (e) {
             if (e.name !== 'AbortError') {
@@ -825,7 +850,7 @@ export default function AIChatWidget() {
                         <Flex direction="column" align="center" justify="center" style={{ flex: 1 }} gap="3" p="4">
                             <Sparkles size={48} style={{ opacity: 0.3 }} />
                             <Text size="2" color="gray" align="center">{t('ai.not_configured')}</Text>
-                            <Button variant="soft" size="2" onClick={() => { closeAiChat(); window.location.href = '/settings' }}>
+                            <Button variant="soft" size="2" onClick={() => { closeAiChat(); window.location.href = '/settings?tab=ai' }}>
                                 {t('ai.go_settings')}
                             </Button>
                         </Flex>

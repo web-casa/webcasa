@@ -73,7 +73,10 @@ func (ec *EmbeddingClient) EmbedBatch(texts []string) ([][]float32, error) {
 		return nil, fmt.Errorf("marshal request: %w", err)
 	}
 
-	url := ec.baseURL + "/v1/embeddings"
+	url := ec.baseURL + "/embeddings"
+	if !strings.HasSuffix(ec.baseURL, "/v1") {
+		url = ec.baseURL + "/v1/embeddings"
+	}
 	req, err := http.NewRequest("POST", url, strings.NewReader(string(bodyBytes)))
 	if err != nil {
 		return nil, fmt.Errorf("create request: %w", err)

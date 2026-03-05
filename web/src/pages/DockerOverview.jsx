@@ -15,6 +15,7 @@ export default function DockerOverview() {
     const [dockerStatus, setDockerStatus] = useState(null)
     const [dockerChecking, setDockerChecking] = useState(true)
     const [stacks, setStacks] = useState([])
+    const [containers, setContainers] = useState([])
     const [info, setInfo] = useState(null)
     const [loading, setLoading] = useState(true)
     const [actionLoading, setActionLoading] = useState(null)
@@ -29,12 +30,17 @@ export default function DockerOverview() {
 
     const fetchData = useCallback(async () => {
         try {
-            const [stackRes, infoRes] = await Promise.allSettled([
+            const [stackRes, infoRes, containerRes] = await Promise.allSettled([
                 dockerAPI.listStacks(),
                 dockerAPI.info(),
+                dockerAPI.listContainers(true),
             ])
             if (stackRes.status === 'fulfilled') setStacks(stackRes.value.data?.stacks || [])
             if (infoRes.status === 'fulfilled') setInfo(infoRes.value.data)
+            if (containerRes.status === 'fulfilled') {
+                const all = containerRes.value.data?.containers || []
+                setContainers(all.filter(c => !c.labels?.['com.docker.compose.project']))
+            }
         } catch { /* ignore */ } finally { setLoading(false) }
     }, [])
 
@@ -61,6 +67,27 @@ export default function DockerOverview() {
         } catch (e) {
             alert(`${label} failed: ${e.response?.data?.error || e.message}`)
         } finally { setActionLoading(null) }
+    }
+
+    const doContainerAction = async (id, action) => {
+        setActionLoading(`ctr-${id}-${action}`)
+        try {
+            await dockerAPI[action](id)
+            await fetchData()
+        } catch (e) {
+            alert(`Failed: ${e.response?.data?.error || e.message}`)
+        } finally { setActionLoading(null) }
+    }
+
+    const viewContainerLogs = async (id, name) => {
+        setShowLogs(`ctr-${name || id}`)
+        setLogs('')
+        setLogFilter('')
+        setLogStreaming(false)
+        try {
+            const res = await dockerAPI.containerLogs(id, '200')
+            setLogs(res.data?.logs || 'No logs available')
+        } catch { setLogs('Failed to fetch logs') }
     }
 
     const viewLogs = async (id, streaming = false) => {
@@ -235,6 +262,66 @@ export default function DockerOverview() {
                         </Card>
                     ))}
                 </Flex>
+            )}
+
+            {/* Standalone Containers */}
+            {containers.length > 0 && (
+                <>
+                    <Separator size="4" my="4" />
+                    <Flex align="center" gap="2" mb="3">
+                        <Container size={18} />
+                        <Heading size="4">{t('docker.standalone_containers')}</Heading>
+                        <Badge variant="soft" size="1">{containers.length}</Badge>
+                    </Flex>
+                    <Flex direction="column" gap="3">
+                        {containers.map((c) => (
+                            <Card key={c.id} style={{ padding: 16 }}>
+                                <Flex align="center" justify="between" wrap="wrap" gap="2">
+                                    <Flex direction="column" gap="1" style={{ flex: 1, minWidth: 200 }}>
+                                        <Flex align="center" gap="2">
+                                            <Text weight="bold" size="3">{c.name || c.id}</Text>
+                                            <Badge color={c.state === 'running' ? 'green' : c.state === 'paused' ? 'orange' : 'gray'} variant="soft" size="1">{c.state}</Badge>
+                                        </Flex>
+                                        <Flex gap="3">
+                                            <Text size="1" color="gray">{c.image}</Text>
+                                            {c.ports && c.ports.length > 0 && (
+                                                <Text size="1" color="gray">
+                                                    {c.ports.filter(p => p.host_port).map(p => `${p.host_port}:${p.container_port}`).join(', ')}
+                                                </Text>
+                                            )}
+                                        </Flex>
+                                        <Text size="1" color="gray">{c.status}</Text>
+                                    </Flex>
+                                    <Flex gap="2" wrap="wrap">
+                                        {c.state !== 'running' && (
+                                            <Button size="1" variant="soft" color="green" disabled={!!actionLoading}
+                                                onClick={() => doContainerAction(c.id, 'startContainer')}>
+                                                <Play size={14} /> {t('docker.start')}
+                                            </Button>
+                                        )}
+                                        {c.state === 'running' && (
+                                            <Button size="1" variant="soft" color="orange" disabled={!!actionLoading}
+                                                onClick={() => doContainerAction(c.id, 'stopContainer')}>
+                                                <Square size={14} /> {t('docker.stop')}
+                                            </Button>
+                                        )}
+                                        <Button size="1" variant="soft" disabled={!!actionLoading}
+                                            onClick={() => doContainerAction(c.id, 'restartContainer')}>
+                                            <RefreshCw size={14} /> {t('docker.restart')}
+                                        </Button>
+                                        <Button size="1" variant="soft" onClick={() => viewContainerLogs(c.id, c.name)}>
+                                            <FileText size={14} /> {t('docker.logs')}
+                                        </Button>
+                                        <Button size="1" variant="soft" color="red" disabled={!!actionLoading}
+                                            onClick={() => { if (confirm(t('docker.confirm_remove_container'))) doContainerAction(c.id, 'removeContainer') }}>
+                                            <Trash2 size={14} />
+                                        </Button>
+                                    </Flex>
+                                </Flex>
+                            </Card>
+                        ))}
+                    </Flex>
+                </>
             )}
 
             {/* Create Stack Dialog */}

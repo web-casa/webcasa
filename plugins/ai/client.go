@@ -21,6 +21,24 @@ type LLMClient struct {
 	httpClient *http.Client
 }
 
+// openAIChatURL returns the OpenAI-compatible chat completions endpoint,
+// handling the case where baseURL already includes "/v1".
+func (c *LLMClient) openAIChatURL() string {
+	if strings.HasSuffix(c.baseURL, "/v1") {
+		return c.baseURL + "/chat/completions"
+	}
+	return c.baseURL + "/v1/chat/completions"
+}
+
+// anthropicMessagesURL returns the Anthropic-compatible messages endpoint,
+// handling the case where baseURL already includes "/v1".
+func (c *LLMClient) anthropicMessagesURL() string {
+	if strings.HasSuffix(c.baseURL, "/v1") {
+		return c.baseURL + "/messages"
+	}
+	return c.baseURL + "/v1/messages"
+}
+
 // NewLLMClient creates a new LLM client.
 func NewLLMClient(baseURL, apiKey, model, apiFormat string) *LLMClient {
 	if apiFormat == "" {
@@ -140,7 +158,7 @@ func (c *LLMClient) buildOpenAIRequest(ctx context.Context, messages []chatMessa
 		return nil, err
 	}
 
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.baseURL+"/v1/chat/completions", bytes.NewReader(payload))
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.openAIChatURL(), bytes.NewReader(payload))
 	if err != nil {
 		return nil, err
 	}
@@ -212,7 +230,7 @@ func (c *LLMClient) buildAnthropicRequest(ctx context.Context, messages []chatMe
 		return nil, err
 	}
 
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.baseURL+"/v1/messages", bytes.NewReader(payload))
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.anthropicMessagesURL(), bytes.NewReader(payload))
 	if err != nil {
 		return nil, err
 	}
