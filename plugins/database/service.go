@@ -1,6 +1,7 @@
 package database
 
 import (
+	"bufio"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -139,6 +140,119 @@ func (s *Service) CreateInstance(req *CreateInstanceRequest) (*Instance, error) 
 	}
 
 	return s.GetInstance(inst.ID)
+}
+
+// CreateInstanceStream creates a new database instance with progress callback for streaming output.
+func (s *Service) CreateInstanceStream(req *CreateInstanceRequest, progressCb func(string)) (*Instance, error) {
+	// Validate engine.
+	engineInfo := findEngine(req.Engine)
+	if engineInfo == nil {
+		return nil, fmt.Errorf("unsupported engine: %s", req.Engine)
+	}
+
+	version := req.Version
+	if version == "" {
+		version = engineInfo.Default
+	}
+
+	var count int64
+	s.db.Model(&Instance{}).Where("name = ?", req.Name).Count(&count)
+	if count > 0 {
+		return nil, fmt.Errorf("instance name %q already exists", req.Name)
+	}
+
+	port := req.Port
+	if port == 0 {
+		port = engineInfo.Port
+	}
+
+	memLimit := req.MemoryLimit
+	if memLimit == "" {
+		memLimit = "0.5g"
+	}
+
+	containerName := "webcasa-db-" + sanitizeName(req.Name)
+
+	var configJSON string
+	if req.Config != nil {
+		if data, err := json.Marshal(req.Config); err == nil {
+			configJSON = string(data)
+		}
+	}
+
+	inst := &Instance{
+		Name:          req.Name,
+		Engine:        req.Engine,
+		Version:       version,
+		Status:        "stopped",
+		Port:          port,
+		RootPassword:  req.RootPassword,
+		DataDir:       filepath.Join(s.dataDir, "instances", sanitizeName(req.Name)),
+		ContainerName: containerName,
+		MemoryLimit:   memLimit,
+		Config:        configJSON,
+	}
+
+	progressCb("Preparing instance directory...")
+	if err := os.MkdirAll(inst.DataDir, 0755); err != nil {
+		return nil, fmt.Errorf("create instance dir: %w", err)
+	}
+
+	composeContent := GenerateComposeFile(inst)
+	composePath := filepath.Join(inst.DataDir, "docker-compose.yml")
+	if err := os.WriteFile(composePath, []byte(composeContent), 0644); err != nil {
+		return nil, fmt.Errorf("write compose file: %w", err)
+	}
+
+	envContent := fmt.Sprintf("ROOT_PASSWORD=%s\n", inst.RootPassword)
+	envPath := filepath.Join(inst.DataDir, ".env")
+	if err := os.WriteFile(envPath, []byte(envContent), 0600); err != nil {
+		return nil, fmt.Errorf("write env file: %w", err)
+	}
+
+	progressCb("Saving instance record...")
+	if err := s.db.Create(inst).Error; err != nil {
+		return nil, fmt.Errorf("create instance record: %w", err)
+	}
+
+	if req.AutoStart {
+		progressCb("Starting instance (pulling image if needed)...")
+		if err := s.runComposeStream(inst.DataDir, progressCb, "up", "-d", "--remove-orphans"); err != nil {
+			s.logger.Error("auto-start failed", "instance", req.Name, "err", err)
+			progressCb("Warning: auto-start failed: " + err.Error())
+		}
+	}
+
+	return s.GetInstance(inst.ID)
+}
+
+// runComposeStream executes a docker compose command and streams output line-by-line via callback.
+func (s *Service) runComposeStream(dir string, cb func(string), args ...string) error {
+	fullArgs := append([]string{"compose"}, args...)
+	cmd := exec.Command("docker", fullArgs...)
+	cmd.Dir = dir
+	cmd.Env = append(os.Environ(), "COMPOSE_PROJECT_NAME="+filepath.Base(dir))
+
+	stdout, err := cmd.StdoutPipe()
+	if err != nil {
+		return err
+	}
+	cmd.Stderr = cmd.Stdout
+
+	if err := cmd.Start(); err != nil {
+		return fmt.Errorf("docker compose %s: %w", args[0], err)
+	}
+
+	scanner := bufio.NewScanner(stdout)
+	scanner.Buffer(make([]byte, 0, 64*1024), 64*1024)
+	for scanner.Scan() {
+		cb(scanner.Text())
+	}
+
+	if err := cmd.Wait(); err != nil {
+		return fmt.Errorf("docker compose %s failed: %w", args[0], err)
+	}
+	return nil
 }
 
 // DeleteInstance stops and removes an instance.

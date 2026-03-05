@@ -48,6 +48,11 @@ export default function DatabaseInstances() {
         config: {},
     })
     const [creating, setCreating] = useState(false)
+    const [progressOpen, setProgressOpen] = useState(false)
+    const [progressLogs, setProgressLogs] = useState([])
+    const [progressDone, setProgressDone] = useState(false)
+    const [progressError, setProgressError] = useState(null)
+    const progressRef = useRef(null)
     const refreshTimerRef = useRef(null)
 
     const fetchData = useCallback(async () => {
@@ -77,6 +82,11 @@ export default function DatabaseInstances() {
             if (refreshTimerRef.current) clearInterval(refreshTimerRef.current)
         }
     }, [instances, fetchData])
+
+    // Auto-scroll progress log
+    useEffect(() => {
+        if (progressRef.current) progressRef.current.scrollTop = progressRef.current.scrollHeight
+    }, [progressLogs])
 
     // Check Docker availability
     const checkDocker = useCallback(async () => {
@@ -135,27 +145,83 @@ export default function DatabaseInstances() {
     const handleCreate = async () => {
         if (!form.name.trim() || !form.engine) return
         setCreating(true)
+
+        const payload = {
+            name: form.name.trim(),
+            engine: form.engine,
+            version: form.version,
+            root_password: form.root_password,
+            port: form.port ? parseInt(form.port, 10) : 0,
+            memory_limit: form.memory_limit ? form.memory_limit + 'g' : '',
+            auto_start: form.auto_start,
+        }
+        if (Object.keys(form.config).length > 0) {
+            payload.config = form.config
+        }
+
+        // Close create dialog, open progress dialog
+        setDialogOpen(false)
+        setProgressOpen(true)
+        setProgressLogs([])
+        setProgressDone(false)
+        setProgressError(null)
+
         try {
-            const payload = {
-                name: form.name.trim(),
-                engine: form.engine,
-                version: form.version,
-                root_password: form.root_password,
-                port: form.port ? parseInt(form.port, 10) : 0,
-                memory_limit: form.memory_limit ? form.memory_limit + 'g' : '',
-                auto_start: form.auto_start,
+            const token = localStorage.getItem('token')
+            const response = await fetch('/api/plugins/database/instances/stream', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                    'Authorization': `Bearer ${token}`,
+                },
+                body: JSON.stringify(payload),
+            })
+
+            if (!response.ok) {
+                const text = await response.text()
+                setProgressError(text || response.statusText)
+                setCreating(false)
+                return
             }
-            // Only include config if there are any non-empty values
-            if (Object.keys(form.config).length > 0) {
-                payload.config = form.config
+
+            const reader = response.body.getReader()
+            const decoder = new TextDecoder()
+            let buffer = ''
+            let gotError = false
+            let gotDone = false
+
+            while (true) {
+                const { done, value } = await reader.read()
+                if (done) break
+                buffer += decoder.decode(value, { stream: true })
+
+                const lines = buffer.split('\n')
+                buffer = lines.pop() || ''
+
+                for (const line of lines) {
+                    if (line.startsWith('event: error')) {
+                        gotError = true
+                    } else if (line.startsWith('event: done')) {
+                        gotDone = true
+                    } else if (line.startsWith('data: ')) {
+                        const data = line.slice(6)
+                        if (gotError) {
+                            setProgressError(data)
+                            gotError = false
+                        } else {
+                            setProgressLogs(prev => [...prev, data])
+                        }
+                    }
+                }
             }
-            await databaseAPI.createInstance(payload)
-            showMessage('success', t('database.instance_created'))
-            setDialogOpen(false)
-            resetForm()
-            await fetchData()
+
+            if (gotDone) {
+                setProgressDone(true)
+                resetForm()
+                await fetchData()
+            }
         } catch (e) {
-            showMessage('error', `${t('common.operation_failed')}: ${e.response?.data?.error || e.message}`)
+            setProgressError(e.message)
         } finally { setCreating(false) }
     }
 
@@ -827,6 +893,50 @@ export default function DatabaseInstances() {
                             onClick={handleCreate}
                         >
                             {creating ? t('common.loading') : t('common.create')}
+                        </Button>
+                    </Flex>
+                </Dialog.Content>
+            </Dialog.Root>
+
+            {/* Creation Progress Dialog */}
+            <Dialog.Root open={progressOpen} onOpenChange={(v) => { if (!v && (progressDone || progressError)) { setProgressOpen(false) } }}>
+                <Dialog.Content maxWidth="600px">
+                    <Dialog.Title>
+                        <Flex align="center" gap="2">
+                            {progressDone ? <CheckCircle2 size={18} color="var(--green-9)" /> : progressError ? <AlertCircle size={18} color="var(--red-9)" /> : <RefreshCw size={16} className="spin" />}
+                            {progressDone ? t('database.create_success') : progressError ? t('database.create_failed') : t('database.creating_instance')}
+                        </Flex>
+                    </Dialog.Title>
+                    <Box
+                        ref={progressRef}
+                        style={{
+                            background: 'var(--gray-2)',
+                            borderRadius: 8,
+                            padding: 12,
+                            maxHeight: 300,
+                            minHeight: 100,
+                            overflow: 'auto',
+                            fontFamily: 'monospace',
+                            fontSize: '0.8rem',
+                            whiteSpace: 'pre-wrap',
+                            lineHeight: 1.6,
+                        }}
+                    >
+                        {progressLogs.length > 0 ? progressLogs.join('\n') : (progressError || t('database.creating_instance') + '...')}
+                    </Box>
+                    {progressError && !progressDone && (
+                        <Callout.Root color="red" size="1" mt="2">
+                            <Callout.Icon><AlertCircle size={14} /></Callout.Icon>
+                            <Callout.Text>{progressError}</Callout.Text>
+                        </Callout.Root>
+                    )}
+                    <Flex justify="end" mt="3">
+                        <Button
+                            variant="soft"
+                            disabled={!progressDone && !progressError}
+                            onClick={() => setProgressOpen(false)}
+                        >
+                            {t('common.close')}
                         </Button>
                     </Flex>
                 </Dialog.Content>

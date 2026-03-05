@@ -56,6 +56,7 @@ func (p *Plugin) Init(ctx *pluginpkg.Context) error {
 	// Instances (read + admin mutations)
 	r.GET("/instances", p.handler.ListInstances)
 	a.POST("/instances", p.handler.CreateInstance)
+	a.POST("/instances/stream", p.handler.CreateInstanceStream)
 	r.GET("/instances/:id", p.handler.GetInstance)
 	a.DELETE("/instances/:id", p.handler.DeleteInstance)
 	a.POST("/instances/:id/start", p.handler.StartInstance)

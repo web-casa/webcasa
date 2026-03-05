@@ -3,6 +3,7 @@ package database
 import (
 	"bufio"
 	"context"
+	"fmt"
 	"net/http"
 	"net/url"
 	"strconv"
@@ -73,6 +74,42 @@ func (h *Handler) CreateInstance(c *gin.Context) {
 		return
 	}
 	c.JSON(http.StatusCreated, inst)
+}
+
+// CreateInstanceStream creates an instance with SSE progress streaming.
+func (h *Handler) CreateInstanceStream(c *gin.Context) {
+	var req CreateInstanceRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+
+	c.Writer.Header().Set("Content-Type", "text/event-stream")
+	c.Writer.Header().Set("Cache-Control", "no-cache")
+	c.Writer.Header().Set("Connection", "keep-alive")
+	c.Writer.Header().Set("X-Accel-Buffering", "no")
+	c.Writer.WriteHeader(http.StatusOK)
+
+	flusher, ok := c.Writer.(http.Flusher)
+	if !ok {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "streaming not supported"})
+		return
+	}
+
+	progressCb := func(line string) {
+		fmt.Fprintf(c.Writer, "data: %s\n\n", line)
+		flusher.Flush()
+	}
+
+	inst, err := h.svc.CreateInstanceStream(&req, progressCb)
+	if err != nil {
+		fmt.Fprintf(c.Writer, "event: error\ndata: %s\n\n", err.Error())
+		flusher.Flush()
+		return
+	}
+
+	fmt.Fprintf(c.Writer, "event: done\ndata: %d\n\n", inst.ID)
+	flusher.Flush()
 }
 
 // DeleteInstance deletes an instance.

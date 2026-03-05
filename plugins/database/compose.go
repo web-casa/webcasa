@@ -3,6 +3,7 @@ package database
 import (
 	"encoding/json"
 	"fmt"
+	"strconv"
 	"strings"
 )
 
@@ -163,6 +164,13 @@ func generatePostgres(inst *Instance) string {
 		commandLine = fmt.Sprintf("    command: >-\n      %s\n", cmd)
 	}
 
+	// PostgreSQL 18+ changed data directory layout: mount at /var/lib/postgresql
+	// instead of /var/lib/postgresql/data. See https://github.com/docker-library/postgres/pull/1259
+	volumePath := "/var/lib/postgresql/data"
+	if major, err := strconv.Atoi(strings.SplitN(inst.Version, ".", 2)[0]); err == nil && major >= 18 {
+		volumePath = "/var/lib/postgresql"
+	}
+
 	return fmt.Sprintf(`services:
   db:
     image: postgres:%s
@@ -173,7 +181,7 @@ func generatePostgres(inst *Instance) string {
     environment:
       POSTGRES_PASSWORD: "${ROOT_PASSWORD}"
     volumes:
-      - db_data:/var/lib/postgresql/data
+      - db_data:%s
     deploy:
       resources:
         limits:
@@ -183,7 +191,7 @@ func generatePostgres(inst *Instance) string {
       webcasa.instance: "%s"
 volumes:
   db_data:
-`, inst.Version, inst.ContainerName, commandLine, inst.Port, inst.MemoryLimit, inst.Name)
+`, inst.Version, inst.ContainerName, commandLine, inst.Port, volumePath, inst.MemoryLimit, inst.Name)
 }
 
 func generateMariaDB(inst *Instance) string {
