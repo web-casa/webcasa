@@ -303,39 +303,41 @@ func (k *KopiaClient) SetRetention(ctx context.Context, keepLatest, keepDays int
 
 // ── Helpers ──
 
-// targetArgs builds the CLI arguments for the repository target type.
+// targetArgs returns the storage subcommand and its flags for the repository target type.
+// Kopia uses subcommands (e.g. `kopia repository create filesystem --path=...`),
+// not a `--storage-type` flag.
 // Secrets are passed via environment variables (see secretEnv) to avoid /proc exposure.
 func (k *KopiaClient) targetArgs(cfg *BackupConfig) []string {
 	switch cfg.TargetType {
 	case "s3":
 		args := []string{
-			"--storage-type=s3",
-			"--s3.bucket=" + cfg.S3Bucket,
+			"s3",
+			"--bucket=" + cfg.S3Bucket,
 		}
 		if cfg.S3Endpoint != "" {
-			args = append(args, "--s3.endpoint="+cfg.S3Endpoint)
+			args = append(args, "--endpoint="+cfg.S3Endpoint)
 		}
 		if cfg.S3Region != "" {
-			args = append(args, "--s3.region="+cfg.S3Region)
+			args = append(args, "--region="+cfg.S3Region)
 		}
 		return args
 
 	case "webdav":
 		return []string{
-			"--storage-type=webdav",
-			"--webdav.url=" + cfg.WebdavURL,
+			"webdav",
+			"--url=" + cfg.WebdavURL,
 		}
 
 	case "sftp":
 		args := []string{
-			"--storage-type=sftp",
-			"--sftp.host=" + cfg.SftpHost,
-			"--sftp.port=" + fmt.Sprintf("%d", cfg.SftpPort),
-			"--sftp.username=" + cfg.SftpUser,
-			"--sftp.path=" + cfg.SftpPath,
+			"sftp",
+			"--host=" + cfg.SftpHost,
+			"--port=" + fmt.Sprintf("%d", cfg.SftpPort),
+			"--username=" + cfg.SftpUser,
+			"--path=" + cfg.SftpPath,
 		}
 		if cfg.SftpKeyPath != "" {
-			args = append(args, "--sftp.keyfile="+cfg.SftpKeyPath)
+			args = append(args, "--keyfile="+cfg.SftpKeyPath)
 		}
 		return args
 
@@ -346,8 +348,8 @@ func (k *KopiaClient) targetArgs(cfg *BackupConfig) []string {
 		}
 		os.MkdirAll(path, 0755)
 		return []string{
-			"--storage-type=filesystem",
-			"--file.path=" + path,
+			"filesystem",
+			"--path=" + path,
 		}
 	}
 }
