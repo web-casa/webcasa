@@ -157,7 +157,7 @@ func (s *Service) DeleteStack(id uint) error {
 	}
 
 	// Stop containers.
-	_ = s.runCompose(stack.DataDir, "down", "--remove-orphans")
+	_ = s.runCompose(stack.Name, stack.DataDir, "down", "--remove-orphans")
 
 	// Remove data directory.
 	os.RemoveAll(stack.DataDir)
@@ -173,7 +173,7 @@ func (s *Service) StackUp(id uint) error {
 	if err != nil {
 		return err
 	}
-	return s.runCompose(stack.DataDir, "up", "-d", "--remove-orphans")
+	return s.runCompose(stack.Name, stack.DataDir, "up", "-d", "--remove-orphans")
 }
 
 // StackDown stops a stack (docker compose down).
@@ -182,7 +182,7 @@ func (s *Service) StackDown(id uint) error {
 	if err != nil {
 		return err
 	}
-	return s.runCompose(stack.DataDir, "down")
+	return s.runCompose(stack.Name, stack.DataDir, "down")
 }
 
 // StackRestart restarts a stack.
@@ -191,7 +191,7 @@ func (s *Service) StackRestart(id uint) error {
 	if err != nil {
 		return err
 	}
-	return s.runCompose(stack.DataDir, "restart")
+	return s.runCompose(stack.Name, stack.DataDir, "restart")
 }
 
 // StackPull pulls the latest images for a stack.
@@ -200,7 +200,7 @@ func (s *Service) StackPull(id uint) error {
 	if err != nil {
 		return err
 	}
-	return s.runCompose(stack.DataDir, "pull")
+	return s.runCompose(stack.Name, stack.DataDir, "pull")
 }
 
 // StackLogs returns recent logs for a stack.
@@ -212,7 +212,7 @@ func (s *Service) StackLogs(id uint, tail string) (string, error) {
 	if tail == "" {
 		tail = "200"
 	}
-	output, err := s.runComposeOutput(stack.DataDir, "logs", "--tail", tail, "--no-color")
+	output, err := s.runComposeOutput(stack.Name, stack.DataDir, "logs", "--tail", tail, "--no-color")
 	if err != nil {
 		return "", err
 	}
@@ -231,7 +231,7 @@ func (s *Service) StackLogsFollow(ctx context.Context, id uint, tail string) (io
 	}
 	cmd := exec.CommandContext(ctx, "docker", "compose", "logs", "--follow", "--tail", tail, "--no-color")
 	cmd.Dir = stack.DataDir
-	cmd.Env = append(os.Environ(), "COMPOSE_PROJECT_NAME="+filepath.Base(stack.DataDir))
+	cmd.Env = append(os.Environ(), "COMPOSE_PROJECT_NAME="+sanitizeName(stack.Name))
 
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {
@@ -287,31 +287,36 @@ func (s *Service) resolveStackStatus(name string) string {
 }
 
 // runCompose executes a docker compose command in the given directory.
-func (s *Service) runCompose(dir string, args ...string) error {
+// name is used as the COMPOSE_PROJECT_NAME to ensure consistency.
+func (s *Service) runCompose(name, dir string, args ...string) error {
 	fullArgs := append([]string{"compose"}, args...)
 	cmd := exec.Command("docker", fullArgs...)
 	cmd.Dir = dir
-	cmd.Env = append(os.Environ(), "COMPOSE_PROJECT_NAME="+filepath.Base(dir))
+	cmd.Env = append(os.Environ(), "COMPOSE_PROJECT_NAME="+sanitizeName(name))
 
 	output, err := cmd.CombinedOutput()
 	if err != nil {
+		outStr := strings.TrimSpace(string(output))
 		s.logger.Error("docker compose failed",
 			"dir", dir,
 			"args", strings.Join(args, " "),
-			"output", string(output),
+			"output", outStr,
 			"err", err,
 		)
-		return fmt.Errorf("docker compose %s: %s", args[0], strings.TrimSpace(string(output)))
+		if outStr != "" {
+			return fmt.Errorf("docker compose %s: %s", args[0], outStr)
+		}
+		return fmt.Errorf("docker compose %s: %v", args[0], err)
 	}
 	return nil
 }
 
 // runComposeOutput executes a compose command and returns stdout.
-func (s *Service) runComposeOutput(dir string, args ...string) (string, error) {
+func (s *Service) runComposeOutput(name, dir string, args ...string) (string, error) {
 	fullArgs := append([]string{"compose"}, args...)
 	cmd := exec.Command("docker", fullArgs...)
 	cmd.Dir = dir
-	cmd.Env = append(os.Environ(), "COMPOSE_PROJECT_NAME="+filepath.Base(dir))
+	cmd.Env = append(os.Environ(), "COMPOSE_PROJECT_NAME="+sanitizeName(name))
 
 	output, err := cmd.CombinedOutput()
 	if err != nil {

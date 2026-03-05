@@ -43,6 +43,7 @@ type AppDefinition struct {
 	Website     string    `gorm:"size:512" json:"website"`
 	Source      string    `gorm:"size:512" json:"source_url"`  // upstream source code URL
 	Available   bool      `gorm:"default:true" json:"available"`
+	UrlSuffix   string    `gorm:"size:128" json:"url_suffix"`  // e.g. "/admin" for Pi-hole
 	CreatedAt   time.Time `json:"created_at"`
 	UpdatedAt   time.Time `json:"updated_at"`
 }
@@ -66,6 +67,7 @@ type InstalledApp struct {
 	Status     string    `gorm:"size:16;default:installing" json:"status"` // installing, running, stopped, error
 	ComposeDir string    `gorm:"size:512" json:"-"`            // path to rendered compose files
 	AutoUpdate bool      `gorm:"default:false" json:"auto_update"`
+	UrlSuffix  string    `gorm:"size:128" json:"url_suffix"`   // e.g. "/admin"
 	CreatedAt  time.Time `json:"created_at"`
 	UpdatedAt  time.Time `json:"updated_at"`
 }

@@ -1341,7 +1341,12 @@
         "deploy_success": "Project created from template",
         "categories": "Categories",
         "updates_available": "{{count}} update(s) available",
-        "source": "Source"
+        "source": "Source",
+        "security_warning": "This app requires special system privileges",
+        "security_privileged": "Privileged mode",
+        "security_cap_add": "Extra capabilities",
+        "security_pid_host": "Host PID namespace",
+        "security_docker_socket": "Docker Socket access"
     },
     "notify": {
         "title": "Notifications",

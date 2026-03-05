@@ -1,6 +1,6 @@
 import { useState, useEffect, useCallback } from 'react'
-import { Box, Flex, Heading, Text, Card, Button, TextField, Badge, Separator, Dialog, Switch, Code, ScrollArea } from '@radix-ui/themes'
-import { ArrowLeft, ExternalLink, RefreshCw, Download, Globe } from 'lucide-react'
+import { Box, Flex, Heading, Text, Card, Button, TextField, Badge, Separator, Dialog, Switch, Code, ScrollArea, Callout } from '@radix-ui/themes'
+import { ArrowLeft, ExternalLink, RefreshCw, Download, Globe, AlertTriangle } from 'lucide-react'
 import { useParams, useNavigate } from 'react-router'
 import { appstoreAPI } from '../api/index.js'
 import { useTranslation } from 'react-i18next'
@@ -47,6 +47,7 @@ export default function AppDetail() {
 
     const configurableFields = formFields.filter(f => f.type !== 'random')
     const hasConfig = configurableFields.length > 0
+    const securityWarnings = app?.security_warnings || []
 
     const handleFieldChange = (envVar, value) => {
         setFormValues(prev => ({ ...prev, [envVar]: value }))
@@ -175,6 +176,16 @@ export default function AppDetail() {
                             {hasConfig ? '3' : '2'}. {t('appstore.step_review')}
                         </Badge>
                     </Flex>
+
+                    {/* Security warnings */}
+                    {securityWarnings.length > 0 && (
+                        <Callout.Root color="orange" mb="3">
+                            <Callout.Icon><AlertTriangle size={16} /></Callout.Icon>
+                            <Callout.Text>
+                                {t('appstore.security_warning')}: {securityWarnings.map(w => t(`appstore.security_${w}`, w)).join(', ')}
+                            </Callout.Text>
+                        </Callout.Root>
+                    )}
 
                     {/* Step 0: Configuration form */}
                     {step === 0 && hasConfig && (

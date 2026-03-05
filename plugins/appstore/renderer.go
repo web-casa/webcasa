@@ -3,8 +3,10 @@ package appstore
 import (
 	"bufio"
 	"crypto/rand"
+	"encoding/base64"
 	"encoding/hex"
 	"fmt"
+	"net"
 	"os"
 	"regexp"
 	"strings"
@@ -100,7 +102,7 @@ func ValidateFormValues(fields []FormField, values map[string]string) error {
 }
 
 // FillRandomFields generates random values for "random" type fields
-// and adds them to the values map.
+// and adds them to the values map. Supports "encoding" field: "base64" for base64 output.
 func FillRandomFields(fields []FormField, values map[string]string) {
 	for _, f := range fields {
 		if f.Type != "random" {
@@ -114,7 +116,11 @@ func FillRandomFields(fields []FormField, values map[string]string) {
 		if f.Min != nil && *f.Min > 0 {
 			length = *f.Min
 		}
-		values[f.EnvVariable] = GenerateRandomValue(length)
+		if f.Encoding == "base64" {
+			values[f.EnvVariable] = GenerateRandomBase64Value(length)
+		} else {
+			values[f.EnvVariable] = GenerateRandomValue(length)
+		}
 	}
 }
 
@@ -207,6 +213,59 @@ func cleanEmptySection(content, sectionKey string) string {
 		i++
 	}
 	return strings.Join(out, "\n")
+}
+
+// GenerateRandomBase64Value generates a crypto-random base64-encoded string.
+// length is the number of random bytes before encoding.
+func GenerateRandomBase64Value(length int) string {
+	if length <= 0 {
+		length = 32
+	}
+	b := make([]byte, length)
+	_, _ = rand.Read(b)
+	return base64.StdEncoding.EncodeToString(b)
+}
+
+// getLocalIP returns the first non-loopback IPv4 address of the host.
+func getLocalIP() string {
+	addrs, err := net.InterfaceAddrs()
+	if err != nil {
+		return "127.0.0.1"
+	}
+	for _, addr := range addrs {
+		if ipNet, ok := addr.(*net.IPNet); ok && !ipNet.IP.IsLoopback() {
+			if ipNet.IP.To4() != nil {
+				return ipNet.IP.String()
+			}
+		}
+	}
+	return "127.0.0.1"
+}
+
+// DetectSecurityFlags scans a compose file for privileged Docker features.
+func DetectSecurityFlags(compose string) []string {
+	seen := make(map[string]bool)
+	scanner := bufio.NewScanner(strings.NewReader(compose))
+	for scanner.Scan() {
+		trimmed := strings.TrimSpace(scanner.Text())
+		if trimmed == "privileged: true" && !seen["privileged"] {
+			seen["privileged"] = true
+		}
+		if strings.HasPrefix(trimmed, "cap_add:") && !seen["cap_add"] {
+			seen["cap_add"] = true
+		}
+		if trimmed == "pid: host" && !seen["pid_host"] {
+			seen["pid_host"] = true
+		}
+		if strings.Contains(trimmed, "docker.sock") && !seen["docker_socket"] {
+			seen["docker_socket"] = true
+		}
+	}
+	var result []string
+	for k := range seen {
+		result = append(result, k)
+	}
+	return result
 }
 
 // getSystemTimezone reads the system timezone (e.g. "Asia/Shanghai").

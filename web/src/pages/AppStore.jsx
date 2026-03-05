@@ -348,7 +348,7 @@ export default function AppStore() {
                                                     </Flex>
                                                     <Text size="2" color="gray">
                                                         {app.app_name} v{app.version}
-                                                        {app.domain && <> &middot; {app.domain}</>}
+                                                        {app.domain && <> &middot; <a href={`https://${app.domain}${app.url_suffix || ''}`} target="_blank" rel="noopener noreferrer" style={{ color: 'var(--accent-11)' }}>{app.domain}{app.url_suffix || ''}</a></>}
                                                     </Text>
                                                 </Box>
                                             </Flex>

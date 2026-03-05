@@ -165,6 +165,12 @@ func (s *Service) InstallApp(req *InstallAppRequest) (*InstalledApp, error) {
 
 	// 5. Create InstalledApp record first to get ID
 	stackName := sanitizeStackName(req.Name)
+	// Extract url_suffix from config.json
+	var appConfig AppConfig
+	if app.ConfigJSON != "" {
+		json.Unmarshal([]byte(app.ConfigJSON), &appConfig)
+	}
+
 	installed := &InstalledApp{
 		AppID:      req.AppID,
 		AppName:    app.Name,
@@ -175,6 +181,7 @@ func (s *Service) InstallApp(req *InstallAppRequest) (*InstalledApp, error) {
 		Version:    app.Version,
 		Status:     "installing",
 		AutoUpdate: req.AutoUpdate,
+		UrlSuffix:  appConfig.UrlSuffix,
 	}
 
 	formJSON, _ := json.Marshal(req.FormValues)
@@ -199,18 +206,23 @@ func (s *Service) InstallApp(req *InstallAppRequest) (*InstalledApp, error) {
 	if req.Domain != "" {
 		exposed = "true"
 	}
+	// Ensure shared media directory exists for ROOT_FOLDER_HOST
+	os.MkdirAll(filepath.Join(s.dataDir, "media"), 0755)
+
 	builtins := map[string]string{
 		"APP_ID":            req.AppID,
 		"APP_PORT":          fmt.Sprintf("%d", app.Port),
 		"APP_DATA_DIR":      filepath.Join(composeDir, "data"),
 		"APP_DOMAIN":        req.Domain,
-		"ROOT_FOLDER_HOST":  composeDir,
+		"ROOT_FOLDER_HOST":  s.dataDir,
 		"APP_EXPOSED":       exposed,
 		"APP_PROTOCOL":      protocol,
 		"APP_HOST":          req.Domain,
 		"LOCAL_DOMAIN":      req.Domain,
 		"TZ":                getSystemTimezone(),
 		"NETWORK_INTERFACE": "0.0.0.0",
+		"DNS_IP":            "1.1.1.1",
+		"INTERNAL_IP":       getLocalIP(),
 	}
 
 	// 8. Render compose and env
@@ -445,13 +457,15 @@ func (s *Service) UpdateApp(id uint) error {
 		"APP_PORT":          fmt.Sprintf("%d", app.Port),
 		"APP_DATA_DIR":      filepath.Join(installed.ComposeDir, "data"),
 		"APP_DOMAIN":        installed.Domain,
-		"ROOT_FOLDER_HOST":  installed.ComposeDir,
+		"ROOT_FOLDER_HOST":  s.dataDir,
 		"APP_EXPOSED":       exposed,
 		"APP_PROTOCOL":      "https",
 		"APP_HOST":          installed.Domain,
 		"LOCAL_DOMAIN":      installed.Domain,
 		"TZ":                getSystemTimezone(),
 		"NETWORK_INTERFACE": "0.0.0.0",
+		"DNS_IP":            "1.1.1.1",
+		"INTERNAL_IP":       getLocalIP(),
 	}
 
 	rendered := SanitizeCompose(RenderCompose(app.ComposeFile, formValues, builtins))
@@ -509,7 +523,7 @@ func (s *Service) runCompose(dir, projectName string, args ...string) error {
 
 // resolveAppStatus checks if compose services are running.
 func (s *Service) resolveAppStatus(dir, projectName string) string {
-	cmd := exec.Command("docker", "compose", "ps", "--format", "json", "-q")
+	cmd := exec.Command("docker", "compose", "ps", "--status", "running", "-q")
 	cmd.Dir = dir
 	cmd.Env = append(os.Environ(), "COMPOSE_PROJECT_NAME="+projectName)
 

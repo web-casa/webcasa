@@ -25,11 +25,12 @@ type AppConfig struct {
 	Available              *bool       `json:"available"`
 	FormFields             []FormField `json:"form_fields"`
 	SupportedArchitectures []string    `json:"supported_architectures"`
+	UrlSuffix              string      `json:"url_suffix"`
 }
 
 // FormField defines a user-configurable parameter in an app's install form.
 type FormField struct {
-	Type         string       `json:"type"`                    // text, password, email, number, fqdn, ip, random, boolean
+	Type         string       `json:"type"`                    // text, password, email, number, fqdn, ip, fqdnip, random, boolean
 	Label        string       `json:"label"`
 	Hint         string       `json:"hint,omitempty"`
 	Placeholder  string       `json:"placeholder,omitempty"`
@@ -41,6 +42,7 @@ type FormField struct {
 	Regex        string       `json:"regex,omitempty"`
 	PatternError string       `json:"pattern_error,omitempty"`
 	Options      []FormOption `json:"options,omitempty"`
+	Encoding     string       `json:"encoding,omitempty"`      // "base64" for base64-encoded random values
 }
 
 // FormOption is a selectable option for dropdown form fields.

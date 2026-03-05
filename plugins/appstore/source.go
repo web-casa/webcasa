@@ -238,6 +238,7 @@ func (sm *SourceManager) syncApps(sourceID uint, repoPath string) error {
 
 		categoriesJSON, _ := json.Marshal(app.Config.Categories)
 		formFieldsJSON, _ := json.Marshal(app.Config.FormFields)
+		configJSON, _ := json.Marshal(app.Config)
 
 		exposable := true
 		if app.Config.Exposable != nil {
@@ -260,12 +261,13 @@ func (sm *SourceManager) syncApps(sourceID uint, repoPath string) error {
 			Port:        app.Config.Port,
 			Exposable:   exposable,
 			ComposeFile: app.ComposeFile,
-			ConfigJSON:  string(formFieldsJSON),
+			ConfigJSON:  string(configJSON),
 			FormFields:  string(formFieldsJSON),
 			LogoPath:    app.LogoPath,
 			Website:     app.Config.Website,
 			Source:       app.Config.Source,
 			Available:   available,
+			UrlSuffix:   app.Config.UrlSuffix,
 		}
 
 		// Upsert by source_id + app_id

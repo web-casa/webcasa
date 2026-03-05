@@ -1341,7 +1341,12 @@
         "deploy_success": "已从模板创建项目",
         "categories": "分类",
         "updates_available": "有 {{count}} 个可用更新",
-        "source": "来源"
+        "source": "来源",
+        "security_warning": "此应用需要特殊系统权限",
+        "security_privileged": "特权模式",
+        "security_cap_add": "额外系统能力",
+        "security_pid_host": "主机 PID 命名空间",
+        "security_docker_socket": "Docker Socket 访问"
     },
     "notify": {
         "title": "通知",
