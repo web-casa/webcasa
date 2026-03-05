@@ -107,9 +107,15 @@ func ParseAppDir(dirPath string) (*ParsedApp, error) {
 }
 
 // ParseSourceRepo walks a cloned repo and returns all parsed apps.
-// Each subdirectory at the root level is expected to be an app.
+// It checks both the repo root and the "apps/" subdirectory (Runtipi convention).
 func ParseSourceRepo(repoPath string) ([]*ParsedApp, []string, error) {
-	entries, err := os.ReadDir(repoPath)
+	// Runtipi repos put apps under "apps/"; also support flat root layout.
+	scanDir := repoPath
+	if info, err := os.Stat(filepath.Join(repoPath, "apps")); err == nil && info.IsDir() {
+		scanDir = filepath.Join(repoPath, "apps")
+	}
+
+	entries, err := os.ReadDir(scanDir)
 	if err != nil {
 		return nil, nil, fmt.Errorf("read repo dir: %w", err)
 	}
@@ -128,7 +134,7 @@ func ParseSourceRepo(repoPath string) ([]*ParsedApp, []string, error) {
 			continue
 		}
 
-		appDir := filepath.Join(repoPath, name)
+		appDir := filepath.Join(scanDir, name)
 
 		// Check if this dir has a config.json (is it an app?)
 		if _, err := os.Stat(filepath.Join(appDir, "config.json")); os.IsNotExist(err) {
