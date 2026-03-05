@@ -125,6 +125,10 @@ func (s *Service) UpdateStack(id uint, req *CreateStackRequest) (*Stack, error) 
 		return nil, err
 	}
 
+	if stack.ManagedBy != "" {
+		return nil, fmt.Errorf("stack is managed by %s, please use the %s plugin to manage it", stack.ManagedBy, stack.ManagedBy)
+	}
+
 	stack.Description = req.Description
 	stack.ComposeFile = req.ComposeFile
 	stack.EnvFile = req.EnvFile
@@ -154,6 +158,10 @@ func (s *Service) DeleteStack(id uint) error {
 	stack, err := s.GetStack(id)
 	if err != nil {
 		return err
+	}
+
+	if stack.ManagedBy != "" {
+		return fmt.Errorf("stack is managed by %s, please use the %s plugin to manage it", stack.ManagedBy, stack.ManagedBy)
 	}
 
 	// Stop containers.

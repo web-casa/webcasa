@@ -390,6 +390,7 @@ export const appstoreAPI = {
     stopApp: (id) => api.post(`/plugins/appstore/installed/${id}/stop`),
     updateApp: (id) => api.post(`/plugins/appstore/installed/${id}/update`, {}, { timeout: 300000 }),
     uninstall: (id, removeData) => api.delete(`/plugins/appstore/installed/${id}`, { params: { remove_data: removeData } }),
+    updateDomain: (id, domain) => api.put(`/plugins/appstore/installed/${id}/domain`, { domain }),
     checkUpdates: () => api.get('/plugins/appstore/updates'),
     // Templates
     listTemplates: (params) => api.get('/plugins/appstore/templates', { params }),

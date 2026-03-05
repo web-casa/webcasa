@@ -12,6 +12,7 @@ type Stack struct {
 	Status      string    `gorm:"size:16;default:stopped" json:"status"` // running, stopped, partial, error
 	DataDir     string    `gorm:"size:512" json:"data_dir"`              // directory where compose file is stored
 	AutoUpdate  *bool     `gorm:"default:false" json:"auto_update"`
+	ManagedBy   string    `gorm:"size:32" json:"managed_by"` // "" = user-created, "appstore" = managed by App Store
 	CreatedAt   time.Time `json:"created_at"`
 	UpdatedAt   time.Time `json:"updated_at"`
 }

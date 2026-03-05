@@ -318,6 +318,27 @@ func (h *Handler) InstallApp(c *gin.Context) {
 	c.JSON(http.StatusCreated, app)
 }
 
+// UpdateDomain changes the domain for an installed app.
+// PUT /api/plugins/appstore/installed/:id/domain
+func (h *Handler) UpdateDomain(c *gin.Context) {
+	id, err := parseID(c)
+	if err != nil {
+		return
+	}
+	var req struct {
+		Domain string `json:"domain"`
+	}
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+	if err := h.svc.UpdateDomain(id, req.Domain); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"message": "Domain updated"})
+}
+
 // StartApp starts a stopped installed app.
 // POST /api/plugins/appstore/installed/:id/start
 func (h *Handler) StartApp(c *gin.Context) {

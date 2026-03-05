@@ -220,7 +220,7 @@ func (s *Service) InstallApp(req *InstallAppRequest) (*InstalledApp, error) {
 		"APP_HOST":          req.Domain,
 		"LOCAL_DOMAIN":      req.Domain,
 		"TZ":                getSystemTimezone(),
-		"NETWORK_INTERFACE": "0.0.0.0",
+		"NETWORK_INTERFACE": "127.0.0.1",
 		"DNS_IP":            "1.1.1.1",
 		"INTERNAL_IP":       getLocalIP(),
 	}
@@ -258,7 +258,7 @@ func (s *Service) InstallApp(req *InstallAppRequest) (*InstalledApp, error) {
 			UpstreamAddr: fmt.Sprintf("localhost:%d", app.Port),
 			TLSEnabled:   true,
 			HTTPRedirect: true,
-			WebSocket:    false,
+			WebSocket:    true,
 		})
 		if err != nil {
 			s.logger.Error("create host failed", "domain", req.Domain, "err", err)
@@ -362,6 +362,71 @@ func (s *Service) GetInstalled(id uint) (*InstalledApp, error) {
 	return &app, nil
 }
 
+// UpdateDomain changes the domain for an installed app, updating Caddy reverse proxy and .env.
+func (s *Service) UpdateDomain(id uint, domain string) error {
+	var installed InstalledApp
+	if err := s.db.First(&installed, id).Error; err != nil {
+		return err
+	}
+
+	// Remove old reverse proxy host
+	if installed.HostID > 0 {
+		if err := s.coreAPI.DeleteHost(installed.HostID); err != nil {
+			s.logger.Error("delete old host failed", "host_id", installed.HostID, "err", err)
+		}
+		installed.HostID = 0
+	}
+
+	// Create new reverse proxy host if domain is provided
+	if domain != "" && installed.Port > 0 {
+		hostID, err := s.coreAPI.CreateHost(pluginpkg.CreateHostRequest{
+			Domain:       domain,
+			UpstreamAddr: fmt.Sprintf("localhost:%d", installed.Port),
+			TLSEnabled:   true,
+			HTTPRedirect: true,
+			WebSocket:    true,
+		})
+		if err != nil {
+			s.logger.Error("create host failed", "domain", domain, "err", err)
+		} else {
+			installed.HostID = hostID
+		}
+	}
+
+	// Update database record
+	installed.Domain = domain
+	if err := s.db.Model(&installed).Updates(map[string]interface{}{
+		"domain":  domain,
+		"host_id": installed.HostID,
+	}).Error; err != nil {
+		return err
+	}
+
+	// Update .env file with new domain values
+	if installed.ComposeDir != "" {
+		envPath := filepath.Join(installed.ComposeDir, ".env")
+		if data, err := os.ReadFile(envPath); err == nil {
+			lines := strings.Split(string(data), "\n")
+			domainVars := map[string]bool{"APP_DOMAIN": true, "APP_HOST": true, "LOCAL_DOMAIN": true}
+			var out []string
+			for _, line := range lines {
+				parts := strings.SplitN(line, "=", 2)
+				if len(parts) == 2 && domainVars[parts[0]] {
+					out = append(out, parts[0]+"="+domain)
+				} else {
+					out = append(out, line)
+				}
+			}
+			os.WriteFile(envPath, []byte(strings.Join(out, "\n")), 0644)
+		}
+
+		// Restart compose to pick up new .env
+		_ = s.runCompose(installed.ComposeDir, installed.StackName, "up", "-d", "--remove-orphans")
+	}
+
+	return nil
+}
+
 // StartApp starts an installed app.
 func (s *Service) StartApp(id uint) error {
 	var app InstalledApp
@@ -463,7 +528,7 @@ func (s *Service) UpdateApp(id uint) error {
 		"APP_HOST":          installed.Domain,
 		"LOCAL_DOMAIN":      installed.Domain,
 		"TZ":                getSystemTimezone(),
-		"NETWORK_INTERFACE": "0.0.0.0",
+		"NETWORK_INTERFACE": "127.0.0.1",
 		"DNS_IP":            "1.1.1.1",
 		"INTERNAL_IP":       getLocalIP(),
 	}
@@ -554,6 +619,7 @@ func (s *Service) createDockerStackRecord(name, composeFile, envFile, dataDir st
 		"env_file":     envFile,
 		"status":       "running",
 		"data_dir":     dataDir,
+		"managed_by":   "appstore",
 	})
 }
 

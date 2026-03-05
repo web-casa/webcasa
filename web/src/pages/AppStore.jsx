@@ -1,6 +1,6 @@
 import { useState, useEffect, useCallback, useRef } from 'react'
 import { Box, Flex, Heading, Text, Card, Button, TextField, Badge, Tabs, Dialog, Select, Separator, IconButton, Tooltip } from '@radix-ui/themes'
-import { Store, Search, RefreshCw, Settings2, Plus, Trash2, Play, Square, ArrowUpCircle, ExternalLink, Package, Copy, Check } from 'lucide-react'
+import { Store, Search, RefreshCw, Settings2, Plus, Trash2, Play, Square, ArrowUpCircle, ExternalLink, Package, Copy, Check, Globe, Pencil } from 'lucide-react'
 import { useNavigate } from 'react-router'
 import { appstoreAPI } from '../api/index.js'
 import { useTranslation } from 'react-i18next'
@@ -27,6 +27,9 @@ export default function AppStore() {
     const [syncDone, setSyncDone] = useState(false)
     const [syncError, setSyncError] = useState(false)
     const [syncCopied, setSyncCopied] = useState(false)
+    const [domainDialog, setDomainDialog] = useState(null) // { id, name, domain }
+    const [domainInput, setDomainInput] = useState('')
+    const [domainSaving, setDomainSaving] = useState(false)
     const syncLogsEndRef = useRef(null)
     const autoSyncTriggered = useRef(false)
 
@@ -110,6 +113,26 @@ export default function AppStore() {
             await fetchUpdates()
         } catch { /* ignore */ }
         finally { setActionLoading(prev => ({ ...prev, [key]: false })) }
+    }
+
+    // Domain management
+    const openDomainDialog = (app) => {
+        setDomainInput(app.domain || '')
+        setDomainDialog({ id: app.id, name: app.name, domain: app.domain })
+    }
+
+    const saveDomain = async () => {
+        if (!domainDialog) return
+        setDomainSaving(true)
+        try {
+            await appstoreAPI.updateDomain(domainDialog.id, domainInput.trim())
+            await fetchInstalled()
+            setDomainDialog(null)
+        } catch (err) {
+            alert(err.response?.data?.error || 'Failed to update domain')
+        } finally {
+            setDomainSaving(false)
+        }
     }
 
     // Source management
@@ -346,10 +369,17 @@ export default function AppStore() {
                                                             <Badge color="orange" size="1">{t('appstore.update_available')}</Badge>
                                                         )}
                                                     </Flex>
-                                                    <Text size="2" color="gray">
-                                                        {app.app_name} v{app.version}
-                                                        {app.domain && <> &middot; <a href={`https://${app.domain}${app.url_suffix || ''}`} target="_blank" rel="noopener noreferrer" style={{ color: 'var(--accent-11)' }}>{app.domain}{app.url_suffix || ''}</a></>}
-                                                    </Text>
+                                                    <Flex align="center" gap="1">
+                                                        <Text size="2" color="gray">
+                                                            {app.app_name} v{app.version}
+                                                            {app.domain && <> &middot; <a href={`https://${app.domain}${app.url_suffix || ''}`} target="_blank" rel="noopener noreferrer" style={{ color: 'var(--accent-11)' }}>{app.domain}{app.url_suffix || ''}</a></>}
+                                                        </Text>
+                                                        <Tooltip content={app.domain ? t('appstore.change_domain') : t('appstore.add_domain')}>
+                                                            <IconButton size="1" variant="ghost" onClick={() => openDomainDialog(app)}>
+                                                                <Globe size={12} />
+                                                            </IconButton>
+                                                        </Tooltip>
+                                                    </Flex>
                                                 </Box>
                                             </Flex>
                                             <Flex gap="2">
@@ -388,6 +418,26 @@ export default function AppStore() {
                     </Box>
                 </Tabs.Content>
             </Tabs.Root>
+
+            {/* ─── Domain Dialog ─── */}
+            <Dialog.Root open={!!domainDialog} onOpenChange={(open) => { if (!open) setDomainDialog(null) }}>
+                <Dialog.Content maxWidth="400px">
+                    <Dialog.Title>{t('appstore.change_domain')}</Dialog.Title>
+                    <Text size="2" color="gray" mb="3">{domainDialog?.name}</Text>
+                    <Flex direction="column" gap="3" mt="3">
+                        <TextField.Root
+                            placeholder="app.example.com"
+                            value={domainInput}
+                            onChange={e => setDomainInput(e.target.value)}
+                        />
+                        <Text size="1" color="gray">{t('appstore.domain_change_hint')}</Text>
+                        <Flex justify="end" gap="2">
+                            <Button variant="soft" onClick={() => setDomainDialog(null)}>{t('common.cancel')}</Button>
+                            <Button loading={domainSaving} onClick={saveDomain}>{t('common.save')}</Button>
+                        </Flex>
+                    </Flex>
+                </Dialog.Content>
+            </Dialog.Root>
 
             {/* ─── Sources Dialog ─── */}
             <Dialog.Root open={sourcesOpen} onOpenChange={setSourcesOpen}>

@@ -221,6 +221,7 @@ export default function DockerOverview() {
                                     <Flex align="center" gap="2">
                                         <Text weight="bold" size="3">{s.name}</Text>
                                         <Badge color={statusColors[s.status] || 'gray'} variant="soft" size="1">{s.status}</Badge>
+                                        {s.managed_by === 'appstore' && <Badge color="blue" variant="soft" size="1">{t('docker.managed_by_appstore')}</Badge>}
                                     </Flex>
                                     {s.description && <Text size="2" color="gray">{s.description}</Text>}
                                 </Flex>
@@ -253,10 +254,12 @@ export default function DockerOverview() {
                                             <Radio size={14} /> {t('docker.live')}
                                         </Button>
                                     )}
-                                    <Button size="1" variant="soft" color="red" disabled={!!actionLoading}
-                                        onClick={() => { if (confirm(t('docker.confirm_delete'))) doAction(s.id, 'deleteStack', 'Delete') }}>
-                                        <Trash2 size={14} />
-                                    </Button>
+                                    {!s.managed_by && (
+                                        <Button size="1" variant="soft" color="red" disabled={!!actionLoading}
+                                            onClick={() => { if (confirm(t('docker.confirm_delete'))) doAction(s.id, 'deleteStack', 'Delete') }}>
+                                            <Trash2 size={14} />
+                                        </Button>
+                                    )}
                                 </Flex>
                             </Flex>
                         </Card>

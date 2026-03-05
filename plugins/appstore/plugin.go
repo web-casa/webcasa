@@ -81,6 +81,7 @@ func (p *Plugin) Init(ctx *pluginpkg.Context) error {
 	a.POST("/installed/:id/start", p.handler.StartApp)
 	a.POST("/installed/:id/stop", p.handler.StopApp)
 	a.POST("/installed/:id/update", p.handler.UpdateApp)
+	a.PUT("/installed/:id/domain", p.handler.UpdateDomain)
 	a.DELETE("/installed/:id", p.handler.UninstallApp)
 	r.GET("/updates", p.handler.CheckUpdates)
 
