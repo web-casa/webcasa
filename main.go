@@ -30,6 +30,7 @@ import (
 	mcpplugin "github.com/web-casa/webcasa/plugins/mcpserver"
 	backupplugin "github.com/web-casa/webcasa/plugins/backup"
 	monitoringplugin "github.com/web-casa/webcasa/plugins/monitoring"
+	firewallplugin "github.com/web-casa/webcasa/plugins/firewall"
 	"github.com/gin-contrib/cors"
 	"github.com/gin-gonic/gin"
 	"golang.org/x/crypto/bcrypt"
@@ -369,6 +370,9 @@ func initPlugins(db *gorm.DB, protectedRouter *gin.RouterGroup, adminRouter *gin
 	}
 	if err := pluginMgr.Register(mcpplugin.New()); err != nil {
 		log.Printf("⚠️  Register mcpserver plugin: %v", err)
+	}
+	if err := pluginMgr.Register(firewallplugin.New()); err != nil {
+		log.Printf("⚠️  Register firewall plugin: %v", err)
 	}
 	// Future:
 

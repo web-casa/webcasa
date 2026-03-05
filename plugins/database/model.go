@@ -182,7 +182,7 @@ type CreateInstanceRequest struct {
 	Engine       EngineType `json:"engine" binding:"required"`
 	Version      string     `json:"version"`
 	Port         int        `json:"port"`
-	RootPassword string     `json:"root_password" binding:"required"`
+	RootPassword string     `json:"root_password"`
 	MemoryLimit  string        `json:"memory_limit"`
 	AutoStart    bool          `json:"auto_start"`
 	Config       *EngineConfig `json:"config,omitempty"`

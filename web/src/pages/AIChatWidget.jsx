@@ -710,7 +710,7 @@ export default function AIChatWidget() {
     }, [])
 
     const handleKeyDown = (e) => {
-        if (e.key === 'Enter' && !e.shiftKey) {
+        if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) {
             e.preventDefault()
             sendMessage()
         }
@@ -982,12 +982,13 @@ export default function AIChatWidget() {
 
                                     {/* Input */}
                                     <Box p="2" style={{ borderTop: '1px solid var(--gray-4)', flexShrink: 0 }}>
-                                        <Flex gap="2">
-                                            <TextField.Root
-                                                style={{ flex: 1 }}
+                                        <Flex gap="2" align="end">
+                                            <textarea
+                                                rows={1}
+                                                style={{ flex: 1, resize: 'none', border: '1px solid var(--gray-6)', borderRadius: 6, padding: '6px 10px', fontSize: 14, fontFamily: 'inherit', background: 'var(--color-background)', color: 'var(--gray-12)', outline: 'none', maxHeight: 120, overflow: 'auto' }}
                                                 placeholder={t('ai.input_placeholder')}
                                                 value={input}
-                                                onChange={(e) => setInput(e.target.value)}
+                                                onChange={(e) => { setInput(e.target.value); e.target.style.height = 'auto'; e.target.style.height = Math.min(e.target.scrollHeight, 120) + 'px' }}
                                                 onKeyDown={handleKeyDown}
                                                 disabled={streaming}
                                             />
@@ -1008,12 +1009,13 @@ export default function AIChatWidget() {
                             {/* Input when on conversation list */}
                             {messages.length === 0 && !currentConv && (
                                 <Box style={{ position: 'absolute', bottom: 0, left: 0, right: 0, padding: 8, borderTop: '1px solid var(--gray-4)', background: 'var(--color-background)' }}>
-                                    <Flex gap="2">
-                                        <TextField.Root
-                                            style={{ flex: 1 }}
+                                    <Flex gap="2" align="end">
+                                        <textarea
+                                            rows={1}
+                                            style={{ flex: 1, resize: 'none', border: '1px solid var(--gray-6)', borderRadius: 6, padding: '6px 10px', fontSize: 14, fontFamily: 'inherit', background: 'var(--color-background)', color: 'var(--gray-12)', outline: 'none', maxHeight: 120, overflow: 'auto' }}
                                             placeholder={t('ai.input_placeholder')}
                                             value={input}
-                                            onChange={(e) => setInput(e.target.value)}
+                                            onChange={(e) => { setInput(e.target.value); e.target.style.height = 'auto'; e.target.style.height = Math.min(e.target.scrollHeight, 120) + 'px' }}
                                             onKeyDown={handleKeyDown}
                                             disabled={streaming}
                                         />

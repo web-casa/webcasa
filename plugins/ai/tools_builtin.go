@@ -1661,6 +1661,130 @@ func registerMemoryTools(r *ToolRegistry) {
 			return map[string]interface{}{"status": "deleted", "id": p.ID}, nil
 		},
 	})
+
+	// ── Firewall tools ──
+
+	r.Register(&Tool{
+		Name:        "firewall_status",
+		Description: "Get firewalld status including whether it is running, version, default zone, and active zones with their ports and services.",
+		Parameters: jsonSchema(map[string]interface{}{
+			"type":       "object",
+			"properties": map[string]interface{}{},
+		}),
+		ReadOnly: true,
+		Handler: func(ctx context.Context, args json.RawMessage) (interface{}, error) {
+			return r.coreAPI.FirewallStatus()
+		},
+	})
+
+	r.Register(&Tool{
+		Name:        "list_firewall_rules",
+		Description: "List firewall rules (ports, services, rich rules) for a specific zone. If zone is empty, uses the default zone.",
+		Parameters: jsonSchema(map[string]interface{}{
+			"type": "object",
+			"properties": map[string]interface{}{
+				"zone": map[string]interface{}{
+					"type":        "string",
+					"description": "The firewalld zone name (leave empty for default zone)",
+				},
+			},
+		}),
+		ReadOnly: true,
+		Handler: func(ctx context.Context, args json.RawMessage) (interface{}, error) {
+			var p struct {
+				Zone string `json:"zone"`
+			}
+			if err := json.Unmarshal(args, &p); err != nil {
+				return nil, fmt.Errorf("parse args: %w", err)
+			}
+			return r.coreAPI.FirewallListRules(p.Zone)
+		},
+	})
+
+	r.Register(&Tool{
+		Name:        "manage_firewall_rule",
+		Description: "Add or remove a firewall rule. Supports port rules (e.g. 8080/tcp), service rules (e.g. http, https), and rich rules. Note: Docker containers using -p port mapping bypass firewalld rules.",
+		Parameters: jsonSchema(map[string]interface{}{
+			"type": "object",
+			"properties": map[string]interface{}{
+				"action": map[string]interface{}{
+					"type":        "string",
+					"enum":        []string{"add", "remove"},
+					"description": "Whether to add or remove the rule",
+				},
+				"type": map[string]interface{}{
+					"type":        "string",
+					"enum":        []string{"port", "service"},
+					"description": "Type of rule: 'port' for port/protocol rules, 'service' for named services",
+				},
+				"zone": map[string]interface{}{
+					"type":        "string",
+					"description": "The firewalld zone (leave empty for default zone)",
+				},
+				"value": map[string]interface{}{
+					"type":        "string",
+					"description": "The value: port number (e.g. '8080') or port range (e.g. '8080-8090') for port type, or service name (e.g. 'http') for service type",
+				},
+				"protocol": map[string]interface{}{
+					"type":        "string",
+					"enum":        []string{"tcp", "udp"},
+					"description": "Protocol, required only for port type rules",
+				},
+			},
+			"required": []string{"action", "type", "value"},
+		}),
+		ReadOnly:          false,
+		NeedsConfirmation: true,
+		Handler: func(ctx context.Context, args json.RawMessage) (interface{}, error) {
+			var p struct {
+				Action   string `json:"action"`
+				Type     string `json:"type"`
+				Zone     string `json:"zone"`
+				Value    string `json:"value"`
+				Protocol string `json:"protocol"`
+			}
+			if err := json.Unmarshal(args, &p); err != nil {
+				return nil, fmt.Errorf("parse args: %w", err)
+			}
+
+			switch p.Type {
+			case "port":
+				if p.Protocol == "" {
+					p.Protocol = "tcp"
+				}
+				if p.Action == "add" {
+					if err := r.coreAPI.FirewallAddPort(p.Zone, p.Value, p.Protocol); err != nil {
+						return nil, err
+					}
+				} else {
+					if err := r.coreAPI.FirewallRemovePort(p.Zone, p.Value, p.Protocol); err != nil {
+						return nil, err
+					}
+				}
+			case "service":
+				if p.Action == "add" {
+					if err := r.coreAPI.FirewallAddService(p.Zone, p.Value); err != nil {
+						return nil, err
+					}
+				} else {
+					if err := r.coreAPI.FirewallRemoveService(p.Zone, p.Value); err != nil {
+						return nil, err
+					}
+				}
+			default:
+				return nil, fmt.Errorf("unsupported rule type: %s", p.Type)
+			}
+
+			return map[string]interface{}{
+				"status":  "ok",
+				"action":  p.Action,
+				"type":    p.Type,
+				"value":   p.Value,
+				"zone":    p.Zone,
+				"message": fmt.Sprintf("Successfully %sed %s rule: %s", p.Action, p.Type, p.Value),
+			}, nil
+		},
+	})
 }
 
 // jsonSchema is a helper that returns the map as-is (for readability in tool definitions).

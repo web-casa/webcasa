@@ -533,11 +533,11 @@ export default function DatabaseInstances() {
                             </Box>
                         )}
 
-                        {/* Root Password (not for Redis) */}
-                        {form.engine && form.engine.toLowerCase() !== 'redis' && (
+                        {/* Root Password */}
+                        {form.engine && (
                             <Box>
                                 <Text size="2" weight="bold" mb="1" style={{ display: 'block' }}>
-                                    {t('database.root_password')}
+                                    {t('database.root_password')}{form.engine.toLowerCase() !== 'redis' ? ' *' : ` (${t('common.optional')})`}
                                 </Text>
                                 <Flex gap="2">
                                     <Box style={{ flex: 1 }}>

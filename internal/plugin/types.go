@@ -108,6 +108,14 @@ type CoreAPI interface {
 	FileWrite(path, content string) error
 	FileDelete(path string) error
 	FileRename(oldPath, newPath string) error
+
+	// Firewall management
+	FirewallStatus() (map[string]interface{}, error)
+	FirewallListRules(zone string) (map[string]interface{}, error)
+	FirewallAddPort(zone, port, protocol string) error
+	FirewallRemovePort(zone, port, protocol string) error
+	FirewallAddService(zone, service string) error
+	FirewallRemoveService(zone, service string) error
 }
 
 // UpdateHostRequest describes fields that can be changed on an existing host via AI.

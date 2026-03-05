@@ -26,6 +26,7 @@ import AppStore from './pages/AppStore.jsx'
 import AppDetail from './pages/AppDetail.jsx'
 import TemplateMarket from './pages/TemplateMarket.jsx'
 import PluginsPage from './pages/PluginsPage.jsx'
+import FirewallManager from './pages/FirewallManager.jsx'
 
 function ProtectedRoute({ children }) {
     const token = useAuthStore((s) => s.token)
@@ -75,6 +76,7 @@ export default function App() {
                     <Route path="store" element={<AppStore />} />
                     <Route path="store/app/:id" element={<AppDetail />} />
                     <Route path="store/templates" element={<TemplateMarket />} />
+                    <Route path="firewall" element={<FirewallManager />} />
                     <Route path="plugins" element={<PluginsPage />} />
 
                     {/* Redirects: old standalone pages → Settings */}

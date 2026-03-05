@@ -2,7 +2,7 @@ import { useState, useEffect, useRef, useCallback } from 'react'
 import {
     Box, Flex, Heading, Text, Button, Card, Badge, Callout, Separator, Code,
     Tabs, Switch, TextField, IconButton, Dialog, AlertDialog, Spinner,
-    Select, Table, Tooltip,
+    Select, Table, Tooltip, TextArea,
 } from '@radix-ui/themes'
 import {
     Play, Square, RefreshCw, Download, Upload, Server, FileCode,

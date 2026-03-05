@@ -985,6 +985,161 @@ func resolvePartialPath(abs string) string {
 }
 
 // ──────────────────────────────────────────────────
+// Firewall management (via firewall-cmd)
+// ──────────────────────────────────────────────────
+
+func (a *CoreAPIImpl) firewallCmd(args ...string) (string, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	out, err := exec.CommandContext(ctx, "firewall-cmd", args...).CombinedOutput()
+	result := strings.TrimSpace(string(out))
+	if err != nil {
+		return result, fmt.Errorf("%s: %s", err, result)
+	}
+	return result, nil
+}
+
+func (a *CoreAPIImpl) firewallDefaultZone() string {
+	if z, err := a.firewallCmd("--get-default-zone"); err == nil {
+		return strings.TrimSpace(z)
+	}
+	return "public"
+}
+
+func (a *CoreAPIImpl) FirewallStatus() (map[string]interface{}, error) {
+	result := map[string]interface{}{"installed": false, "running": false}
+	if _, err := exec.LookPath("firewall-cmd"); err != nil {
+		return result, nil
+	}
+	result["installed"] = true
+
+	out, err := a.firewallCmd("--state")
+	if err != nil {
+		return result, nil
+	}
+	result["running"] = strings.TrimSpace(out) == "running"
+	if !result["running"].(bool) {
+		return result, nil
+	}
+	if v, err := a.firewallCmd("--version"); err == nil {
+		result["version"] = strings.TrimSpace(v)
+	}
+	if z, err := a.firewallCmd("--get-default-zone"); err == nil {
+		result["default_zone"] = strings.TrimSpace(z)
+	}
+
+	// Active zones with their rules.
+	if z, err := a.firewallCmd("--get-zones"); err == nil {
+		result["zones"] = strings.Fields(z)
+	}
+	activeMap := make(map[string]bool)
+	if out, err := a.firewallCmd("--get-active-zones"); err == nil {
+		for _, line := range strings.Split(out, "\n") {
+			line = strings.TrimSpace(line)
+			if line != "" && !strings.HasPrefix(line, "interfaces:") && !strings.HasPrefix(line, "sources:") {
+				activeMap[line] = true
+			}
+		}
+	}
+
+	var activeZones []map[string]interface{}
+	for name := range activeMap {
+		if out, err := a.firewallCmd("--zone="+name, "--list-all"); err == nil {
+			z := map[string]interface{}{"name": name, "active": true}
+			for _, line := range strings.Split(out, "\n") {
+				line = strings.TrimSpace(line)
+				if strings.HasPrefix(line, "services:") {
+					z["services"] = strings.Fields(strings.TrimPrefix(line, "services:"))
+				} else if strings.HasPrefix(line, "ports:") {
+					z["ports"] = strings.Fields(strings.TrimPrefix(line, "ports:"))
+				}
+			}
+			activeZones = append(activeZones, z)
+		}
+	}
+	result["active_zones"] = activeZones
+	return result, nil
+}
+
+func (a *CoreAPIImpl) FirewallListRules(zone string) (map[string]interface{}, error) {
+	if zone == "" {
+		zone = a.firewallDefaultZone()
+	}
+	out, err := a.firewallCmd("--zone="+zone, "--list-all")
+	if err != nil {
+		return nil, fmt.Errorf("list rules for zone %s: %w", zone, err)
+	}
+
+	result := map[string]interface{}{"zone": zone}
+	var richRules []string
+	for _, line := range strings.Split(out, "\n") {
+		line = strings.TrimSpace(line)
+		if strings.HasPrefix(line, "services:") {
+			result["services"] = strings.Fields(strings.TrimPrefix(line, "services:"))
+		} else if strings.HasPrefix(line, "ports:") {
+			result["ports"] = strings.Fields(strings.TrimPrefix(line, "ports:"))
+		} else if strings.HasPrefix(line, "target:") {
+			result["target"] = strings.TrimSpace(strings.TrimPrefix(line, "target:"))
+		} else if strings.HasPrefix(line, "interfaces:") {
+			result["interfaces"] = strings.Fields(strings.TrimPrefix(line, "interfaces:"))
+		} else if strings.HasPrefix(line, "rich rules:") {
+			raw := strings.TrimSpace(strings.TrimPrefix(line, "rich rules:"))
+			if raw != "" {
+				richRules = append(richRules, raw)
+			}
+		} else if strings.HasPrefix(line, "rule ") {
+			richRules = append(richRules, line)
+		}
+	}
+	result["rich_rules"] = richRules
+	return result, nil
+}
+
+func (a *CoreAPIImpl) FirewallAddPort(zone, port, protocol string) error {
+	if zone == "" {
+		zone = a.firewallDefaultZone()
+	}
+	if _, err := a.firewallCmd("--permanent", "--zone="+zone, "--add-port="+port+"/"+protocol); err != nil {
+		return fmt.Errorf("add port: %w", err)
+	}
+	_, _ = a.firewallCmd("--reload")
+	return nil
+}
+
+func (a *CoreAPIImpl) FirewallRemovePort(zone, port, protocol string) error {
+	if zone == "" {
+		zone = a.firewallDefaultZone()
+	}
+	if _, err := a.firewallCmd("--permanent", "--zone="+zone, "--remove-port="+port+"/"+protocol); err != nil {
+		return fmt.Errorf("remove port: %w", err)
+	}
+	_, _ = a.firewallCmd("--reload")
+	return nil
+}
+
+func (a *CoreAPIImpl) FirewallAddService(zone, service string) error {
+	if zone == "" {
+		zone = a.firewallDefaultZone()
+	}
+	if _, err := a.firewallCmd("--permanent", "--zone="+zone, "--add-service="+service); err != nil {
+		return fmt.Errorf("add service: %w", err)
+	}
+	_, _ = a.firewallCmd("--reload")
+	return nil
+}
+
+func (a *CoreAPIImpl) FirewallRemoveService(zone, service string) error {
+	if zone == "" {
+		zone = a.firewallDefaultZone()
+	}
+	if _, err := a.firewallCmd("--permanent", "--zone="+zone, "--remove-service="+service); err != nil {
+		return fmt.Errorf("remove service: %w", err)
+	}
+	_, _ = a.firewallCmd("--reload")
+	return nil
+}
+
+// ──────────────────────────────────────────────────
 // Internal helpers
 // ──────────────────────────────────────────────────
 

@@ -428,6 +428,21 @@ export const mcpAPI = {
     deleteToken: (id) => api.delete(`/plugins/mcpserver/tokens/${id}`),
 }
 
+// ============ Firewall (plugin) ============
+export const firewallAPI = {
+    status: () => api.get('/plugins/firewall/status'),
+    zones: () => api.get('/plugins/firewall/zones'),
+    zone: (name) => api.get(`/plugins/firewall/zones/${name}`),
+    addPort: (data) => api.post('/plugins/firewall/ports', data),
+    removePort: (data) => api.delete('/plugins/firewall/ports', { data }),
+    addService: (data) => api.post('/plugins/firewall/services', data),
+    removeService: (data) => api.delete('/plugins/firewall/services', { data }),
+    addRichRule: (data) => api.post('/plugins/firewall/rich-rules', data),
+    removeRichRule: (data) => api.delete('/plugins/firewall/rich-rules', { data }),
+    availableServices: () => api.get('/plugins/firewall/available-services'),
+    reload: () => api.post('/plugins/firewall/reload'),
+}
+
 export const notifyAPI = {
     listChannels: () => api.get('/notify/channels'),
     createChannel: (data) => api.post('/notify/channels', data),

@@ -60,6 +60,11 @@ func (s *Service) CreateInstance(req *CreateInstanceRequest) (*Instance, error) 
 		return nil, fmt.Errorf("unsupported engine: %s", req.Engine)
 	}
 
+	// Require password for non-Redis engines.
+	if req.Engine != EngineRedis && req.RootPassword == "" {
+		return nil, fmt.Errorf("root_password is required for %s", req.Engine)
+	}
+
 	// Default version.
 	version := req.Version
 	if version == "" {
@@ -148,6 +153,10 @@ func (s *Service) CreateInstanceStream(req *CreateInstanceRequest, progressCb fu
 	engineInfo := findEngine(req.Engine)
 	if engineInfo == nil {
 		return nil, fmt.Errorf("unsupported engine: %s", req.Engine)
+	}
+
+	if req.Engine != EngineRedis && req.RootPassword == "" {
+		return nil, fmt.Errorf("root_password is required for %s", req.Engine)
 	}
 
 	version := req.Version
