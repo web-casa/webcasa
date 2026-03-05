@@ -193,17 +193,28 @@ func (s *Service) InstallApp(req *InstallAppRequest) (*InstalledApp, error) {
 	installed.ComposeDir = composeDir
 	s.db.Model(installed).Update("compose_dir", composeDir)
 
-	// 7. Built-in variables
+	// 7. Built-in variables (including Runtipi-compatible ones)
+	protocol := "https"
+	exposed := "false"
+	if req.Domain != "" {
+		exposed = "true"
+	}
 	builtins := map[string]string{
-		"APP_ID":        req.AppID,
-		"APP_PORT":      fmt.Sprintf("%d", app.Port),
-		"APP_DATA_DIR":  filepath.Join(composeDir, "data"),
-		"APP_DOMAIN":    req.Domain,
-		"ROOT_FOLDER_HOST": composeDir,
+		"APP_ID":            req.AppID,
+		"APP_PORT":          fmt.Sprintf("%d", app.Port),
+		"APP_DATA_DIR":      filepath.Join(composeDir, "data"),
+		"APP_DOMAIN":        req.Domain,
+		"ROOT_FOLDER_HOST":  composeDir,
+		"APP_EXPOSED":       exposed,
+		"APP_PROTOCOL":      protocol,
+		"APP_HOST":          req.Domain,
+		"LOCAL_DOMAIN":      req.Domain,
+		"TZ":                getSystemTimezone(),
+		"NETWORK_INTERFACE": "0.0.0.0",
 	}
 
 	// 8. Render compose and env
-	rendered := RenderCompose(app.ComposeFile, req.FormValues, builtins)
+	rendered := SanitizeCompose(RenderCompose(app.ComposeFile, req.FormValues, builtins))
 	envContent := RenderEnvFile(req.FormValues, builtins)
 
 	// Write files
@@ -425,15 +436,25 @@ func (s *Service) UpdateApp(id uint) error {
 	}
 
 	// Re-render with new compose
+	exposed := "false"
+	if installed.Domain != "" {
+		exposed = "true"
+	}
 	builtins := map[string]string{
 		"APP_ID":            installed.AppID,
 		"APP_PORT":          fmt.Sprintf("%d", app.Port),
 		"APP_DATA_DIR":      filepath.Join(installed.ComposeDir, "data"),
 		"APP_DOMAIN":        installed.Domain,
 		"ROOT_FOLDER_HOST":  installed.ComposeDir,
+		"APP_EXPOSED":       exposed,
+		"APP_PROTOCOL":      "https",
+		"APP_HOST":          installed.Domain,
+		"LOCAL_DOMAIN":      installed.Domain,
+		"TZ":                getSystemTimezone(),
+		"NETWORK_INTERFACE": "0.0.0.0",
 	}
 
-	rendered := RenderCompose(app.ComposeFile, formValues, builtins)
+	rendered := SanitizeCompose(RenderCompose(app.ComposeFile, formValues, builtins))
 	envContent := RenderEnvFile(formValues, builtins)
 
 	// Write updated files
@@ -471,13 +492,17 @@ func (s *Service) runCompose(dir, projectName string, args ...string) error {
 
 	output, err := cmd.CombinedOutput()
 	if err != nil {
+		outStr := strings.TrimSpace(string(output))
 		s.logger.Error("docker compose failed",
 			"dir", dir,
 			"args", strings.Join(args, " "),
-			"output", string(output),
+			"output", outStr,
 			"err", err,
 		)
-		return fmt.Errorf("docker compose %s: %s", args[0], strings.TrimSpace(string(output)))
+		if outStr != "" {
+			return fmt.Errorf("docker compose %s: %s", args[0], outStr)
+		}
+		return fmt.Errorf("docker compose %s: %v", args[0], err)
 	}
 	return nil
 }

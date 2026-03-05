@@ -1,6 +1,7 @@
 package firewall
 
 import (
+	"fmt"
 	"net/http"
 
 	"github.com/gin-gonic/gin"
@@ -148,4 +149,24 @@ func (h *Handler) ReloadFirewall(c *gin.Context) {
 		return
 	}
 	c.JSON(http.StatusOK, gin.H{"message": "firewalld reloaded"})
+}
+
+// InstallFirewalld streams the firewalld installation progress via SSE.
+func (h *Handler) InstallFirewalld(c *gin.Context) {
+	c.Header("Content-Type", "text/event-stream")
+	c.Header("Cache-Control", "no-cache")
+	c.Header("Connection", "keep-alive")
+	c.Header("X-Accel-Buffering", "no")
+	c.Writer.Flush()
+
+	writeSSE := func(data string) {
+		fmt.Fprintf(c.Writer, "data: %s\n\n", data)
+		c.Writer.Flush()
+	}
+	writeEvent := func(event, data string) {
+		fmt.Fprintf(c.Writer, "event: %s\ndata: %s\n\n", event, data)
+		c.Writer.Flush()
+	}
+
+	h.svc.InstallFirewalld(writeSSE, writeEvent)
 }

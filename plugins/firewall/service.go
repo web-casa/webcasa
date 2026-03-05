@@ -1,8 +1,10 @@
 package firewall
 
 import (
+	"bufio"
 	"fmt"
 	"log/slog"
+	"os"
 	"os/exec"
 	"regexp"
 	"strings"
@@ -317,4 +319,116 @@ func splitNonEmpty(s string) []string {
 		}
 	}
 	return result
+}
+
+// InstallFirewalld installs firewalld, enables and starts the service.
+// Progress is streamed via writeSSE (log lines) and writeEvent (done/error signals).
+func (s *Service) InstallFirewalld(writeSSE func(string), writeEvent func(string, string)) {
+	// Check if already installed.
+	if _, err := exec.LookPath("firewall-cmd"); err == nil {
+		writeSSE("firewalld is already installed")
+		writeEvent("done", "ok")
+		return
+	}
+
+	osFamily := detectOSFamily()
+	writeSSE("Detected OS family: " + osFamily)
+
+	var installCmd string
+	switch osFamily {
+	case "rhel":
+		installCmd = "dnf install -y firewalld"
+	case "debian":
+		installCmd = "apt-get update && apt-get install -y firewalld"
+	default:
+		writeSSE("ERROR: Unsupported OS family: " + osFamily)
+		writeEvent("error", "Unsupported OS family")
+		return
+	}
+
+	writeSSE("Installing firewalld...")
+	if !s.streamCmd(installCmd, writeSSE) {
+		writeEvent("error", "Installation failed")
+		return
+	}
+
+	// Enable and start.
+	writeSSE("Enabling and starting firewalld...")
+	if !s.streamCmd("systemctl enable --now firewalld", writeSSE) {
+		writeEvent("error", "Failed to start firewalld")
+		return
+	}
+
+	// Verify.
+	if v, err := s.runCmd("--version"); err == nil {
+		writeSSE("firewalld installed successfully: " + strings.TrimSpace(v))
+		writeEvent("done", "ok")
+	} else {
+		writeSSE("ERROR: firewall-cmd not found after installation")
+		writeEvent("error", "firewall-cmd not found after install")
+	}
+}
+
+// streamCmd runs a shell command and streams stdout/stderr line by line.
+// Returns true if the command exits successfully.
+func (s *Service) streamCmd(shellCmd string, writeSSE func(string)) bool {
+	cmd := exec.Command("bash", "-c", shellCmd)
+	stdout, err := cmd.StdoutPipe()
+	if err != nil {
+		writeSSE("ERROR: " + err.Error())
+		return false
+	}
+	cmd.Stderr = cmd.Stdout
+
+	if err := cmd.Start(); err != nil {
+		writeSSE("ERROR: " + err.Error())
+		return false
+	}
+
+	scanner := bufio.NewScanner(stdout)
+	for scanner.Scan() {
+		line := strings.TrimSpace(scanner.Text())
+		if line != "" {
+			writeSSE(line)
+		}
+	}
+
+	if err := cmd.Wait(); err != nil {
+		writeSSE("ERROR: command failed: " + err.Error())
+		return false
+	}
+	return true
+}
+
+// detectOSFamily reads /etc/os-release to determine the OS family.
+func detectOSFamily() string {
+	data, err := os.ReadFile("/etc/os-release")
+	if err != nil {
+		return "unknown"
+	}
+	content := strings.ToLower(string(data))
+
+	for _, line := range strings.Split(content, "\n") {
+		if strings.HasPrefix(line, "id_like=") {
+			val := strings.Trim(strings.TrimPrefix(line, "id_like="), "\"")
+			if strings.Contains(val, "debian") || strings.Contains(val, "ubuntu") {
+				return "debian"
+			}
+			if strings.Contains(val, "rhel") || strings.Contains(val, "fedora") || strings.Contains(val, "centos") {
+				return "rhel"
+			}
+		}
+	}
+	for _, line := range strings.Split(content, "\n") {
+		if strings.HasPrefix(line, "id=") {
+			val := strings.Trim(strings.TrimPrefix(line, "id="), "\"")
+			switch val {
+			case "debian", "ubuntu", "linuxmint", "pop", "kali", "deepin":
+				return "debian"
+			case "rhel", "centos", "fedora", "rocky", "almalinux", "ol", "amzn":
+				return "rhel"
+			}
+		}
+	}
+	return "unknown"
 }

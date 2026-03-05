@@ -1,9 +1,11 @@
 package appstore
 
 import (
+	"bufio"
 	"crypto/rand"
 	"encoding/hex"
 	"fmt"
+	"os"
 	"regexp"
 	"strings"
 )
@@ -126,4 +128,101 @@ func FillDefaults(fields []FormField, values map[string]string) {
 			values[f.EnvVariable] = fmt.Sprintf("%v", f.Default)
 		}
 	}
+}
+
+// SanitizeCompose cleans up a Runtipi-format compose file for standalone use:
+//   - Removes tipi_main_network references (services & top-level)
+//   - Strips traefik.* and runtipi.* labels
+func SanitizeCompose(compose string) string {
+	var out []string
+	scanner := bufio.NewScanner(strings.NewReader(compose))
+	skipTopNetwork := false
+
+	for scanner.Scan() {
+		line := scanner.Text()
+		trimmed := strings.TrimSpace(line)
+
+		// Skip traefik and runtipi labels
+		if strings.HasPrefix(trimmed, "traefik.") || strings.HasPrefix(trimmed, "runtipi.") {
+			continue
+		}
+
+		// Skip "- tipi_main_network" service-level network reference
+		if trimmed == "- tipi_main_network" {
+			continue
+		}
+
+		// Skip top-level "tipi_main_network:" block and its children
+		if skipTopNetwork {
+			if strings.HasPrefix(line, "  ") || strings.HasPrefix(line, "\t") {
+				continue
+			}
+			skipTopNetwork = false
+		}
+		if trimmed == "tipi_main_network:" {
+			skipTopNetwork = true
+			continue
+		}
+
+		out = append(out, line)
+	}
+
+	// Clean up empty networks/labels sections
+	result := strings.Join(out, "\n")
+	result = cleanEmptySection(result, "networks:")
+	result = cleanEmptySection(result, "labels:")
+	return result
+}
+
+// cleanEmptySection removes a YAML section that has no content after it
+// (only whitespace/empty lines before the next same-level or higher key).
+func cleanEmptySection(content, sectionKey string) string {
+	lines := strings.Split(content, "\n")
+	var out []string
+	i := 0
+	for i < len(lines) {
+		trimmed := strings.TrimSpace(lines[i])
+		if trimmed == sectionKey {
+			// Check if next non-empty line is at same or lower indent (section is empty)
+			indent := len(lines[i]) - len(strings.TrimLeft(lines[i], " \t"))
+			j := i + 1
+			empty := true
+			for j < len(lines) {
+				if strings.TrimSpace(lines[j]) == "" {
+					j++
+					continue
+				}
+				childIndent := len(lines[j]) - len(strings.TrimLeft(lines[j], " \t"))
+				if childIndent > indent {
+					empty = false
+				}
+				break
+			}
+			if empty {
+				i++ // skip empty section header
+				continue
+			}
+		}
+		out = append(out, lines[i])
+		i++
+	}
+	return strings.Join(out, "\n")
+}
+
+// getSystemTimezone reads the system timezone (e.g. "Asia/Shanghai").
+func getSystemTimezone() string {
+	// Try /etc/timezone first (Debian/Ubuntu)
+	if data, err := os.ReadFile("/etc/timezone"); err == nil {
+		if tz := strings.TrimSpace(string(data)); tz != "" {
+			return tz
+		}
+	}
+	// Try reading the symlink /etc/localtime (RHEL/CentOS)
+	if target, err := os.Readlink("/etc/localtime"); err == nil {
+		// e.g. /usr/share/zoneinfo/Asia/Shanghai → Asia/Shanghai
+		if idx := strings.Index(target, "zoneinfo/"); idx >= 0 {
+			return target[idx+len("zoneinfo/"):]
+		}
+	}
+	return "UTC"
 }

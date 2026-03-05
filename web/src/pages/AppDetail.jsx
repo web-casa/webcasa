@@ -4,6 +4,7 @@ import { ArrowLeft, ExternalLink, RefreshCw, Download, Globe } from 'lucide-reac
 import { useParams, useNavigate } from 'react-router'
 import { appstoreAPI } from '../api/index.js'
 import { useTranslation } from 'react-i18next'
+import Markdown from 'react-markdown'
 
 export default function AppDetail() {
     const { t } = useTranslation()
@@ -35,7 +36,7 @@ export default function AppDetail() {
     useEffect(() => { fetchApp() }, [fetchApp])
 
     const formFields = (() => {
-        try { return JSON.parse(app?.form_fields || '[]') }
+        try { return JSON.parse(app?.form_fields || '[]') || [] }
         catch { return [] }
     })()
 
@@ -134,7 +135,7 @@ export default function AppDetail() {
                             )}
                         </Flex>
                     </Box>
-                    <Button size="3" onClick={() => { setStep(0); setInstallOpen(true) }}>
+                    <Button size="3" onClick={() => { setStep(hasConfig ? 0 : 1); setInstallOpen(true) }}>
                         <Download size={16} /> {t('appstore.install')}
                     </Button>
                 </Flex>
@@ -143,9 +144,9 @@ export default function AppDetail() {
             {/* Description */}
             {app.description && (
                 <Card mb="4">
-                    <Text size="2" style={{ whiteSpace: 'pre-wrap', lineHeight: 1.7 }}>
-                        {app.description}
-                    </Text>
+                    <Box className="app-description">
+                        <Markdown>{app.description}</Markdown>
+                    </Box>
                 </Card>
             )}
 

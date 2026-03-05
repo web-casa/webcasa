@@ -59,11 +59,12 @@ func (p *Plugin) Init(ctx *pluginpkg.Context) error {
 	// 4. Register routes
 	r := ctx.Router       // read-only for any logged-in user
 	a := ctx.AdminRouter  // admin-only for dangerous operations
+	pub := ctx.PublicRouter // public (no JWT) for static assets
 
 	// App catalog (read)
 	r.GET("/apps", p.handler.ListApps)
 	r.GET("/apps/:id", p.handler.GetApp)
-	r.GET("/apps/:id/logo", p.handler.AppLogo)
+	pub.GET("/apps/:id/logo", p.handler.AppLogo) // public: <img src> can't send JWT
 	r.GET("/categories", p.handler.ListCategories)
 
 	// Sources (admin)

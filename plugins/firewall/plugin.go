@@ -55,6 +55,7 @@ func (p *Plugin) Init(ctx *pluginpkg.Context) error {
 	a.POST("/rich-rules", p.handler.AddRichRule)
 	a.DELETE("/rich-rules", p.handler.RemoveRichRule)
 	a.POST("/reload", p.handler.ReloadFirewall)
+	a.POST("/install", p.handler.InstallFirewalld)
 
 	ctx.Logger.Info("Firewall plugin routes registered")
 	return nil

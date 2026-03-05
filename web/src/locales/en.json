@@ -1408,7 +1408,13 @@
         "reloaded": "firewalld configuration reloaded",
         "docker_warning": "Docker ports published with -p bypass firewalld rules. To restrict Docker port access, configure Docker network policies or use Rich Rules.",
         "rule_added": "Rule added",
-        "rule_removed": "Rule removed"
+        "rule_removed": "Rule removed",
+        "install_firewalld": "Install firewalld",
+        "installing": "Installing...",
+        "install_hint": "Firewall management requires firewalld. Click the button below to install it.",
+        "install_success": "firewalld installed successfully",
+        "install_failed": "Installation failed",
+        "retry_install": "Retry Install"
     },
     "mcp": {
         "title": "API Tokens",

@@ -1408,7 +1408,13 @@
         "reloaded": "firewalld 配置已重载",
         "docker_warning": "Docker 使用 -p 映射的端口会绕过 firewalld 规则。如需限制 Docker 端口访问，请配置 Docker 的网络策略或使用 Rich Rules。",
         "rule_added": "规则已添加",
-        "rule_removed": "规则已删除"
+        "rule_removed": "规则已删除",
+        "install_firewalld": "安装 firewalld",
+        "installing": "正在安装...",
+        "install_hint": "防火墙管理需要 firewalld，点击下方按钮自动安装。",
+        "install_success": "firewalld 安装成功",
+        "install_failed": "安装失败",
+        "retry_install": "重试安装"
     },
     "mcp": {
         "title": "API 令牌",

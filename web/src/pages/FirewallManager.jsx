@@ -1,10 +1,11 @@
-import { useState, useEffect, useCallback } from 'react'
+import { useState, useEffect, useCallback, useRef } from 'react'
 import {
     Box, Flex, Text, Card, Badge, Button, Table, Dialog, TextField,
     Select, Tabs, Callout, Heading,
 } from '@radix-ui/themes'
 import {
     Shield, Plus, Trash2, RefreshCw, AlertTriangle, Info,
+    Download, CheckCircle2, AlertCircle,
 } from 'lucide-react'
 import { useTranslation } from 'react-i18next'
 import { firewallAPI } from '../api/index.js'
@@ -31,6 +32,61 @@ export default function FirewallManager() {
     // Confirm remove dialog
     const [removeOpen, setRemoveOpen] = useState(false)
     const [removeTarget, setRemoveTarget] = useState(null)
+
+    // Install state
+    const [installing, setInstalling] = useState(false)
+    const [installLogs, setInstallLogs] = useState([])
+    const [installDone, setInstallDone] = useState(false)
+    const [installError, setInstallError] = useState(false)
+    const installLogsEndRef = useRef(null)
+
+    useEffect(() => {
+        if (installLogsEndRef.current) {
+            installLogsEndRef.current.scrollIntoView({ behavior: 'smooth' })
+        }
+    }, [installLogs])
+
+    const handleInstallFirewalld = () => {
+        setInstalling(true)
+        setInstallLogs([])
+        setInstallDone(false)
+        setInstallError(false)
+
+        const token = localStorage.getItem('token')
+        fetch('/api/plugins/firewall/install', {
+            method: 'POST',
+            headers: { 'Authorization': `Bearer ${token}` },
+        }).then(async (response) => {
+            const reader = response.body.getReader()
+            const decoder = new TextDecoder()
+            let buffer = ''
+
+            while (true) {
+                const { done, value } = await reader.read()
+                if (done) break
+                buffer += decoder.decode(value, { stream: true })
+
+                const lines = buffer.split('\n')
+                buffer = lines.pop() || ''
+
+                for (const line of lines) {
+                    if (line.startsWith('data: ')) {
+                        setInstallLogs(prev => [...prev, line.slice(6)])
+                    } else if (line.startsWith('event: done')) {
+                        setInstallDone(true)
+                    } else if (line.startsWith('event: error')) {
+                        setInstallError(true)
+                    }
+                }
+            }
+            setInstallDone(prev => prev || true)
+        }).catch((err) => {
+            setInstallLogs(prev => [...prev, `ERROR: ${err.message}`])
+            setInstallError(true)
+        }).finally(() => {
+            setInstalling(false)
+        })
+    }
 
     const fetchData = useCallback(async () => {
         try {
@@ -139,19 +195,62 @@ export default function FirewallManager() {
         )
     }
 
-    // Not installed
+    // Not installed — show install UI
     if (status && !status.installed) {
         return (
             <Box p="6" style={{ maxWidth: 800, margin: '0 auto' }}>
                 <Heading size="5" mb="4">{t('firewall.title')}</Heading>
-                <Callout.Root color="orange" size="2">
-                    <Callout.Icon><AlertTriangle size={18} /></Callout.Icon>
-                    <Callout.Text>
-                        <Text weight="bold">{t('firewall.not_installed')}</Text>
-                        <br />
-                        {t('firewall.not_installed_hint')}
-                    </Callout.Text>
-                </Callout.Root>
+                <Card style={{ background: 'var(--cp-card)', border: '1px solid var(--cp-border)' }}>
+                    <Flex direction="column" gap="3" p="2">
+                        <Flex align="center" gap="2">
+                            <AlertTriangle size={20} style={{ color: 'var(--orange-9)' }} />
+                            <Text size="3" weight="bold">{t('firewall.not_installed')}</Text>
+                        </Flex>
+                        <Text size="2" color="gray">{t('firewall.install_hint')}</Text>
+
+                        {installLogs.length > 0 && (
+                            <Box style={{
+                                background: 'var(--gray-2)', borderRadius: 8, padding: 12,
+                                maxHeight: 300, overflowY: 'auto', fontFamily: 'monospace', fontSize: 12,
+                            }}>
+                                {installLogs.map((line, i) => (
+                                    <Text key={i} size="1" as="div" style={{
+                                        color: line.startsWith('ERROR') ? 'var(--red-9)' : 'var(--cp-text)',
+                                        whiteSpace: 'pre-wrap', wordBreak: 'break-all',
+                                    }}>{line}</Text>
+                                ))}
+                                <div ref={installLogsEndRef} />
+                            </Box>
+                        )}
+
+                        <Flex gap="2" align="center">
+                            {!installDone && !installError && (
+                                <Button onClick={handleInstallFirewalld} disabled={installing}>
+                                    <Download size={14} />
+                                    {installing ? t('firewall.installing') : t('firewall.install_firewalld')}
+                                </Button>
+                            )}
+                            {installDone && !installError && (
+                                <Flex align="center" gap="2">
+                                    <CheckCircle2 size={18} style={{ color: 'var(--green-9)' }} />
+                                    <Text size="2" color="green" weight="medium">{t('firewall.install_success')}</Text>
+                                    <Button variant="soft" onClick={() => window.location.reload()}>
+                                        <RefreshCw size={14} /> {t('firewall.reload')}
+                                    </Button>
+                                </Flex>
+                            )}
+                            {installError && (
+                                <Flex align="center" gap="2">
+                                    <AlertCircle size={18} style={{ color: 'var(--red-9)' }} />
+                                    <Text size="2" color="red" weight="medium">{t('firewall.install_failed')}</Text>
+                                    <Button variant="soft" color="red" onClick={handleInstallFirewalld} disabled={installing}>
+                                        <RefreshCw size={14} /> {t('firewall.retry_install')}
+                                    </Button>
+                                </Flex>
+                            )}
+                        </Flex>
+                    </Flex>
+                </Card>
             </Box>
         )
     }

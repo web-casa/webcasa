@@ -356,3 +356,61 @@ body {
     width: auto !important;
   }
 }
+
+/* App Store description markdown */
+.app-description {
+  font-size: 0.875rem;
+  line-height: 1.7;
+  color: var(--cp-text);
+}
+.app-description h1, .app-description h2, .app-description h3 {
+  margin-top: 1em;
+  margin-bottom: 0.5em;
+  font-weight: 600;
+  line-height: 1.3;
+}
+.app-description h1 { font-size: 1.25rem; }
+.app-description h2 { font-size: 1.1rem; }
+.app-description h3 { font-size: 1rem; }
+.app-description p { margin: 0.5em 0; }
+.app-description ul, .app-description ol {
+  padding-left: 1.5em;
+  margin: 0.5em 0;
+}
+.app-description li { margin: 0.25em 0; }
+.app-description a {
+  color: var(--accent-11, #10b981);
+  text-decoration: underline;
+}
+.app-description code {
+  background: var(--cp-code-bg);
+  padding: 0.15em 0.4em;
+  border-radius: 4px;
+  font-size: 0.85em;
+}
+.app-description pre {
+  background: var(--cp-code-bg);
+  padding: 0.75em 1em;
+  border-radius: 6px;
+  overflow-x: auto;
+  margin: 0.5em 0;
+}
+.app-description pre code {
+  background: none;
+  padding: 0;
+}
+.app-description img {
+  max-width: 100%;
+  border-radius: 6px;
+}
+.app-description blockquote {
+  border-left: 3px solid var(--cp-border);
+  padding-left: 1em;
+  margin: 0.5em 0;
+  color: var(--cp-text-secondary);
+}
+.app-description hr {
+  border: none;
+  border-top: 1px solid var(--cp-border);
+  margin: 1em 0;
+}

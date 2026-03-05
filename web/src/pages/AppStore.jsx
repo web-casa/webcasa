@@ -28,6 +28,7 @@ export default function AppStore() {
     const [syncError, setSyncError] = useState(false)
     const [syncCopied, setSyncCopied] = useState(false)
     const syncLogsEndRef = useRef(null)
+    const autoSyncTriggered = useRef(false)
 
     const pageSize = 24
 
@@ -68,11 +69,21 @@ export default function AppStore() {
     }, [])
 
     useEffect(() => {
-        Promise.allSettled([fetchApps(), fetchInstalled(), fetchCategories(), fetchUpdates()])
+        Promise.allSettled([fetchApps(), fetchInstalled(), fetchCategories(), fetchUpdates(), fetchSources()])
             .finally(() => setLoading(false))
-    }, [fetchApps, fetchInstalled, fetchCategories, fetchUpdates])
+    }, [fetchApps, fetchInstalled, fetchCategories, fetchUpdates, fetchSources])
 
     useEffect(() => { fetchApps() }, [fetchApps])
+
+    // Auto-sync sources on first visit when no apps exist
+    useEffect(() => {
+        if (loading || autoSyncTriggered.current) return
+        if (apps.length > 0 || sources.length === 0) return
+        const unsynced = sources.find(s => s.sync_status !== 'synced')
+        if (!unsynced) return
+        autoSyncTriggered.current = true
+        handleSyncSource(unsynced.id)
+    }, [loading, apps.length, sources])
 
     const handleSearch = (e) => {
         setSearch(e.target.value)
