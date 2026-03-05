@@ -94,6 +94,12 @@ func (s *stubCoreAPI) AppStoreListInstalled() ([]map[string]interface{}, error) 
 func (s *stubCoreAPI) FileWrite(path, content string) error                     { return nil }
 func (s *stubCoreAPI) FileDelete(path string) error                             { return nil }
 func (s *stubCoreAPI) FileRename(oldPath, newPath string) error                 { return nil }
+func (s *stubCoreAPI) FirewallStatus() (map[string]interface{}, error)          { return nil, nil }
+func (s *stubCoreAPI) FirewallListRules(zone string) (map[string]interface{}, error) { return nil, nil }
+func (s *stubCoreAPI) FirewallAddPort(zone, port, protocol string) error        { return nil }
+func (s *stubCoreAPI) FirewallRemovePort(zone, port, protocol string) error     { return nil }
+func (s *stubCoreAPI) FirewallAddService(zone, service string) error            { return nil }
+func (s *stubCoreAPI) FirewallRemoveService(zone, service string) error         { return nil }
 
 func newTestRegistry() *ToolRegistry {
 	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError}))
