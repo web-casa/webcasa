@@ -38,14 +38,13 @@ npm version "$NEW_VERSION" --no-git-tag-version --allow-same-version
 cd ..
 echo "✅ 更新 web/package.json 和 package-lock.json"
 
-# 3. 更新 install.sh 中的 fallback 版本号
-# 使用 sed 替换 install.sh 中的版本号 fallback
-sed -i "s/|| echo \"$OLD_VERSION\")/|| echo \"$NEW_VERSION\")/g" install.sh
-sed -i "s/WEBCASA_VERSION=\"$OLD_VERSION\"/WEBCASA_VERSION=\"$NEW_VERSION\"/g" install.sh
+# 3. 更新 install.sh 中的 fallback 版本号（用正则匹配任意旧版本号）
+sed -i "s/|| echo \"[0-9][0-9.]*[0-9]\")/|| echo \"$NEW_VERSION\")/g" install.sh
+sed -i "s/WEBCASA_VERSION=\"[0-9][0-9.]*[0-9]\"/WEBCASA_VERSION=\"$NEW_VERSION\"/g" install.sh
 echo "✅ 更新 install.sh 中的 fallback 版本"
 
-# 4. 更新 memory.md 中的状态记录
-sed -i "s/- \*\*版本\*\*: \`$OLD_VERSION\`/- \*\*版本\*\*: \`$NEW_VERSION\`/g" memory.md
+# 4. 更新 memory.md 中的状态记录（用正则匹配任意旧版本号）
+sed -i "s/- \*\*版本\*\*: \`[0-9][0-9.]*[0-9]\`/- \*\*版本\*\*: \`$NEW_VERSION\`/g" memory.md
 echo "✅ 更新 memory.md 中的版本记录"
 
 echo "--------------------------------------------------"
