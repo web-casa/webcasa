@@ -109,7 +109,7 @@ func (ec *EmbeddingClient) EmbedBatch(texts []string) ([][]float32, error) {
 
 	results := make([][]float32, len(texts))
 	for _, d := range embResp.Data {
-		if d.Index < len(results) {
+		if d.Index >= 0 && d.Index < len(results) {
 			results[d.Index] = d.Embedding
 		}
 	}

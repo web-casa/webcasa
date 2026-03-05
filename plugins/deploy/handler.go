@@ -69,6 +69,9 @@ func (h *Handler) CreateProject(c *gin.Context) {
 		GitHubAppID          int64  `json:"github_app_id"`
 		GitHubPrivateKey     string `json:"github_private_key"`
 		GitHubInstallationID int64  `json:"github_installation_id"`
+		// GitHub OAuth fields
+		GitHubOAuthInstallID uint   `json:"github_oauth_install_id"`
+		GitHubRepoFullName   string `json:"github_repo_full_name"`
 	}
 	if err := c.ShouldBindJSON(&req); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
@@ -104,6 +107,8 @@ func (h *Handler) CreateProject(c *gin.Context) {
 		GitHubAppID:          req.GitHubAppID,
 		GitHubPrivateKey:     req.GitHubPrivateKey,
 		GitHubInstallationID: req.GitHubInstallationID,
+		GitHubOAuthInstallID: req.GitHubOAuthInstallID,
+		GitHubRepoFullName:   req.GitHubRepoFullName,
 	}
 
 	if err := h.svc.CreateProject(project); err != nil {
@@ -137,6 +142,7 @@ func (h *Handler) UpdateProject(c *gin.Context) {
 		"memory_limit": true, "cpu_limit": true, "build_timeout": true,
 		"auth_method": true, "github_app_id": true,
 		"github_private_key": true, "github_installation_id": true,
+		"github_oauth_install_id": true, "github_repo_full_name": true,
 	}
 	filtered := make(map[string]interface{})
 	for k, v := range req {
@@ -611,6 +617,122 @@ func (h *Handler) RestartExtraProcess(c *gin.Context) {
 		return
 	}
 	c.JSON(http.StatusOK, gin.H{"ok": true})
+}
+
+// ── GitHub OAuth Handlers ──
+
+// GetGitHubConfig GET /api/plugins/deploy/github/config
+func (h *Handler) GetGitHubConfig(c *gin.Context) {
+	c.JSON(http.StatusOK, h.svc.ghOAuth.GetConfig())
+}
+
+// SaveGitHubConfig PUT /api/plugins/deploy/github/config
+func (h *Handler) SaveGitHubConfig(c *gin.Context) {
+	var cfg GitHubAppConfig
+	if err := c.ShouldBindJSON(&cfg); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+	if err := h.svc.ghOAuth.SaveConfig(cfg); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"ok": true})
+}
+
+// GitHubAuthorize GET /api/plugins/deploy/github/authorize
+func (h *Handler) GitHubAuthorize(c *gin.Context) {
+	// Build callback URL from the current request.
+	scheme := "https"
+	if c.Request.TLS == nil {
+		if fwd := c.GetHeader("X-Forwarded-Proto"); fwd != "" {
+			scheme = fwd
+		} else {
+			scheme = "http"
+		}
+	}
+	callbackURL := scheme + "://" + c.Request.Host + "/api/plugins/deploy/github/callback"
+
+	authorizeURL, err := h.svc.ghOAuth.GetAuthorizeURL(callbackURL)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"url": authorizeURL})
+}
+
+// GitHubCallback GET /api/plugins/deploy/github/callback (PUBLIC — browser redirect from GitHub)
+func (h *Handler) GitHubCallback(c *gin.Context) {
+	state := c.Query("state")
+	code := c.Query("code")
+	installIDStr := c.Query("installation_id")
+
+	// Validate CSRF state.
+	if state == "" || !h.svc.ghOAuth.ValidateState(state) {
+		c.String(http.StatusBadRequest, "Invalid or expired state parameter")
+		return
+	}
+
+	installID, _ := strconv.ParseInt(installIDStr, 10, 64)
+
+	install, err := h.svc.ghOAuth.HandleCallback(code, installID)
+	if err != nil {
+		h.svc.logger.Error("GitHub OAuth callback failed", "err", err)
+		c.String(http.StatusInternalServerError, "GitHub OAuth error, please try again")
+		return
+	}
+
+	// Redirect browser back to the panel frontend.
+	redirectURL := "/#/deploy/create?github_connected=1"
+	if install != nil {
+		redirectURL += "&installation_id=" + strconv.FormatUint(uint64(install.ID), 10)
+	}
+	c.Redirect(http.StatusFound, redirectURL)
+}
+
+// ListGitHubInstallations GET /api/plugins/deploy/github/installations
+func (h *Handler) ListGitHubInstallations(c *gin.Context) {
+	installations, err := h.svc.ghOAuth.ListInstallations()
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	c.JSON(http.StatusOK, installations)
+}
+
+// DeleteGitHubInstallation DELETE /api/plugins/deploy/github/installations/:id
+func (h *Handler) DeleteGitHubInstallation(c *gin.Context) {
+	id, err := parseUintParam(c, "id")
+	if err != nil {
+		return
+	}
+	if err := h.svc.ghOAuth.DeleteInstallation(id); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"ok": true})
+}
+
+// ListGitHubRepos GET /api/plugins/deploy/github/installations/:id/repos
+func (h *Handler) ListGitHubRepos(c *gin.Context) {
+	id, err := parseUintParam(c, "id")
+	if err != nil {
+		return
+	}
+
+	// Look up the installation to get the GitHub installation_id.
+	var install GitHubInstallation
+	if err := h.svc.db.First(&install, id).Error; err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "installation not found"})
+		return
+	}
+
+	repos, err := h.svc.ghOAuth.ListRepos(install.InstallationID)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	c.JSON(http.StatusOK, repos)
 }
 
 func parseUintParam(c *gin.Context, name string) (uint, error) {

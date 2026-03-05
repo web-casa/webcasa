@@ -6,6 +6,7 @@ import (
 	"log/slog"
 	"math"
 	"strings"
+	"sync"
 	"time"
 	"unicode"
 
@@ -34,6 +35,7 @@ func (Memory) TableName() string { return "plugin_ai_memories" }
 type MemoryService struct {
 	db              *gorm.DB
 	embeddingClient *EmbeddingClient
+	embeddingMu     sync.RWMutex
 	logger          *slog.Logger
 }
 
@@ -44,7 +46,16 @@ func NewMemoryService(db *gorm.DB, logger *slog.Logger) *MemoryService {
 
 // SetEmbeddingClient sets the embedding client for vector search.
 func (ms *MemoryService) SetEmbeddingClient(client *EmbeddingClient) {
+	ms.embeddingMu.Lock()
+	defer ms.embeddingMu.Unlock()
 	ms.embeddingClient = client
+}
+
+// getEmbeddingClient returns the current embedding client (thread-safe).
+func (ms *MemoryService) getEmbeddingClient() *EmbeddingClient {
+	ms.embeddingMu.RLock()
+	defer ms.embeddingMu.RUnlock()
+	return ms.embeddingClient
 }
 
 // SaveMemory stores a new memory with deduplication.
@@ -66,13 +77,13 @@ func (ms *MemoryService) SaveMemory(content, category string, importance float32
 	// Generate embedding if client available.
 	var embeddingBytes []byte
 	var embModel string
-	if ms.embeddingClient != nil {
-		vec, err := ms.embeddingClient.Embed(content)
+	if ec := ms.getEmbeddingClient(); ec != nil {
+		vec, err := ec.Embed(content)
 		if err != nil {
 			ms.logger.Warn("failed to generate embedding, saving without", "err", err)
 		} else {
 			embeddingBytes = serializeEmbedding(vec)
-			embModel = ms.embeddingClient.model
+			embModel = ec.model
 		}
 	}
 
@@ -112,8 +123,8 @@ func (ms *MemoryService) SearchMemories(query string, topK int) ([]Memory, error
 	}
 
 	// Try vector search first.
-	if ms.embeddingClient != nil {
-		queryVec, err := ms.embeddingClient.Embed(query)
+	if ec := ms.getEmbeddingClient(); ec != nil {
+		queryVec, err := ec.Embed(query)
 		if err == nil && queryVec != nil {
 			return ms.searchByVector(queryVec, topK)
 		}

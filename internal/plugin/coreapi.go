@@ -3,6 +3,8 @@ package plugin
 import (
 	"bytes"
 	"context"
+	cryptorand "crypto/rand"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -218,12 +220,12 @@ func (a *CoreAPIImpl) CreateProject(req CreateProjectRequest) (uint, error) {
 		deployMode = "bare"
 	}
 
-	// Generate a random webhook token.
+	// Generate a cryptographically random webhook token.
 	tokenBytes := make([]byte, 16)
-	if _, err := fmt.Fprintf(bytes.NewBuffer(tokenBytes), "%d", time.Now().UnixNano()); err != nil {
-		// fallback — just use timestamp hex
+	if _, err := cryptorand.Read(tokenBytes); err != nil {
+		return 0, fmt.Errorf("generate webhook token: %w", err)
 	}
-	webhookToken := fmt.Sprintf("%x", time.Now().UnixNano())
+	webhookToken := hex.EncodeToString(tokenBytes)
 
 	project := map[string]interface{}{
 		"name":         req.Name,

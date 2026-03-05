@@ -176,10 +176,11 @@ func (s *Service) Chat(ctx context.Context, req ChatRequest, userID uint, cb Str
 			return 0, fmt.Errorf("conversation not found: %w", err)
 		}
 	} else {
-		// Create new conversation with first ~30 chars of message as title.
+		// Create new conversation with first ~30 runes of message as title.
 		title := req.Message
-		if len(title) > 30 {
-			title = title[:30] + "..."
+		runes := []rune(title)
+		if len(runes) > 30 {
+			title = string(runes[:30]) + "..."
 		}
 		conv = Conversation{Title: title, UserID: userID}
 		if err := s.db.Create(&conv).Error; err != nil {
@@ -252,8 +253,9 @@ func (s *Service) ChatWithTools(ctx context.Context, req ChatRequest, userID uin
 		}
 	} else {
 		title := req.Message
-		if len(title) > 30 {
-			title = title[:30] + "..."
+		runes := []rune(title)
+		if len(runes) > 30 {
+			title = string(runes[:30]) + "..."
 		}
 		conv = Conversation{Title: title, UserID: userID}
 		if err := s.db.Create(&conv).Error; err != nil {

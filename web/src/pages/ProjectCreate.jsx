@@ -1,6 +1,6 @@
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useRef } from 'react'
 import { Box, Flex, Text, Button, Card, Heading, TextField, Select, Switch, TextArea, Separator, Callout, Badge } from '@radix-ui/themes'
-import { ArrowLeft, Rocket, Plus, Trash2, Loader2, Sparkles, Key, Github, Container, Server, Wand2 } from 'lucide-react'
+import { ArrowLeft, Rocket, Plus, Trash2, Loader2, Sparkles, Key, Github, Container, Server, Wand2, Link, ChevronDown, Search } from 'lucide-react'
 import { useNavigate } from 'react-router'
 import { deployAPI } from '../api/index.js'
 import { useTranslation } from 'react-i18next'
@@ -12,6 +12,21 @@ export default function ProjectCreate() {
     const [frameworks, setFrameworks] = useState([])
     const [detecting, setDetecting] = useState(false)
     const [submitting, setSubmitting] = useState(false)
+    // GitHub OAuth state
+    const [ghConfig, setGhConfig] = useState(null)
+    const [ghInstallations, setGhInstallations] = useState([])
+    const [ghRepos, setGhRepos] = useState([])
+    const [ghReposLoading, setGhReposLoading] = useState(false)
+    const [ghConnecting, setGhConnecting] = useState(false)
+    const [ghConfigForm, setGhConfigForm] = useState({ app_id: '', client_id: '', client_secret: '', private_key: '', app_slug: '' })
+    const [ghConfigSaving, setGhConfigSaving] = useState(false)
+    const ghPopupTimerRef = useRef(null)
+
+    // Cleanup popup polling on unmount.
+    useEffect(() => {
+        return () => { if (ghPopupTimerRef.current) clearInterval(ghPopupTimerRef.current) }
+    }, [])
+
     const [form, setForm] = useState({
         name: '',
         git_url: '',
@@ -21,6 +36,8 @@ export default function ProjectCreate() {
         github_app_id: '',
         github_private_key: '',
         github_installation_id: '',
+        github_oauth_install_id: 0,
+        github_repo_full_name: '',
         framework: '',
         install_command: '',
         build_command: '',
@@ -40,6 +57,9 @@ export default function ProjectCreate() {
 
     useEffect(() => {
         deployAPI.frameworks().then(res => setFrameworks(res.data)).catch(() => {})
+        // Load GitHub OAuth config and installations.
+        deployAPI.githubConfig().then(res => setGhConfig(res.data)).catch(() => {})
+        deployAPI.githubInstallations().then(res => setGhInstallations(res.data || [])).catch(() => {})
     }, [])
 
     const updateForm = (key, value) => setForm(prev => ({ ...prev, [key]: value }))
@@ -63,6 +83,73 @@ export default function ProjectCreate() {
             alert(e.response?.data?.error || t('deploy.detect_failed'))
         } finally {
             setDetecting(false)
+        }
+    }
+
+    // GitHub OAuth: open popup for authorization.
+    const connectGitHub = async () => {
+        setGhConnecting(true)
+        try {
+            const res = await deployAPI.githubAuthorize()
+            const popup = window.open(res.data.url, 'github_oauth', 'width=800,height=700')
+            // Poll for popup close; store timer in ref for cleanup on unmount.
+            if (ghPopupTimerRef.current) clearInterval(ghPopupTimerRef.current)
+            ghPopupTimerRef.current = setInterval(async () => {
+                if (!popup || popup.closed) {
+                    clearInterval(ghPopupTimerRef.current)
+                    ghPopupTimerRef.current = null
+                    setGhConnecting(false)
+                    // Refresh installations after popup closes.
+                    try {
+                        const instRes = await deployAPI.githubInstallations()
+                        setGhInstallations(instRes.data || [])
+                    } catch { /* ignore */ }
+                }
+            }, 500)
+        } catch (e) {
+            alert(e.response?.data?.error || 'Failed to start GitHub authorization')
+            setGhConnecting(false)
+        }
+    }
+
+    // GitHub OAuth: save config inline.
+    const saveGhConfig = async () => {
+        setGhConfigSaving(true)
+        try {
+            await deployAPI.saveGithubConfig(ghConfigForm)
+            const res = await deployAPI.githubConfig()
+            setGhConfig(res.data)
+        } catch (e) {
+            alert(e.response?.data?.error || 'Failed to save GitHub config')
+        } finally {
+            setGhConfigSaving(false)
+        }
+    }
+
+    // GitHub OAuth: load repos for a selected installation.
+    const loadGitHubRepos = async (installId) => {
+        updateForm('github_oauth_install_id', installId)
+        setGhRepos([])
+        if (!installId) return
+        setGhReposLoading(true)
+        try {
+            const res = await deployAPI.githubRepos(installId)
+            setGhRepos(res.data || [])
+        } catch { setGhRepos([]) }
+        finally { setGhReposLoading(false) }
+    }
+
+    // GitHub OAuth: select a repo from the dropdown.
+    const selectGitHubRepo = (fullName) => {
+        const repo = ghRepos.find(r => r.full_name === fullName)
+        if (repo) {
+            setForm(prev => ({
+                ...prev,
+                github_repo_full_name: repo.full_name,
+                git_url: repo.clone_url,
+                git_branch: repo.default_branch || 'main',
+                name: prev.name || repo.name,
+            }))
         }
     }
 
@@ -166,6 +253,14 @@ export default function ProjectCreate() {
                                 <Github size={14} />
                                 {t('deploy.auth_github_app')}
                             </Button>
+                            <Button
+                                variant={form.auth_method === 'github_oauth' ? 'solid' : 'outline'}
+                                size="2"
+                                onClick={() => updateForm('auth_method', 'github_oauth')}
+                            >
+                                <Link size={14} />
+                                {t('deploy.auth_github_oauth')}
+                            </Button>
                         </Flex>
 
                         {/* SSH Deploy Key */}
@@ -199,6 +294,120 @@ export default function ProjectCreate() {
                                 </label>
                             </Flex>
                         )}
+
+                        {/* GitHub OAuth */}
+                        {form.auth_method === 'github_oauth' && (
+                            <Flex direction="column" gap="3">
+                                {!ghConfig?.configured ? (
+                                    <>
+                                        <Callout.Root size="1" color="orange">
+                                            <Callout.Text>{t('deploy.github_oauth_not_configured')}</Callout.Text>
+                                        </Callout.Root>
+                                        <Flex direction="column" gap="3">
+                                            <Text size="2" weight="medium">{t('deploy.github_oauth_setup_title')}</Text>
+                                            <Callout.Root size="1">
+                                                <Callout.Text style={{ whiteSpace: 'pre-line' }}>
+                                                    {t('deploy.github_oauth_setup_steps')}
+                                                </Callout.Text>
+                                            </Callout.Root>
+                                            <label>
+                                                <Text size="2" weight="medium" mb="1">{t('deploy.github_oauth_app_id')}</Text>
+                                                <TextField.Root placeholder="123456" value={ghConfigForm.app_id} onChange={e => setGhConfigForm(p => ({...p, app_id: e.target.value}))} />
+                                            </label>
+                                            <label>
+                                                <Text size="2" weight="medium" mb="1">{t('deploy.github_oauth_client_id')}</Text>
+                                                <TextField.Root placeholder="Iv1.xxxxxxxxxx" value={ghConfigForm.client_id} onChange={e => setGhConfigForm(p => ({...p, client_id: e.target.value}))} />
+                                            </label>
+                                            <label>
+                                                <Text size="2" weight="medium" mb="1">{t('deploy.github_oauth_client_secret')}</Text>
+                                                <TextField.Root type="password" placeholder="••••••••" value={ghConfigForm.client_secret} onChange={e => setGhConfigForm(p => ({...p, client_secret: e.target.value}))} />
+                                            </label>
+                                            <label>
+                                                <Text size="2" weight="medium" mb="1">{t('deploy.github_oauth_private_key')}</Text>
+                                                <TextArea placeholder="-----BEGIN RSA PRIVATE KEY-----" value={ghConfigForm.private_key} onChange={e => setGhConfigForm(p => ({...p, private_key: e.target.value}))} rows={4} style={{ fontFamily: 'monospace', fontSize: 12 }} />
+                                            </label>
+                                            <label>
+                                                <Text size="2" weight="medium" mb="1">{t('deploy.github_oauth_app_slug')}</Text>
+                                                <Text size="1" color="gray">{t('deploy.github_oauth_app_slug_hint')}</Text>
+                                                <TextField.Root placeholder="my-deploy-app" value={ghConfigForm.app_slug} onChange={e => setGhConfigForm(p => ({...p, app_slug: e.target.value}))} />
+                                            </label>
+                                            <Button size="2" onClick={saveGhConfig} disabled={ghConfigSaving}>
+                                                {ghConfigSaving && <Loader2 size={14} className="animate-spin" />}
+                                                {t('common.save')}
+                                            </Button>
+                                        </Flex>
+                                    </>
+                                ) : (
+                                    <>
+                                        <Callout.Root size="1">
+                                            <Callout.Text>{t('deploy.github_oauth_hint')}</Callout.Text>
+                                        </Callout.Root>
+
+                                        {/* Connected installations */}
+                                        {ghInstallations.length > 0 && (
+                                            <Flex direction="column" gap="2">
+                                                <Text size="2" weight="medium">{t('deploy.github_oauth_account')}</Text>
+                                                <Select.Root
+                                                    value={String(form.github_oauth_install_id || '')}
+                                                    onValueChange={v => loadGitHubRepos(parseInt(v))}
+                                                >
+                                                    <Select.Trigger placeholder={t('deploy.github_oauth_select_account')} />
+                                                    <Select.Content>
+                                                        {ghInstallations.map(inst => (
+                                                            <Select.Item key={inst.id} value={String(inst.installation_id)}>
+                                                                {inst.account_login} ({inst.account_type})
+                                                            </Select.Item>
+                                                        ))}
+                                                    </Select.Content>
+                                                </Select.Root>
+                                            </Flex>
+                                        )}
+
+                                        {/* Connect more accounts */}
+                                        <Button variant="soft" size="2" onClick={connectGitHub} disabled={ghConnecting}>
+                                            {ghConnecting ? <Loader2 size={14} className="animate-spin" /> : <Github size={14} />}
+                                            {ghInstallations.length > 0 ? t('deploy.github_oauth_add_account') : t('deploy.github_oauth_connect')}
+                                        </Button>
+
+                                        {/* Repo selector */}
+                                        {form.github_oauth_install_id > 0 && (
+                                            <Flex direction="column" gap="2">
+                                                <Text size="2" weight="medium">{t('deploy.github_oauth_repo')}</Text>
+                                                {ghReposLoading ? (
+                                                    <Flex align="center" gap="2">
+                                                        <Loader2 size={14} className="animate-spin" />
+                                                        <Text size="2" color="gray">{t('deploy.github_oauth_loading_repos')}</Text>
+                                                    </Flex>
+                                                ) : (
+                                                    <Select.Root
+                                                        value={form.github_repo_full_name}
+                                                        onValueChange={selectGitHubRepo}
+                                                    >
+                                                        <Select.Trigger placeholder={t('deploy.github_oauth_select_repo')} />
+                                                        <Select.Content>
+                                                            {ghRepos.map(repo => (
+                                                                <Select.Item key={repo.full_name} value={repo.full_name}>
+                                                                    {repo.full_name} {repo.private ? '🔒' : ''}
+                                                                </Select.Item>
+                                                            ))}
+                                                        </Select.Content>
+                                                    </Select.Root>
+                                                )}
+                                            </Flex>
+                                        )}
+
+                                        {/* Show selected repo info */}
+                                        {form.github_repo_full_name && (
+                                            <Callout.Root size="1" color="green">
+                                                <Callout.Text>
+                                                    {t('deploy.github_oauth_repo_selected', { repo: form.github_repo_full_name })}
+                                                </Callout.Text>
+                                            </Callout.Root>
+                                        )}
+                                    </>
+                                )}
+                            </Flex>
+                        )}
                     </Flex>
                     <Flex justify="end" mt="4">
                         <Button onClick={() => setStep(2)} disabled={!form.name || !form.git_url}>
@@ -222,14 +431,19 @@ export default function ProjectCreate() {
                         <label>
                             <Text size="2" weight="medium" mb="1">{t('deploy.framework')}</Text>
                             <Select.Root value={form.framework} onValueChange={v => {
-                                updateForm('framework', v)
                                 const preset = frameworks.find(f => f.framework === v)
                                 if (preset) {
-                                    updateForm('install_command', preset.install_command || '')
-                                    updateForm('build_command', preset.build_command || '')
-                                    updateForm('start_command', preset.start_command || '')
-                                    updateForm('port', preset.port || 0)
-                                    updateForm('deploy_mode', v === 'dockerfile' ? 'docker' : (form.deploy_mode || 'bare'))
+                                    setForm(prev => ({
+                                        ...prev,
+                                        framework: v,
+                                        install_command: preset.install_command || '',
+                                        build_command: preset.build_command || '',
+                                        start_command: preset.start_command || '',
+                                        port: preset.port || 0,
+                                        deploy_mode: v === 'dockerfile' ? 'docker' : (prev.deploy_mode || 'bare'),
+                                    }))
+                                } else {
+                                    updateForm('framework', v)
                                 }
                             }}>
                                 <Select.Trigger placeholder={t('deploy.select_framework')} />

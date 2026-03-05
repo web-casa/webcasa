@@ -42,10 +42,14 @@ type Project struct {
 	BuildTimeout int `gorm:"default:30" json:"build_timeout"` // minutes
 
 	// GitHub App authentication fields
-	AuthMethod           string `gorm:"size:32;default:ssh_key" json:"auth_method"` // ssh_key | github_app
+	AuthMethod           string `gorm:"size:32;default:ssh_key" json:"auth_method"` // ssh_key | github_app | github_oauth
 	GitHubAppID          int64  `gorm:"default:0" json:"github_app_id"`
 	GitHubPrivateKey     string `gorm:"type:text" json:"-"`     // encrypted PEM, never exposed
 	GitHubInstallationID int64  `gorm:"default:0" json:"github_installation_id"`
+
+	// GitHub OAuth fields (used when auth_method = "github_oauth")
+	GitHubOAuthInstallID uint   `gorm:"default:0" json:"github_oauth_install_id"` // FK to GitHubInstallation
+	GitHubRepoFullName   string `gorm:"size:255" json:"github_repo_full_name"`    // e.g. "owner/repo"
 
 	CreatedAt     time.Time `json:"created_at"`
 	UpdatedAt     time.Time `json:"updated_at"`
@@ -173,6 +177,21 @@ type ExtraProcess struct {
 
 func (ExtraProcess) TableName() string {
 	return "plugin_deploy_extra_processes"
+}
+
+// GitHubInstallation stores an authorized GitHub App installation.
+type GitHubInstallation struct {
+	ID               uint      `gorm:"primaryKey" json:"id"`
+	InstallationID   int64     `gorm:"uniqueIndex;not null" json:"installation_id"`
+	AccountLogin     string    `gorm:"size:255" json:"account_login"`       // GitHub org/user name
+	AccountType      string    `gorm:"size:32" json:"account_type"`         // "User" or "Organization"
+	AccountAvatarURL string    `gorm:"size:512" json:"account_avatar_url"`
+	CreatedAt        time.Time `json:"created_at"`
+	UpdatedAt        time.Time `json:"updated_at"`
+}
+
+func (GitHubInstallation) TableName() string {
+	return "plugin_deploy_github_installations"
 }
 
 // EnvVarSuggestion represents a suggested environment variable for a framework.

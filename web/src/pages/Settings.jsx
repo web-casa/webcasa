@@ -1399,7 +1399,15 @@ function AITab({ showMessage }) {
                         if (currentPresetEmbeddings.length > 0) {
                             return (
                                 <Flex gap="2" align="center">
-                                    <Select.Root value={currentPresetEmbeddings.includes(config.embedding_model) ? config.embedding_model : (config.embedding_model ? '_custom' : '_none')} onValueChange={(v) => setConfig(prev => ({ ...prev, embedding_model: v === '_none' ? '' : (v === '_custom' ? '' : v) }))}>
+                                    <Select.Root value={currentPresetEmbeddings.includes(config.embedding_model) ? config.embedding_model : (config.embedding_model ? '_custom' : '_none')} onValueChange={(v) => {
+                                        if (v === '_none') {
+                                            setConfig(prev => ({ ...prev, embedding_model: '' }))
+                                        } else if (v === '_custom') {
+                                            setConfig(prev => ({ ...prev, embedding_model: prev.embedding_model && !currentPresetEmbeddings.includes(prev.embedding_model) ? prev.embedding_model : 'custom-model' }))
+                                        } else {
+                                            setConfig(prev => ({ ...prev, embedding_model: v }))
+                                        }
+                                    }}>
                                         <Select.Trigger style={{ flex: 1 }} />
                                         <Select.Content>
                                             <Select.Item value="_none">{t('ai.embedding_disabled')}</Select.Item>

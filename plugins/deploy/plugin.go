@@ -36,7 +36,7 @@ func (p *Plugin) Metadata() pluginpkg.Metadata {
 // Init initialises the deploy plugin: migrates DB, creates service, registers routes.
 func (p *Plugin) Init(ctx *pluginpkg.Context) error {
 	// Migrate models
-	if err := ctx.DB.AutoMigrate(&Project{}, &Deployment{}, &CronJob{}, &ExtraProcess{}); err != nil {
+	if err := ctx.DB.AutoMigrate(&Project{}, &Deployment{}, &CronJob{}, &ExtraProcess{}, &GitHubInstallation{}); err != nil {
 		return fmt.Errorf("migrate: %w", err)
 	}
 
@@ -58,7 +58,7 @@ func (p *Plugin) Init(ctx *pluginpkg.Context) error {
 	}
 
 	// Create service and handler
-	p.svc = NewService(ctx.DB, ctx.CoreAPI, ctx.EventBus, ctx.Logger, ctx.DataDir, jwtSecret)
+	p.svc = NewService(ctx.DB, ctx.CoreAPI, ctx.EventBus, ctx.Logger, ctx.DataDir, jwtSecret, ctx.ConfigStore)
 	p.handler = NewHandler(p.svc)
 
 	// Register API routes under /api/plugins/deploy/
@@ -110,7 +110,16 @@ func (p *Plugin) Init(ctx *pluginpkg.Context) error {
 	r.GET("/projects/:id/deployments", p.handler.GetDeployments)
 	r.GET("/projects/:id/logs", p.handler.GetBuildLog)
 
-	// Webhook — public route (no JWT required, uses random token for auth)
+	// GitHub OAuth endpoints
+	a.GET("/github/config", p.handler.GetGitHubConfig)
+	a.PUT("/github/config", p.handler.SaveGitHubConfig)
+	a.GET("/github/authorize", p.handler.GitHubAuthorize)
+	a.GET("/github/installations", p.handler.ListGitHubInstallations)
+	a.DELETE("/github/installations/:id", p.handler.DeleteGitHubInstallation)
+	a.GET("/github/installations/:id/repos", p.handler.ListGitHubRepos)
+
+	// Public routes (no JWT required)
+	ctx.PublicRouter.GET("/github/callback", p.handler.GitHubCallback)
 	ctx.PublicRouter.POST("/webhook/:token", p.handler.Webhook)
 
 	// Subscribe to cross-plugin build trigger (used by AI tool use via CoreAPI).

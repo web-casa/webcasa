@@ -43,12 +43,16 @@ type Service struct {
 	// GitHub App auth helper
 	ghApp *GitHubAppAuth
 
+	// GitHub OAuth service (App installation flow)
+	ghOAuth     *GitHubOAuthService
+	configStore *pluginpkg.ConfigStore
+
 	// Cron scheduler
 	cron *CronScheduler
 }
 
 // NewService creates a new deploy service.
-func NewService(db *gorm.DB, coreAPI pluginpkg.CoreAPI, eventBus *pluginpkg.EventBus, logger *slog.Logger, dataDir string, jwtSecret string) *Service {
+func NewService(db *gorm.DB, coreAPI pluginpkg.CoreAPI, eventBus *pluginpkg.EventBus, logger *slog.Logger, dataDir string, jwtSecret string, configStore *pluginpkg.ConfigStore) *Service {
 	srcDir := fmt.Sprintf("%s/sources", dataDir)
 	os.MkdirAll(srcDir, 0755)
 
@@ -71,9 +75,13 @@ func NewService(db *gorm.DB, coreAPI pluginpkg.CoreAPI, eventBus *pluginpkg.Even
 		jwtSecret:  jwtSecret,
 		activeLogs: make(map[uint]*LogWriter),
 		buildSems:  make(map[uint]chan struct{}),
-		ghApp:      &GitHubAppAuth{},
-		cron:       NewCronScheduler(db, logger, dataDir),
+		ghApp:       &GitHubAppAuth{},
+		configStore: configStore,
+		cron:        NewCronScheduler(db, logger, dataDir),
 	}
+
+	// Initialize GitHub OAuth service.
+	svc.ghOAuth = NewGitHubOAuthService(configStore, db, jwtSecret, logger)
 
 	// Migrate plaintext deploy keys to encrypted
 	svc.migrateDeployKeys()
@@ -425,7 +433,7 @@ func (s *Service) runBuild(project *Project, deployment *Deployment, logWriter *
 
 	// Prepare an in-memory copy of the project with resolved credentials.
 	buildProject := *project
-	if authMethod == "github_app" && httpsToken != "" {
+	if (authMethod == "github_app" || authMethod == "github_oauth") && httpsToken != "" {
 		buildProject.GitURL = ConvertToHTTPS(project.GitURL, httpsToken)
 		buildProject.DeployKey = "" // No SSH key needed for HTTPS
 	} else {
@@ -985,6 +993,22 @@ func (s *Service) GetGitCredentials(project *Project) (authMethod string, deploy
 		token, tokenErr := s.ghApp.GetCloneToken(project.GitHubAppID, pemKey, project.GitHubInstallationID)
 		if tokenErr != nil {
 			return authMethod, "", "", fmt.Errorf("get GitHub App token: %w", tokenErr)
+		}
+		return authMethod, "", token, nil
+
+	case "github_oauth":
+		if project.GitHubOAuthInstallID == 0 {
+			return authMethod, "", "", fmt.Errorf("GitHub OAuth installation not linked")
+		}
+		// Look up the installation record.
+		var install GitHubInstallation
+		if err := s.db.First(&install, project.GitHubOAuthInstallID).Error; err != nil {
+			return authMethod, "", "", fmt.Errorf("GitHub installation not found: %w", err)
+		}
+		// Get installation token using global App credentials.
+		token, tokenErr := s.ghOAuth.GetInstallationToken(install.InstallationID)
+		if tokenErr != nil {
+			return authMethod, "", "", fmt.Errorf("get GitHub OAuth token: %w", tokenErr)
 		}
 		return authMethod, "", token, nil
 

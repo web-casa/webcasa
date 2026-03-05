@@ -245,6 +245,14 @@ export const deployAPI = {
     updateProcess: (id, procId, data) => api.put(`/plugins/deploy/projects/${id}/processes/${procId}`, data),
     deleteProcess: (id, procId) => api.delete(`/plugins/deploy/projects/${id}/processes/${procId}`),
     restartProcess: (id, procId) => api.post(`/plugins/deploy/projects/${id}/processes/${procId}/restart`),
+
+    // GitHub OAuth
+    githubConfig: () => api.get('/plugins/deploy/github/config'),
+    saveGithubConfig: (data) => api.put('/plugins/deploy/github/config', data),
+    githubAuthorize: () => api.get('/plugins/deploy/github/authorize'),
+    githubInstallations: () => api.get('/plugins/deploy/github/installations'),
+    deleteGithubInstallation: (id) => api.delete(`/plugins/deploy/github/installations/${id}`),
+    githubRepos: (installId) => api.get(`/plugins/deploy/github/installations/${installId}/repos`),
 }
 
 // ============ AI (plugin) ============
