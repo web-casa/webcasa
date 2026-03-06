@@ -1,6 +1,6 @@
 import { useState, useEffect, useCallback, useRef } from 'react'
-import { Box, Flex, Heading, Text, Card, Button, TextField, Badge, Tabs, Dialog, Select, Separator, IconButton, Tooltip } from '@radix-ui/themes'
-import { Store, Search, RefreshCw, Settings2, Plus, Trash2, Play, Square, ArrowUpCircle, ExternalLink, Package, Copy, Check, Globe, Pencil } from 'lucide-react'
+import { Box, Flex, Heading, Text, Card, Button, TextField, Badge, Tabs, Dialog, Select, Separator, IconButton, Tooltip, Callout } from '@radix-ui/themes'
+import { Store, Search, RefreshCw, Settings2, Plus, Trash2, Play, Square, ArrowUpCircle, ExternalLink, Package, Copy, Check, Globe } from 'lucide-react'
 import { useNavigate } from 'react-router'
 import { appstoreAPI } from '../api/index.js'
 import { useTranslation } from 'react-i18next'
@@ -30,6 +30,7 @@ export default function AppStore() {
     const [domainDialog, setDomainDialog] = useState(null) // { id, name, domain }
     const [domainInput, setDomainInput] = useState('')
     const [domainSaving, setDomainSaving] = useState(false)
+    const [domainError, setDomainError] = useState('')
     const syncLogsEndRef = useRef(null)
     const autoSyncTriggered = useRef(false)
 
@@ -118,18 +119,20 @@ export default function AppStore() {
     // Domain management
     const openDomainDialog = (app) => {
         setDomainInput(app.domain || '')
+        setDomainError('')
         setDomainDialog({ id: app.id, name: app.name, domain: app.domain })
     }
 
     const saveDomain = async () => {
         if (!domainDialog) return
         setDomainSaving(true)
+        setDomainError('')
         try {
             await appstoreAPI.updateDomain(domainDialog.id, domainInput.trim())
             await fetchInstalled()
             setDomainDialog(null)
         } catch (err) {
-            alert(err.response?.data?.error || 'Failed to update domain')
+            setDomainError(err.response?.data?.error || 'Failed to update domain')
         } finally {
             setDomainSaving(false)
         }
@@ -425,6 +428,11 @@ export default function AppStore() {
                     <Dialog.Title>{t('appstore.change_domain')}</Dialog.Title>
                     <Text size="2" color="gray" mb="3">{domainDialog?.name}</Text>
                     <Flex direction="column" gap="3" mt="3">
+                        {domainError && (
+                            <Callout.Root color="red" size="1">
+                                <Callout.Text>{domainError}</Callout.Text>
+                            </Callout.Root>
+                        )}
                         <TextField.Root
                             placeholder="app.example.com"
                             value={domainInput}

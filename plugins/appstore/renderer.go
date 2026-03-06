@@ -9,6 +9,7 @@ import (
 	"net"
 	"os"
 	"regexp"
+	"sort"
 	"strings"
 )
 
@@ -265,6 +266,7 @@ func DetectSecurityFlags(compose string) []string {
 	for k := range seen {
 		result = append(result, k)
 	}
+	sort.Strings(result)
 	return result
 }
 

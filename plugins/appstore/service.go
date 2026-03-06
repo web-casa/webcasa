@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"strings"
 
+	"github.com/web-casa/webcasa/internal/caddy"
 	pluginpkg "github.com/web-casa/webcasa/internal/plugin"
 	"gorm.io/gorm"
 )
@@ -168,7 +169,9 @@ func (s *Service) InstallApp(req *InstallAppRequest) (*InstalledApp, error) {
 	// Extract url_suffix from config.json
 	var appConfig AppConfig
 	if app.ConfigJSON != "" {
-		json.Unmarshal([]byte(app.ConfigJSON), &appConfig)
+		if err := json.Unmarshal([]byte(app.ConfigJSON), &appConfig); err != nil {
+			return nil, fmt.Errorf("parse app config: %w", err)
+		}
 	}
 
 	installed := &InstalledApp{
@@ -364,6 +367,13 @@ func (s *Service) GetInstalled(id uint) (*InstalledApp, error) {
 
 // UpdateDomain changes the domain for an installed app, updating Caddy reverse proxy and .env.
 func (s *Service) UpdateDomain(id uint, domain string) error {
+	// Validate domain format to prevent .env injection and Caddy config injection
+	if domain != "" {
+		if err := caddy.ValidateDomain(domain); err != nil {
+			return fmt.Errorf("invalid domain: %w", err)
+		}
+	}
+
 	var installed InstalledApp
 	if err := s.db.First(&installed, id).Error; err != nil {
 		return err
@@ -387,10 +397,9 @@ func (s *Service) UpdateDomain(id uint, domain string) error {
 			WebSocket:    true,
 		})
 		if err != nil {
-			s.logger.Error("create host failed", "domain", domain, "err", err)
-		} else {
-			installed.HostID = hostID
+			return fmt.Errorf("create reverse proxy failed: %w", err)
 		}
+		installed.HostID = hostID
 	}
 
 	// Update database record
@@ -506,7 +515,9 @@ func (s *Service) UpdateApp(id uint) error {
 	// Parse stored form values
 	var formValues map[string]string
 	if installed.FormValues != "" {
-		json.Unmarshal([]byte(installed.FormValues), &formValues)
+		if err := json.Unmarshal([]byte(installed.FormValues), &formValues); err != nil {
+			return fmt.Errorf("parse stored form values: %w", err)
+		}
 	}
 	if formValues == nil {
 		formValues = make(map[string]string)
