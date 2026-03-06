@@ -1308,122 +1308,156 @@ function AITab({ showMessage }) {
 
     if (loading) return <Flex justify="center" p="6"><Text>{t('common.loading')}</Text></Flex>
 
+    // Find current preset's embedding model list (for embedding tab)
+    const currentPresetEmbeddings = Object.values(presets).find(p => {
+        const url = config.embedding_base_url || config.base_url
+        return p.base_url === url
+    })?.embedding_models || []
+
     return (
         <Card mt="4" style={{ maxWidth: 680, background: 'var(--cp-card)', border: '1px solid var(--cp-border)' }}>
-            <Flex direction="column" gap="4">
-                {/* Provider Presets */}
-                <Box>
-                    <Text size="2" weight="bold" mb="2" style={{ display: 'block' }}>{t('ai.provider_presets')}</Text>
-                    <Flex gap="2" wrap="wrap">
-                        {Object.entries(presets).map(([key, p]) => (
-                            <Button key={key} size="1" variant={config.base_url === p.base_url ? 'solid' : 'outline'}
-                                onClick={() => applyPreset(key)}>
-                                {p.name}
-                            </Button>
-                        ))}
-                    </Flex>
-                    <Text size="1" color="gray" mt="1" style={{ display: 'block' }}>{t('ai.preset_hint')}</Text>
-                </Box>
-                <Separator size="4" />
-                {/* API Format */}
-                <Box>
-                    <Text size="2" weight="bold" mb="1" style={{ display: 'block' }}>{t('ai.api_format')}</Text>
-                    <Select.Root value={config.api_format || 'openai-chat'} onValueChange={(v) => setConfig(prev => ({ ...prev, api_format: v }))}>
-                        <Select.Trigger style={{ width: '100%' }} />
-                        <Select.Content>
-                            <Select.Item value="openai-chat">OpenAI Chat Completions</Select.Item>
-                            <Select.Item value="anthropic-messages">Anthropic Messages</Select.Item>
-                            <Select.Item value="google-generativeai">Google Generative AI</Select.Item>
-                        </Select.Content>
-                    </Select.Root>
-                    <Text size="1" color="gray" mt="1" style={{ display: 'block' }}>{t('ai.api_format_hint')}</Text>
-                </Box>
-                {/* Base URL */}
-                <Box>
-                    <Text size="2" weight="bold" mb="1" style={{ display: 'block' }}>{t('ai.base_url')}</Text>
-                    <TextField.Root placeholder="https://api.openai.com" value={config.base_url} onChange={(e) => setConfig(prev => ({ ...prev, base_url: e.target.value }))} />
-                    <Text size="1" color="gray" mt="1" style={{ display: 'block' }}>{t('ai.base_url_hint')}</Text>
-                </Box>
-                {/* API Key */}
-                <Box>
-                    <Text size="2" weight="bold" mb="1" style={{ display: 'block' }}>{t('ai.api_key')}</Text>
-                    <TextField.Root type="password" placeholder="sk-..." value={config.api_key} onChange={(e) => setConfig(prev => ({ ...prev, api_key: e.target.value }))} />
-                    <Text size="1" color="gray" mt="1" style={{ display: 'block' }}>{t('ai.api_key_hint')}</Text>
-                </Box>
-                {/* Model */}
-                <Box>
-                    <Text size="2" weight="bold" mb="1" style={{ display: 'block' }}>{t('ai.model')}</Text>
-                    {currentPresetModels.length > 0 ? (
-                        <Flex gap="2" align="center">
-                            <Select.Root value={currentPresetModels.includes(config.model) ? config.model : '_custom'} onValueChange={(v) => setConfig(prev => ({ ...prev, model: v === '_custom' ? '' : v }))}>
-                                <Select.Trigger style={{ flex: 1 }} />
+            <Tabs.Root defaultValue="chat">
+                <Tabs.List mb="4">
+                    <Tabs.Trigger value="chat">{t('ai.tab_chat_model')}</Tabs.Trigger>
+                    <Tabs.Trigger value="embedding">{t('ai.tab_embedding')}</Tabs.Trigger>
+                </Tabs.List>
+
+                {/* ─── Chat Model Tab ─── */}
+                <Tabs.Content value="chat">
+                    <Flex direction="column" gap="4">
+                        {/* Provider Presets */}
+                        <Box>
+                            <Text size="2" weight="bold" mb="2" style={{ display: 'block' }}>{t('ai.provider_presets')}</Text>
+                            <Flex gap="2" wrap="wrap">
+                                {Object.entries(presets).map(([key, p]) => (
+                                    <Button key={key} size="1" variant={config.base_url === p.base_url ? 'solid' : 'outline'}
+                                        onClick={() => applyPreset(key)}>
+                                        {p.name}
+                                    </Button>
+                                ))}
+                            </Flex>
+                            <Text size="1" color="gray" mt="1" style={{ display: 'block' }}>{t('ai.preset_hint')}</Text>
+                        </Box>
+                        <Separator size="4" />
+                        {/* API Format */}
+                        <Box>
+                            <Text size="2" weight="bold" mb="1" style={{ display: 'block' }}>{t('ai.api_format')}</Text>
+                            <Select.Root value={config.api_format || 'openai-chat'} onValueChange={(v) => setConfig(prev => ({ ...prev, api_format: v }))}>
+                                <Select.Trigger style={{ width: '100%' }} />
                                 <Select.Content>
-                                    {currentPresetModels.map(m => <Select.Item key={m} value={m}>{m}</Select.Item>)}
-                                    <Select.Item value="_custom">{t('ai.custom_model')}</Select.Item>
+                                    <Select.Item value="openai-chat">OpenAI Chat Completions</Select.Item>
+                                    <Select.Item value="anthropic-messages">Anthropic Messages</Select.Item>
+                                    <Select.Item value="google-generativeai">Google Generative AI</Select.Item>
                                 </Select.Content>
                             </Select.Root>
-                            {!currentPresetModels.includes(config.model) && (
-                                <TextField.Root style={{ flex: 1 }} placeholder={t('ai.model_placeholder')} value={config.model} onChange={(e) => setConfig(prev => ({ ...prev, model: e.target.value }))} />
-                            )}
-                        </Flex>
-                    ) : (
-                        <TextField.Root placeholder="gpt-4o / claude-sonnet-4-20250514 / deepseek-chat" value={config.model} onChange={(e) => setConfig(prev => ({ ...prev, model: e.target.value }))} />
-                    )}
-                    <Text size="1" color="gray" mt="1" style={{ display: 'block' }}>{t('ai.model_hint')}</Text>
-                </Box>
-                {/* Embedding Model */}
-                <Box>
-                    <Text size="2" weight="bold" mb="1" style={{ display: 'block' }}>{t('ai.embedding_model')}</Text>
-                    {(() => {
-                        const currentPresetEmbeddings = Object.values(presets).find(p => p.base_url === config.base_url)?.embedding_models || []
-                        if (currentPresetEmbeddings.length > 0) {
-                            return (
+                            <Text size="1" color="gray" mt="1" style={{ display: 'block' }}>{t('ai.api_format_hint')}</Text>
+                        </Box>
+                        {/* Base URL */}
+                        <Box>
+                            <Text size="2" weight="bold" mb="1" style={{ display: 'block' }}>{t('ai.base_url')}</Text>
+                            <TextField.Root placeholder="https://api.openai.com" value={config.base_url} onChange={(e) => setConfig(prev => ({ ...prev, base_url: e.target.value }))} />
+                            <Text size="1" color="gray" mt="1" style={{ display: 'block' }}>{t('ai.base_url_hint')}</Text>
+                        </Box>
+                        {/* API Key */}
+                        <Box>
+                            <Text size="2" weight="bold" mb="1" style={{ display: 'block' }}>{t('ai.api_key')}</Text>
+                            <TextField.Root type="password" placeholder="sk-..." value={config.api_key} onChange={(e) => setConfig(prev => ({ ...prev, api_key: e.target.value }))} />
+                            <Text size="1" color="gray" mt="1" style={{ display: 'block' }}>{t('ai.api_key_hint')}</Text>
+                        </Box>
+                        {/* Model */}
+                        <Box>
+                            <Text size="2" weight="bold" mb="1" style={{ display: 'block' }}>{t('ai.model')}</Text>
+                            {currentPresetModels.length > 0 ? (
                                 <Flex gap="2" align="center">
-                                    <Select.Root value={currentPresetEmbeddings.includes(config.embedding_model) ? config.embedding_model : (config.embedding_model ? '_custom' : '_none')} onValueChange={(v) => {
-                                        if (v === '_none') {
-                                            setConfig(prev => ({ ...prev, embedding_model: '' }))
-                                        } else if (v === '_custom') {
-                                            setConfig(prev => ({ ...prev, embedding_model: prev.embedding_model && !currentPresetEmbeddings.includes(prev.embedding_model) ? prev.embedding_model : 'custom-model' }))
-                                        } else {
-                                            setConfig(prev => ({ ...prev, embedding_model: v }))
-                                        }
-                                    }}>
+                                    <Select.Root value={currentPresetModels.includes(config.model) ? config.model : '_custom'} onValueChange={(v) => setConfig(prev => ({ ...prev, model: v === '_custom' ? '' : v }))}>
                                         <Select.Trigger style={{ flex: 1 }} />
                                         <Select.Content>
-                                            <Select.Item value="_none">{t('ai.embedding_disabled')}</Select.Item>
-                                            {currentPresetEmbeddings.map(m => <Select.Item key={m} value={m}>{m}</Select.Item>)}
+                                            {currentPresetModels.map(m => <Select.Item key={m} value={m}>{m}</Select.Item>)}
                                             <Select.Item value="_custom">{t('ai.custom_model')}</Select.Item>
                                         </Select.Content>
                                     </Select.Root>
-                                    {config.embedding_model && !currentPresetEmbeddings.includes(config.embedding_model) && (
-                                        <TextField.Root style={{ flex: 1 }} placeholder={t('ai.embedding_model_placeholder')} value={config.embedding_model} onChange={(e) => setConfig(prev => ({ ...prev, embedding_model: e.target.value }))} />
+                                    {!currentPresetModels.includes(config.model) && (
+                                        <TextField.Root style={{ flex: 1 }} placeholder={t('ai.model_placeholder')} value={config.model} onChange={(e) => setConfig(prev => ({ ...prev, model: e.target.value }))} />
                                     )}
                                 </Flex>
-                            )
-                        }
-                        return (
-                            <TextField.Root placeholder={t('ai.embedding_model_placeholder')} value={config.embedding_model} onChange={(e) => setConfig(prev => ({ ...prev, embedding_model: e.target.value }))} />
-                        )
-                    })()}
-                    <Text size="1" color="gray" mt="1" style={{ display: 'block' }}>{t('ai.embedding_model_hint')}</Text>
-                </Box>
-                {/* Separate Embedding API Credentials (shown when embedding model is set) */}
-                {config.embedding_model && (
-                    <Box style={{ padding: '12px', borderRadius: '8px', background: 'var(--gray-a2)', border: '1px solid var(--gray-a4)' }}>
-                        <Text size="2" weight="bold" mb="2" style={{ display: 'block' }}>{t('ai.embedding_api_override')}</Text>
-                        <Text size="1" color="gray" mb="3" style={{ display: 'block' }}>{t('ai.embedding_api_override_hint')}</Text>
-                        <Flex direction="column" gap="3">
-                            <Box>
-                                <Text size="1" weight="medium" mb="1" style={{ display: 'block' }}>{t('ai.embedding_base_url')}</Text>
-                                <TextField.Root placeholder={t('ai.embedding_base_url_placeholder')} value={config.embedding_base_url || ''} onChange={(e) => setConfig(prev => ({ ...prev, embedding_base_url: e.target.value }))} />
-                            </Box>
-                            <Box>
-                                <Text size="1" weight="medium" mb="1" style={{ display: 'block' }}>{t('ai.embedding_api_key')}</Text>
-                                <TextField.Root type="password" placeholder={t('ai.embedding_api_key_placeholder')} value={config.embedding_api_key || ''} onChange={(e) => setConfig(prev => ({ ...prev, embedding_api_key: e.target.value }))} />
-                            </Box>
-                        </Flex>
-                    </Box>
-                )}
+                            ) : (
+                                <TextField.Root placeholder="gpt-4o / claude-sonnet-4-20250514 / deepseek-chat" value={config.model} onChange={(e) => setConfig(prev => ({ ...prev, model: e.target.value }))} />
+                            )}
+                            <Text size="1" color="gray" mt="1" style={{ display: 'block' }}>{t('ai.model_hint')}</Text>
+                        </Box>
+                    </Flex>
+                </Tabs.Content>
+
+                {/* ─── Embedding Model Tab ─── */}
+                <Tabs.Content value="embedding">
+                    <Flex direction="column" gap="4">
+                        {/* Introduction */}
+                        <Box style={{ padding: '12px 16px', borderRadius: '8px', background: 'var(--accent-a2)', border: '1px solid var(--accent-a4)' }}>
+                            <Text size="2" weight="bold" mb="1" style={{ display: 'block' }}>{t('ai.embedding_intro_title')}</Text>
+                            <Text size="2" color="gray" style={{ display: 'block', lineHeight: 1.6 }}>{t('ai.embedding_intro_desc')}</Text>
+                        </Box>
+                        {/* Free providers callout */}
+                        <Box style={{ padding: '12px 16px', borderRadius: '8px', background: 'var(--green-a2)', border: '1px solid var(--green-a4)' }}>
+                            <Text size="2" weight="bold" mb="1" style={{ display: 'block' }}>{t('ai.embedding_free_title')}</Text>
+                            <Text size="2" color="gray" style={{ display: 'block', whiteSpace: 'pre-line', lineHeight: 1.6 }}>{t('ai.embedding_free_list')}</Text>
+                        </Box>
+                        <Separator size="4" />
+                        {/* Embedding Model */}
+                        <Box>
+                            <Text size="2" weight="bold" mb="1" style={{ display: 'block' }}>{t('ai.embedding_model')}</Text>
+                            {(() => {
+                                if (currentPresetEmbeddings.length > 0) {
+                                    return (
+                                        <Flex gap="2" align="center">
+                                            <Select.Root value={currentPresetEmbeddings.includes(config.embedding_model) ? config.embedding_model : (config.embedding_model ? '_custom' : '_none')} onValueChange={(v) => {
+                                                if (v === '_none') {
+                                                    setConfig(prev => ({ ...prev, embedding_model: '' }))
+                                                } else if (v === '_custom') {
+                                                    setConfig(prev => ({ ...prev, embedding_model: prev.embedding_model && !currentPresetEmbeddings.includes(prev.embedding_model) ? prev.embedding_model : 'custom-model' }))
+                                                } else {
+                                                    setConfig(prev => ({ ...prev, embedding_model: v }))
+                                                }
+                                            }}>
+                                                <Select.Trigger style={{ flex: 1 }} />
+                                                <Select.Content>
+                                                    <Select.Item value="_none">{t('ai.embedding_disabled')}</Select.Item>
+                                                    {currentPresetEmbeddings.map(m => <Select.Item key={m} value={m}>{m}</Select.Item>)}
+                                                    <Select.Item value="_custom">{t('ai.custom_model')}</Select.Item>
+                                                </Select.Content>
+                                            </Select.Root>
+                                            {config.embedding_model && !currentPresetEmbeddings.includes(config.embedding_model) && (
+                                                <TextField.Root style={{ flex: 1 }} placeholder={t('ai.embedding_model_placeholder')} value={config.embedding_model} onChange={(e) => setConfig(prev => ({ ...prev, embedding_model: e.target.value }))} />
+                                            )}
+                                        </Flex>
+                                    )
+                                }
+                                return (
+                                    <TextField.Root placeholder={t('ai.embedding_model_placeholder')} value={config.embedding_model} onChange={(e) => setConfig(prev => ({ ...prev, embedding_model: e.target.value }))} />
+                                )
+                            })()}
+                            <Text size="1" color="gray" mt="1" style={{ display: 'block' }}>{t('ai.embedding_model_hint')}</Text>
+                        </Box>
+                        {/* Embedding API Credentials */}
+                        <Box style={{ padding: '12px', borderRadius: '8px', background: 'var(--gray-a2)', border: '1px solid var(--gray-a4)' }}>
+                            <Text size="2" weight="bold" mb="2" style={{ display: 'block' }}>{t('ai.embedding_api_override')}</Text>
+                            <Text size="1" color="gray" mb="3" style={{ display: 'block' }}>{t('ai.embedding_api_override_hint')}</Text>
+                            <Flex direction="column" gap="3">
+                                <Box>
+                                    <Text size="1" weight="medium" mb="1" style={{ display: 'block' }}>{t('ai.embedding_base_url')}</Text>
+                                    <TextField.Root placeholder={t('ai.embedding_base_url_placeholder')} value={config.embedding_base_url || ''} onChange={(e) => setConfig(prev => ({ ...prev, embedding_base_url: e.target.value }))} />
+                                </Box>
+                                <Box>
+                                    <Text size="1" weight="medium" mb="1" style={{ display: 'block' }}>{t('ai.embedding_api_key')}</Text>
+                                    <TextField.Root type="password" placeholder={t('ai.embedding_api_key_placeholder')} value={config.embedding_api_key || ''} onChange={(e) => setConfig(prev => ({ ...prev, embedding_api_key: e.target.value }))} />
+                                </Box>
+                            </Flex>
+                        </Box>
+                    </Flex>
+                </Tabs.Content>
+            </Tabs.Root>
+
+            {/* Save / Test buttons (always visible) */}
+            <Flex direction="column" gap="3" mt="4">
                 <Separator size="4" />
                 {testResult && (
                     <Badge size="2" color={testResult.ok ? 'green' : 'red'} variant="soft" style={{ padding: '8px 12px' }}>
