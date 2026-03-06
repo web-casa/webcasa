@@ -95,23 +95,18 @@ for i in $(seq 1 30); do
     sleep 1
 done
 
-# Step 4: Setup admin account
-echo -e "\n${YELLOW}[4/6] Setting up admin account...${NC}"
-HTTP_CODE=$(curl -s -o /tmp/setup.json -w "%{http_code}" \
-    -X POST "$API/api/auth/setup" \
-    -H 'Content-Type: application/json' \
-    -d '{"username":"admin","password":"testpassword123"}')
-assert "Admin setup" "$([ "$HTTP_CODE" = "200" ] || [ "$HTTP_CODE" = "201" ]; echo $?)"
+# Helper: solve ALTCHA PoW challenge and return base64 payload
+solve_altcha() {
+    local CHALLENGE_JSON
+    CHALLENGE_JSON=$(curl -sf "$API/api/auth/altcha-challenge")
+    local CHALLENGE SALT ALGORITHM SIGNATURE
+    CHALLENGE=$(echo "$CHALLENGE_JSON" | jq -r '.challenge')
+    SALT=$(echo "$CHALLENGE_JSON" | jq -r '.salt')
+    ALGORITHM=$(echo "$CHALLENGE_JSON" | jq -r '.algorithm')
+    SIGNATURE=$(echo "$CHALLENGE_JSON" | jq -r '.signature')
 
-# Step 5: Login (solve ALTCHA PoW)
-echo -e "\n${YELLOW}[5/6] Logging in (solving ALTCHA PoW)...${NC}"
-CHALLENGE_JSON=$(curl -sf "$API/api/auth/altcha-challenge")
-CHALLENGE=$(echo "$CHALLENGE_JSON" | jq -r '.challenge')
-SALT=$(echo "$CHALLENGE_JSON" | jq -r '.salt')
-ALGORITHM=$(echo "$CHALLENGE_JSON" | jq -r '.algorithm')
-SIGNATURE=$(echo "$CHALLENGE_JSON" | jq -r '.signature')
-
-NUMBER=$(SALT="$SALT" CHALLENGE="$CHALLENGE" node -e "
+    local NUMBER
+    NUMBER=$(SALT="$SALT" CHALLENGE="$CHALLENGE" node -e "
 const crypto = require('crypto');
 const salt = process.env.SALT;
 const challenge = process.env.CHALLENGE;
@@ -124,14 +119,29 @@ for(let i=0; i<=50000; i++) {
 process.exit(1);
 ")
 
-PAYLOAD_JSON=$(jq -n \
-    --arg alg "$ALGORITHM" \
-    --arg chal "$CHALLENGE" \
-    --argjson num "$NUMBER" \
-    --arg salt "$SALT" \
-    --arg sig "$SIGNATURE" \
-    '{algorithm: $alg, challenge: $chal, number: $num, salt: $salt, signature: $sig}')
-ALTCHA_B64=$(echo -n "$PAYLOAD_JSON" | base64 -w 0)
+    local PAYLOAD_JSON
+    PAYLOAD_JSON=$(jq -n \
+        --arg alg "$ALGORITHM" \
+        --arg chal "$CHALLENGE" \
+        --argjson num "$NUMBER" \
+        --arg salt "$SALT" \
+        --arg sig "$SIGNATURE" \
+        '{algorithm: $alg, challenge: $chal, number: $num, salt: $salt, signature: $sig}')
+    echo -n "$PAYLOAD_JSON" | base64 -w 0
+}
+
+# Step 4: Setup admin account (requires ALTCHA PoW)
+echo -e "\n${YELLOW}[4/6] Setting up admin account...${NC}"
+ALTCHA_B64=$(solve_altcha)
+HTTP_CODE=$(curl -s -o /tmp/setup.json -w "%{http_code}" \
+    -X POST "$API/api/auth/setup" \
+    -H 'Content-Type: application/json' \
+    -d "{\"username\":\"admin\",\"password\":\"testpassword123\",\"altcha\":\"$ALTCHA_B64\"}")
+assert "Admin setup" "$([ "$HTTP_CODE" = "200" ] || [ "$HTTP_CODE" = "201" ]; echo $?)"
+
+# Step 5: Login (solve ALTCHA PoW)
+echo -e "\n${YELLOW}[5/6] Logging in (solving ALTCHA PoW)...${NC}"
+ALTCHA_B64=$(solve_altcha)
 
 RESPONSE=$(curl -sf -X POST "$API/api/auth/login" \
     -H 'Content-Type: application/json' \

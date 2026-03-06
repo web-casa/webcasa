@@ -9,7 +9,7 @@
 #    bash scripts/test-install.sh debian alma  # Test multiple
 #    bash scripts/test-install.sh --pro alma   # Test Pro mode (RHEL-based only)
 #
-#  Available distros: ubuntu, debian, alma, rocky, fedora
+#  Available distros: alma, alma9, rocky, fedora (RHEL-like only)
 # ============================================================================
 
 set -euo pipefail
@@ -48,11 +48,10 @@ pass() { echo -e "  ${GREEN}PASS${NC} $1"; PASS_COUNT=$((PASS_COUNT+1)); }
 fail() { echo -e "  ${RED}FAIL${NC} $1"; FAIL_COUNT=$((FAIL_COUNT+1)); }
 skip() { echo -e "  ${YELLOW}SKIP${NC} $1"; SKIP_COUNT=$((SKIP_COUNT+1)); }
 
-# Distro → base image mapping
+# Distro → base image mapping (RHEL-like only — panel does not support deb-based)
 declare -A DISTRO_IMAGES=(
-    [ubuntu]="ubuntu:22.04"
-    [debian]="debian:12"
-    [alma]="almalinux:9"
+    [alma]="almalinux:10"
+    [alma9]="almalinux:9"
     [rocky]="rockylinux:9"
     [fedora]="fedora:40"
 )
@@ -65,15 +64,16 @@ build_test_image() {
 
     echo -e "\n${CYAN}${BOLD}Building test image for ${DISTRO} (${BASE_IMAGE})...${NC}"
 
-    # Determine package manager setup
+    # Determine package manager setup (RHEL-like only)
     local SETUP_CMD
     case "$DISTRO" in
-        ubuntu|debian)
-            SETUP_CMD="apt-get update -qq && DEBIAN_FRONTEND=noninteractive apt-get install -y -qq curl wget sudo > /dev/null"
-            ;;
-        alma|rocky|fedora)
+        alma|alma9|rocky|fedora)
             # AlmaLinux/Rocky ship curl-minimal which conflicts with curl; swap it first
             SETUP_CMD="dnf swap -y curl-minimal curl > /dev/null 2>&1 || true; dnf install -y -q curl wget sudo which procps-ng > /dev/null 2>&1"
+            ;;
+        *)
+            echo -e "${RED}Unsupported distro: $DISTRO${NC}"
+            return 1
             ;;
     esac
 
@@ -268,38 +268,44 @@ FAKESC
     # ---- Setup admin & login ----
     echo -e "${YELLOW}[4/5] Setting up admin and logging in...${NC}"
 
-    # Admin setup
+    # Helper: solve ALTCHA PoW (runs node on host, jq in container)
+    solve_altcha_docker() {
+        local CHL_JSON
+        CHL_JSON=$(docker exec "$CONTAINER" curl -sf http://localhost:39921/api/auth/altcha-challenge)
+        local S C SIG
+        S=$(echo "$CHL_JSON" | docker exec -i "$CONTAINER" jq -r '.salt')
+        C=$(echo "$CHL_JSON" | docker exec -i "$CONTAINER" jq -r '.challenge')
+        SIG=$(echo "$CHL_JSON" | docker exec -i "$CONTAINER" jq -r '.signature')
+
+        local NUM
+        NUM=$(SALT="$S" CHALLENGE="$C" "$NODE_BIN" -e "
+            const crypto = require('crypto');
+            const salt = process.env.SALT;
+            const challenge = process.env.CHALLENGE;
+            for(let i=0; i<=50000; i++) {
+                if(crypto.createHash('sha256').update(salt+i).digest('hex') === challenge) {
+                    console.log(i);
+                    process.exit(0);
+                }
+            }
+            process.exit(1);
+        ")
+
+        echo -n "{\"algorithm\":\"SHA-256\",\"challenge\":\"$C\",\"number\":$NUM,\"salt\":\"$S\",\"signature\":\"$SIG\"}" | base64 -w0
+    }
+
+    # Admin setup (requires ALTCHA)
+    local SETUP_ALTCHA
+    SETUP_ALTCHA=$(solve_altcha_docker)
     local SETUP_RES
     SETUP_RES=$(docker exec "$CONTAINER" curl -sf -X POST http://localhost:39921/api/auth/setup \
         -H 'Content-Type: application/json' \
-        -d '{"username":"admin","password":"TestPass123!"}' 2>&1) && \
+        -d "{\"username\":\"admin\",\"password\":\"TestPass123!\",\"altcha\":\"$SETUP_ALTCHA\"}" 2>&1) && \
         pass "Admin setup" || fail "Admin setup failed: $SETUP_RES"
 
-    # Solve ALTCHA and login
-    local CHALLENGE_JSON
-    CHALLENGE_JSON=$(docker exec "$CONTAINER" curl -sf http://localhost:39921/api/auth/altcha-challenge)
-    local SALT CHALLENGE SIGNATURE
-    SALT=$(echo "$CHALLENGE_JSON" | docker exec -i "$CONTAINER" jq -r '.salt')
-    CHALLENGE=$(echo "$CHALLENGE_JSON" | docker exec -i "$CONTAINER" jq -r '.challenge')
-    SIGNATURE=$(echo "$CHALLENGE_JSON" | docker exec -i "$CONTAINER" jq -r '.signature')
-
-    # Solve PoW (node runs on host, not in container)
-    local NUMBER
-    NUMBER=$(SALT="$SALT" CHALLENGE="$CHALLENGE" "$NODE_BIN" -e "
-        const crypto = require('crypto');
-        const salt = process.env.SALT;
-        const challenge = process.env.CHALLENGE;
-        for(let i=0; i<=50000; i++) {
-            if(crypto.createHash('sha256').update(salt+i).digest('hex') === challenge) {
-                console.log(i);
-                process.exit(0);
-            }
-        }
-        process.exit(1);
-    ")
-
+    # Login (also requires ALTCHA)
     local ALTCHA_B64
-    ALTCHA_B64=$(echo -n "{\"algorithm\":\"SHA-256\",\"challenge\":\"$CHALLENGE\",\"number\":$NUMBER,\"salt\":\"$SALT\",\"signature\":\"$SIGNATURE\"}" | base64 -w0)
+    ALTCHA_B64=$(solve_altcha_docker)
 
     local TOKEN
     TOKEN=$(docker exec "$CONTAINER" curl -sf -X POST http://localhost:39921/api/auth/login \
@@ -412,8 +418,8 @@ main() {
     if [[ $# -gt 0 ]]; then
         DISTROS=("$@")
     else
-        # Default: test Ubuntu (Debian-family) and AlmaLinux (RHEL-family)
-        DISTROS=("ubuntu" "alma")
+        # Default: test AlmaLinux 10 (el10) and AlmaLinux 9 (el9)
+        DISTROS=("alma" "alma9")
     fi
 
     # Validate distro names
