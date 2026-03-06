@@ -54,17 +54,33 @@ func (a *CoreAPIImpl) CreateHost(req CreateHostRequest) (uint, error) {
 	tlsEnabled := req.TLSEnabled
 	httpRedirect := req.HTTPRedirect
 	ws := req.WebSocket
+	compression := req.Compression
+
+	hostType := req.HostType
+	if hostType == "" {
+		hostType = "proxy"
+	}
 
 	hostReq := &model.HostCreateRequest{
 		Domain:       req.Domain,
-		HostType:     "proxy",
+		HostType:     hostType,
 		Enabled:      boolPtr(true),
 		TLSEnabled:   &tlsEnabled,
 		HTTPRedirect: &httpRedirect,
 		WebSocket:    &ws,
-		Upstreams: []model.UpstreamInput{
+		Compression:  &compression,
+	}
+
+	switch hostType {
+	case "php":
+		hostReq.RootPath = req.RootPath
+		hostReq.PHPFastCGI = req.PHPFastCGI
+	case "static":
+		hostReq.RootPath = req.RootPath
+	default: // "proxy"
+		hostReq.Upstreams = []model.UpstreamInput{
 			{Address: req.UpstreamAddr, Weight: 1},
-		},
+		}
 	}
 
 	host, err := a.hostSvc.Create(hostReq)
@@ -949,7 +965,7 @@ func isPathSafe(path string) bool {
 			return false
 		}
 	}
-	allowed := []string{"/etc/caddy", "/etc/nginx", "/var/log", "/home", "/root", "/opt", "/srv", "/tmp"}
+	allowed := []string{"/etc/caddy", "/etc/nginx", "/var/log", "/var/www", "/home", "/root", "/opt", "/srv", "/tmp"}
 	for _, a := range allowed {
 		if resolved == a || strings.HasPrefix(resolved, a+"/") {
 			return true
@@ -1137,6 +1153,32 @@ func (a *CoreAPIImpl) FirewallRemoveService(zone, service string) error {
 	}
 	_, _ = a.firewallCmd("--reload")
 	return nil
+}
+
+// ──────────────────────────────────────────────────
+// PHP management
+// ──────────────────────────────────────────────────
+
+func (a *CoreAPIImpl) PHPListRuntimes() ([]map[string]interface{}, error) {
+	var results []map[string]interface{}
+	err := a.db.Table("plugin_php_runtimes").
+		Select("id, version, type, status, port, container_name, extensions, memory_limit, created_at").
+		Find(&results).Error
+	if err != nil {
+		return []map[string]interface{}{}, nil
+	}
+	return results, nil
+}
+
+func (a *CoreAPIImpl) PHPListSites() ([]map[string]interface{}, error) {
+	var results []map[string]interface{}
+	err := a.db.Table("plugin_php_sites").
+		Select("id, name, domain, root_path, php_version, runtime_type, worker_mode, status, created_at").
+		Find(&results).Error
+	if err != nil {
+		return []map[string]interface{}{}, nil
+	}
+	return results, nil
 }
 
 // ──────────────────────────────────────────────────

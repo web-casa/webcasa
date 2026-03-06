@@ -452,4 +452,43 @@ export const notifyAPI = {
     testChannel: (id) => api.post(`/notify/channels/${id}/test`),
 }
 
+// ============ PHP (plugin) ============
+export const phpAPI = {
+    // Versions & extensions catalog
+    versions: () => api.get('/plugins/php/versions'),
+    commonExtensions: () => api.get('/plugins/php/common-extensions'),
+
+    // Runtimes
+    listRuntimes: () => api.get('/plugins/php/runtimes'),
+    deleteRuntime: (id) => api.delete(`/plugins/php/runtimes/${id}`),
+    startRuntime: (id) => api.post(`/plugins/php/runtimes/${id}/start`),
+    stopRuntime: (id) => api.post(`/plugins/php/runtimes/${id}/stop`),
+    restartRuntime: (id) => api.post(`/plugins/php/runtimes/${id}/restart`),
+    runtimeLogs: (id, lines) => api.get(`/plugins/php/runtimes/${id}/logs`, { params: { lines } }),
+
+    // Config
+    getConfig: (id) => api.get(`/plugins/php/runtimes/${id}/config`),
+    updateConfig: (id, data) => api.put(`/plugins/php/runtimes/${id}/config`, data),
+    optimize: (id) => api.post(`/plugins/php/runtimes/${id}/optimize`),
+
+    // Extensions
+    getExtensions: (id) => api.get(`/plugins/php/runtimes/${id}/extensions`),
+
+    // Sites
+    listSites: () => api.get('/plugins/php/sites'),
+    getSite: (id) => api.get(`/plugins/php/sites/${id}`),
+    updateSite: (id, data) => api.put(`/plugins/php/sites/${id}`, data),
+    deleteSite: (id, deleteFiles) => api.delete(`/plugins/php/sites/${id}`, { params: { delete_files: deleteFiles } }),
+
+    // System info
+    systemInfo: () => api.get('/plugins/php/system-info'),
+    tuningPresets: () => api.get('/plugins/php/tuning-presets'),
+
+    // SSE stream URL helper
+    createRuntimeStreamUrl: () => `${api.defaults.baseURL}/plugins/php/runtimes`,
+    createSiteStreamUrl: () => `${api.defaults.baseURL}/plugins/php/sites`,
+    installExtensionsStreamUrl: (id) => `${api.defaults.baseURL}/plugins/php/runtimes/${id}/extensions`,
+    removeExtensionStreamUrl: (id, name) => `${api.defaults.baseURL}/plugins/php/runtimes/${id}/extensions/${name}`,
+}
+
 export default api

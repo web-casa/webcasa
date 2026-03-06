@@ -116,6 +116,10 @@ type CoreAPI interface {
 	FirewallRemovePort(zone, port, protocol string) error
 	FirewallAddService(zone, service string) error
 	FirewallRemoveService(zone, service string) error
+
+	// PHP management
+	PHPListRuntimes() ([]map[string]interface{}, error)
+	PHPListSites() ([]map[string]interface{}, error)
 }
 
 // UpdateHostRequest describes fields that can be changed on an existing host via AI.
@@ -140,14 +144,17 @@ type CreateProjectRequest struct {
 }
 
 // CreateHostRequest is the minimal set of fields a plugin needs to create a
-// reverse proxy entry. It is intentionally simpler than model.HostCreateRequest
-// to keep the plugin API surface small.
+// host entry. Supports proxy, php, and static host types.
 type CreateHostRequest struct {
 	Domain       string `json:"domain"`
-	UpstreamAddr string `json:"upstream_addr"` // e.g. "localhost:3000"
+	HostType     string `json:"host_type"`     // "proxy" (default), "php", "static"
+	UpstreamAddr string `json:"upstream_addr"` // e.g. "localhost:3000" (proxy only)
 	TLSEnabled   bool   `json:"tls_enabled"`
 	HTTPRedirect bool   `json:"http_redirect"`
 	WebSocket    bool   `json:"websocket"`
+	RootPath     string `json:"root_path"`     // root directory (php/static)
+	PHPFastCGI   string `json:"php_fastcgi"`   // PHP-FPM address (php only)
+	Compression  bool   `json:"compression"`   // enable gzip/zstd
 }
 
 // PluginInfo is the serialisable representation returned by the management API.

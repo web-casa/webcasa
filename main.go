@@ -31,6 +31,7 @@ import (
 	backupplugin "github.com/web-casa/webcasa/plugins/backup"
 	monitoringplugin "github.com/web-casa/webcasa/plugins/monitoring"
 	firewallplugin "github.com/web-casa/webcasa/plugins/firewall"
+	phpplugin "github.com/web-casa/webcasa/plugins/php"
 	"github.com/gin-contrib/cors"
 	"github.com/gin-gonic/gin"
 	"golang.org/x/crypto/bcrypt"
@@ -373,6 +374,9 @@ func initPlugins(db *gorm.DB, protectedRouter *gin.RouterGroup, adminRouter *gin
 	}
 	if err := pluginMgr.Register(firewallplugin.New()); err != nil {
 		log.Printf("⚠️  Register firewall plugin: %v", err)
+	}
+	if err := pluginMgr.Register(phpplugin.New()); err != nil {
+		log.Printf("⚠️  Register php plugin: %v", err)
 	}
 	// Future:
 

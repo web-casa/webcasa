@@ -1785,6 +1785,38 @@ func registerMemoryTools(r *ToolRegistry) {
 			}, nil
 		},
 	})
+
+	// ── PHP management tools ──
+	registerPHPTools(r)
+}
+
+// registerPHPTools adds PHP management AI tools.
+func registerPHPTools(r *ToolRegistry) {
+	r.Register(&Tool{
+		Name:        "php_list_runtimes",
+		Description: "List all installed PHP runtimes (FPM and FrankenPHP) with their version, status, port, and extensions.",
+		Parameters: jsonSchema(map[string]interface{}{
+			"type":       "object",
+			"properties": map[string]interface{}{},
+		}),
+		ReadOnly: true,
+		Handler: func(ctx context.Context, args json.RawMessage) (interface{}, error) {
+			return r.coreAPI.PHPListRuntimes()
+		},
+	})
+
+	r.Register(&Tool{
+		Name:        "php_list_sites",
+		Description: "List all PHP websites with their domain, PHP version, runtime type (FPM/FrankenPHP), and status.",
+		Parameters: jsonSchema(map[string]interface{}{
+			"type":       "object",
+			"properties": map[string]interface{}{},
+		}),
+		ReadOnly: true,
+		Handler: func(ctx context.Context, args json.RawMessage) (interface{}, error) {
+			return r.coreAPI.PHPListSites()
+		},
+	})
 }
 
 // jsonSchema is a helper that returns the map as-is (for readability in tool definitions).
