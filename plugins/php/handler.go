@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"net/http"
 	"strconv"
+	"strings"
 
 	"github.com/gin-gonic/gin"
 )
@@ -50,32 +51,29 @@ func (h *Handler) CreateRuntimeStream(c *gin.Context) {
 		return
 	}
 
-	c.Writer.Header().Set("Content-Type", "text/event-stream")
-	c.Writer.Header().Set("Cache-Control", "no-cache")
-	c.Writer.Header().Set("Connection", "keep-alive")
-	c.Writer.Header().Set("X-Accel-Buffering", "no")
-	c.Writer.WriteHeader(http.StatusOK)
-
 	flusher, ok := c.Writer.(http.Flusher)
 	if !ok {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "streaming not supported"})
 		return
 	}
 
+	c.Writer.Header().Set("Content-Type", "text/event-stream")
+	c.Writer.Header().Set("Cache-Control", "no-cache")
+	c.Writer.Header().Set("Connection", "keep-alive")
+	c.Writer.Header().Set("X-Accel-Buffering", "no")
+	c.Writer.WriteHeader(http.StatusOK)
+
 	progressCb := func(line string) {
-		fmt.Fprintf(c.Writer, "data: %s\n\n", line)
-		flusher.Flush()
+		sseWriteData(c.Writer, flusher, line)
 	}
 
 	rt, err := h.svc.CreateRuntimeStream(&req, progressCb)
 	if err != nil {
-		fmt.Fprintf(c.Writer, "event: error\ndata: %s\n\n", err.Error())
-		flusher.Flush()
+		sseWriteEvent(c.Writer, flusher, "error", err.Error())
 		return
 	}
 
-	fmt.Fprintf(c.Writer, "event: done\ndata: %d\n\n", rt.ID)
-	flusher.Flush()
+	sseWriteEvent(c.Writer, flusher, "done", fmt.Sprintf("%d", rt.ID))
 }
 
 // DeleteRuntime deletes a runtime.
@@ -140,6 +138,9 @@ func (h *Handler) RuntimeLogs(c *gin.Context) {
 	if l := c.Query("lines"); l != "" {
 		if n, err := strconv.Atoi(l); err == nil && n > 0 {
 			lines = n
+			if lines > 1000 {
+				lines = 1000
+			}
 		}
 	}
 	logs, err := h.svc.GetRuntimeLogs(id, lines)
@@ -226,30 +227,28 @@ func (h *Handler) InstallExtensions(c *gin.Context) {
 		return
 	}
 
+	flusher, ok := c.Writer.(http.Flusher)
+	if !ok {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "streaming not supported"})
+		return
+	}
+
 	c.Writer.Header().Set("Content-Type", "text/event-stream")
 	c.Writer.Header().Set("Cache-Control", "no-cache")
 	c.Writer.Header().Set("Connection", "keep-alive")
 	c.Writer.Header().Set("X-Accel-Buffering", "no")
 	c.Writer.WriteHeader(http.StatusOK)
 
-	flusher, ok := c.Writer.(http.Flusher)
-	if !ok {
-		return
-	}
-
 	progressCb := func(line string) {
-		fmt.Fprintf(c.Writer, "data: %s\n\n", line)
-		flusher.Flush()
+		sseWriteData(c.Writer, flusher, line)
 	}
 
 	if err := h.svc.InstallExtensions(id, req.Extensions, progressCb); err != nil {
-		fmt.Fprintf(c.Writer, "event: error\ndata: %s\n\n", err.Error())
-		flusher.Flush()
+		sseWriteEvent(c.Writer, flusher, "error", err.Error())
 		return
 	}
 
-	fmt.Fprintf(c.Writer, "event: done\ndata: ok\n\n")
-	flusher.Flush()
+	sseWriteEvent(c.Writer, flusher, "done", "ok")
 }
 
 // RemoveExtension removes an extension with SSE streaming.
@@ -264,30 +263,28 @@ func (h *Handler) RemoveExtension(c *gin.Context) {
 		return
 	}
 
+	flusher, ok := c.Writer.(http.Flusher)
+	if !ok {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "streaming not supported"})
+		return
+	}
+
 	c.Writer.Header().Set("Content-Type", "text/event-stream")
 	c.Writer.Header().Set("Cache-Control", "no-cache")
 	c.Writer.Header().Set("Connection", "keep-alive")
 	c.Writer.Header().Set("X-Accel-Buffering", "no")
 	c.Writer.WriteHeader(http.StatusOK)
 
-	flusher, ok := c.Writer.(http.Flusher)
-	if !ok {
-		return
-	}
-
 	progressCb := func(line string) {
-		fmt.Fprintf(c.Writer, "data: %s\n\n", line)
-		flusher.Flush()
+		sseWriteData(c.Writer, flusher, line)
 	}
 
 	if err := h.svc.RemoveExtension(id, extName, progressCb); err != nil {
-		fmt.Fprintf(c.Writer, "event: error\ndata: %s\n\n", err.Error())
-		flusher.Flush()
+		sseWriteEvent(c.Writer, flusher, "error", err.Error())
 		return
 	}
 
-	fmt.Fprintf(c.Writer, "event: done\ndata: ok\n\n")
-	flusher.Flush()
+	sseWriteEvent(c.Writer, flusher, "done", "ok")
 }
 
 // ── Sites ──
@@ -324,32 +321,29 @@ func (h *Handler) CreateSiteStream(c *gin.Context) {
 		return
 	}
 
-	c.Writer.Header().Set("Content-Type", "text/event-stream")
-	c.Writer.Header().Set("Cache-Control", "no-cache")
-	c.Writer.Header().Set("Connection", "keep-alive")
-	c.Writer.Header().Set("X-Accel-Buffering", "no")
-	c.Writer.WriteHeader(http.StatusOK)
-
 	flusher, ok := c.Writer.(http.Flusher)
 	if !ok {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "streaming not supported"})
 		return
 	}
 
+	c.Writer.Header().Set("Content-Type", "text/event-stream")
+	c.Writer.Header().Set("Cache-Control", "no-cache")
+	c.Writer.Header().Set("Connection", "keep-alive")
+	c.Writer.Header().Set("X-Accel-Buffering", "no")
+	c.Writer.WriteHeader(http.StatusOK)
+
 	progressCb := func(line string) {
-		fmt.Fprintf(c.Writer, "data: %s\n\n", line)
-		flusher.Flush()
+		sseWriteData(c.Writer, flusher, line)
 	}
 
 	site, err := h.svc.CreateSite(&req, progressCb)
 	if err != nil {
-		fmt.Fprintf(c.Writer, "event: error\ndata: %s\n\n", err.Error())
-		flusher.Flush()
+		sseWriteEvent(c.Writer, flusher, "error", err.Error())
 		return
 	}
 
-	fmt.Fprintf(c.Writer, "event: done\ndata: %d\n\n", site.ID)
-	flusher.Flush()
+	sseWriteEvent(c.Writer, flusher, "done", fmt.Sprintf("%d", site.ID))
 }
 
 // UpdateSite updates a site.
@@ -395,6 +389,27 @@ func (h *Handler) GetSystemInfo(c *gin.Context) {
 // GetTuningPresets returns the available FPM tuning presets.
 func (h *Handler) GetTuningPresets(c *gin.Context) {
 	c.JSON(http.StatusOK, TuningPresets)
+}
+
+// ── SSE Helpers ──
+
+// sseWriteData writes an SSE data message, properly handling newlines.
+func sseWriteData(w http.ResponseWriter, f http.Flusher, msg string) {
+	for _, line := range strings.Split(msg, "\n") {
+		fmt.Fprintf(w, "data: %s\n", line)
+	}
+	fmt.Fprintf(w, "\n")
+	f.Flush()
+}
+
+// sseWriteEvent writes a named SSE event.
+func sseWriteEvent(w http.ResponseWriter, f http.Flusher, event, data string) {
+	fmt.Fprintf(w, "event: %s\n", event)
+	for _, line := range strings.Split(data, "\n") {
+		fmt.Fprintf(w, "data: %s\n", line)
+	}
+	fmt.Fprintf(w, "\n")
+	f.Flush()
 }
 
 // ── Helpers ──

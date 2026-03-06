@@ -44,16 +44,16 @@ func (p *Plugin) Init(ctx *pluginpkg.Context) error {
 	p.termMgr = NewTerminalManager(ctx.Logger)
 	p.handler = NewHandler(p.fileOps, p.termMgr)
 
-	r := ctx.Router       // read-only
+	_ = ctx.Router        // unused — all file ops require admin
 	a := ctx.AdminRouter  // admin-only
 
-	// File operations (read)
-	r.GET("/list", p.handler.List)
-	r.GET("/read", p.handler.Read)
-	r.GET("/download", p.handler.Download)
-	r.GET("/info", p.handler.Info)
+	// File operations (read — admin only, viewers must not browse server files)
+	a.GET("/list", p.handler.List)
+	a.GET("/read", p.handler.Read)
+	a.GET("/download", p.handler.Download)
+	a.GET("/info", p.handler.Info)
 
-	// File operations (admin - write/modify)
+	// File operations (write/modify)
 	a.POST("/write", p.handler.Write)
 	a.POST("/upload", p.handler.Upload)
 	a.POST("/mkdir", p.handler.Mkdir)

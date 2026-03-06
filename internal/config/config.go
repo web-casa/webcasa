@@ -47,14 +47,18 @@ func Load() *Config {
 }
 
 // resolveJWTSecret determines the JWT secret using this priority:
-//  1. WEBCASA_JWT_SECRET env var (if set and not the old default)
+//  1. WEBCASA_JWT_SECRET env var (if set and not an insecure default)
 //  2. Persisted secret in data/.jwt_secret
 //  3. Auto-generate a new cryptographic random secret and persist it
 func resolveJWTSecret(dataDir string) string {
-	const oldDefault = "webcasa-change-me-in-production"
+	// Known insecure defaults that must be rejected.
+	insecureDefaults := map[string]bool{
+		"webcasa-change-me-in-production": true,
+		"change-me-in-production":         true,
+	}
 
-	// 1. Explicit env var takes precedence
-	if envSecret := os.Getenv("WEBCASA_JWT_SECRET"); envSecret != "" && envSecret != oldDefault {
+	// 1. Explicit env var takes precedence (if not an insecure default)
+	if envSecret := os.Getenv("WEBCASA_JWT_SECRET"); envSecret != "" && !insecureDefaults[envSecret] {
 		return envSecret
 	}
 

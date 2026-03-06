@@ -247,7 +247,7 @@ func (m *Manager) Format(content string) (string, error) {
 	cmd.Stdin = strings.NewReader(content)
 	output, err := cmd.Output()
 	if err != nil {
-		return content, nil // return original if formatting fails
+		return content, fmt.Errorf("caddy fmt failed: %w", err)
 	}
 	return string(output), nil
 }

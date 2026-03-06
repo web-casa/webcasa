@@ -14,7 +14,8 @@ services:
       - caddy-data:/root/.config/caddy # Caddy runtime data
     environment:
       - WEBCASA_PORT=39921
-      - WEBCASA_JWT_SECRET=change-me-in-production
+      # JWT secret auto-generated on first run and persisted in data/.jwt_secret
+      # To set explicitly: WEBCASA_JWT_SECRET=<your-random-64-char-hex-string>
     restart: unless-stopped
 
 volumes:

@@ -85,6 +85,13 @@ var TuningPresets = []TuningPreset{
 // reservedMB is the amount of RAM reserved for the OS and other services.
 // avgProcessMB is the average memory per PHP-FPM process (typically 50-80 MB).
 func CalculateOptimalFPM(totalRAMMB, reservedMB, avgProcessMB, cpuCores int) FPMPoolConfig {
+	// Guard against zero/negative RAM.
+	if totalRAMMB <= 0 {
+		return DefaultFPMPoolConfig()
+	}
+	if cpuCores <= 0 {
+		cpuCores = 1
+	}
 	if reservedMB <= 0 {
 		// Reserve ~20% for OS + other services, minimum 256 MB.
 		reservedMB = totalRAMMB / 5

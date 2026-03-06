@@ -58,10 +58,10 @@ func (p *Plugin) Init(ctx *pluginpkg.Context) error {
 	a.POST("/runtimes/:id/start", p.handler.StartRuntime)
 	a.POST("/runtimes/:id/stop", p.handler.StopRuntime)
 	a.POST("/runtimes/:id/restart", p.handler.RestartRuntime)
-	r.GET("/runtimes/:id/logs", p.handler.RuntimeLogs)
+	a.GET("/runtimes/:id/logs", p.handler.RuntimeLogs)
 
-	// Config (read + admin)
-	r.GET("/runtimes/:id/config", p.handler.GetConfig)
+	// Config (admin only — may contain sensitive php.ini values)
+	a.GET("/runtimes/:id/config", p.handler.GetConfig)
 	a.PUT("/runtimes/:id/config", p.handler.UpdateConfig)
 	a.POST("/runtimes/:id/optimize", p.handler.Optimize)
 

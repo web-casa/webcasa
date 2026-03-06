@@ -1519,6 +1519,17 @@
         "manage_extensions": "管理扩展",
         "franken_tip_title": "FrankenPHP 适用性提示",
         "franken_suitable": "适合：Laravel Octane、Symfony Runtime、API 服务、现代框架应用",
-        "franken_unsuitable": "不适合：WordPress、Drupal 等传统 CMS、需要 Xdebug 调试的环境"
+        "franken_unsuitable": "不适合：WordPress、Drupal 等传统 CMS、需要 Xdebug 调试的环境",
+        "config_saved": "配置已保存并重启运行时",
+        "fpm_optimized": "FPM 设置已自动优化",
+        "runtime_count": "{{count}} 个运行时已安装",
+        "site_count": "{{count}} 个站点",
+        "worker_mode_badge": "Worker 模式",
+        "select_runtime_hint": "选择一个运行时进行配置",
+        "installed_label": "已安装：",
+        "progress_error": "错误",
+        "progress_complete": "完成",
+        "fpm_traditional": "传统",
+        "frankenphp_modern": "现代"
     }
 }

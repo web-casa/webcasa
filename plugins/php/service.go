@@ -2,6 +2,7 @@ package php
 
 import (
 	"bufio"
+	"context"
 	"encoding/json"
 	"fmt"
 	"log/slog"
@@ -9,8 +10,11 @@ import (
 	"os/exec"
 	"path/filepath"
 	"regexp"
+	"sort"
 	"strings"
+	"time"
 
+	"github.com/web-casa/webcasa/internal/caddy"
 	"github.com/web-casa/webcasa/internal/plugin"
 	"gorm.io/gorm"
 )
@@ -70,15 +74,30 @@ func (s *Service) CreateRuntimeStream(req *CreateRuntimeRequest, progressCb func
 		return nil, fmt.Errorf("only FPM runtimes can be created directly; FrankenPHP is created per-site")
 	}
 
+	// Validate extensions.
+	if err := ValidateExtensionNames(req.Extensions); err != nil {
+		return nil, err
+	}
+
+	// Validate memory limit.
+	if err := ValidateMemoryLimit(req.MemoryLimit); err != nil {
+		return nil, err
+	}
+
 	// Check uniqueness.
 	var count int64
-	s.db.Model(&PHPRuntime{}).Where("version = ? AND type = ?", req.Version, req.Type).Count(&count)
+	if err := s.db.Model(&PHPRuntime{}).Where("version = ? AND type = ?", req.Version, req.Type).Count(&count).Error; err != nil {
+		return nil, fmt.Errorf("check uniqueness: %w", err)
+	}
 	if count > 0 {
 		return nil, fmt.Errorf("PHP %s (%s) runtime already exists", req.Version, req.Type)
 	}
 
 	// Allocate port — FPM starts at 9080.
-	port := s.allocateFPMPort()
+	port, err := s.allocatePort(9080, 20)
+	if err != nil {
+		return nil, fmt.Errorf("allocate port: %w", err)
+	}
 
 	memLimit := req.MemoryLimit
 	if memLimit == "" {
@@ -132,17 +151,28 @@ func (s *Service) CreateRuntimeStream(req *CreateRuntimeRequest, progressCb func
 
 	// Write config files.
 	progressCb("Writing configuration files...")
-	if err := os.WriteFile(filepath.Join(rtDir, "conf.d", "99-webcasa.ini"), []byte(GeneratePHPIni(phpCfg)), 0644); err != nil {
+	iniContent, err := GeneratePHPIni(phpCfg)
+	if err != nil {
+		return nil, fmt.Errorf("generate php.ini: %w", err)
+	}
+	if err := os.WriteFile(filepath.Join(rtDir, "conf.d", "99-webcasa.ini"), []byte(iniContent), 0644); err != nil {
 		return nil, fmt.Errorf("write php.ini: %w", err)
 	}
-	if err := os.WriteFile(filepath.Join(rtDir, "php-fpm.d", "zz-webcasa.conf"), []byte(GenerateFPMPoolConf(fpmCfg)), 0644); err != nil {
+	fpmContent, err := GenerateFPMPoolConf(fpmCfg)
+	if err != nil {
+		return nil, fmt.Errorf("generate fpm.conf: %w", err)
+	}
+	if err := os.WriteFile(filepath.Join(rtDir, "php-fpm.d", "zz-webcasa.conf"), []byte(fpmContent), 0644); err != nil {
 		return nil, fmt.Errorf("write fpm pool conf: %w", err)
 	}
 
 	// Generate Dockerfile if extensions requested.
 	if len(req.Extensions) > 0 {
 		progressCb("Generating Dockerfile with extensions...")
-		dockerfile := GenerateFPMDockerfile(req.Version, req.Extensions)
+		dockerfile, err := GenerateFPMDockerfile(req.Version, req.Extensions)
+		if err != nil {
+			return nil, fmt.Errorf("generate Dockerfile: %w", err)
+		}
 		if err := os.WriteFile(filepath.Join(rtDir, "Dockerfile"), []byte(dockerfile), 0644); err != nil {
 			return nil, fmt.Errorf("write Dockerfile: %w", err)
 		}
@@ -186,7 +216,9 @@ func (s *Service) DeleteRuntime(id uint) error {
 
 	// Check if any FPM sites depend on this runtime.
 	var siteCount int64
-	s.db.Model(&PHPSite{}).Where("runtime_id = ?", id).Count(&siteCount)
+	if err := s.db.Model(&PHPSite{}).Where("runtime_id = ?", id).Count(&siteCount).Error; err != nil {
+		return fmt.Errorf("check site dependencies: %w", err)
+	}
 	if siteCount > 0 {
 		return fmt.Errorf("cannot delete: %d site(s) still use this runtime", siteCount)
 	}
@@ -232,7 +264,12 @@ func (s *Service) GetRuntimeLogs(id uint, lines int) (string, error) {
 	if lines <= 0 {
 		lines = 100
 	}
-	out, err := exec.Command("docker", "logs", "--tail", fmt.Sprintf("%d", lines), rt.ContainerName).CombinedOutput()
+	if lines > 1000 {
+		lines = 1000
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	out, err := exec.CommandContext(ctx, "docker", "logs", "--tail", fmt.Sprintf("%d", lines), rt.ContainerName).CombinedOutput()
 	if err != nil {
 		return string(out), fmt.Errorf("get logs: %w", err)
 	}
@@ -277,21 +314,27 @@ func (s *Service) UpdateConfig(id uint, req *UpdateConfigRequest) error {
 	}
 
 	if req.PHPConfig != nil {
+		iniContent, err := GeneratePHPIni(*req.PHPConfig)
+		if err != nil {
+			return fmt.Errorf("validate php.ini: %w", err)
+		}
 		data, _ := json.Marshal(req.PHPConfig)
 		rt.PHPConfig = string(data)
-		// Regenerate php.ini file.
 		iniPath := filepath.Join(rt.DataDir, "conf.d", "99-webcasa.ini")
-		if err := os.WriteFile(iniPath, []byte(GeneratePHPIni(*req.PHPConfig)), 0644); err != nil {
+		if err := os.WriteFile(iniPath, []byte(iniContent), 0644); err != nil {
 			return fmt.Errorf("write php.ini: %w", err)
 		}
 	}
 
 	if req.FPMConfig != nil {
+		confContent, err := GenerateFPMPoolConf(*req.FPMConfig)
+		if err != nil {
+			return fmt.Errorf("validate fpm.conf: %w", err)
+		}
 		data, _ := json.Marshal(req.FPMConfig)
 		rt.FPMConfig = string(data)
-		// Regenerate FPM pool conf.
 		confPath := filepath.Join(rt.DataDir, "php-fpm.d", "zz-webcasa.conf")
-		if err := os.WriteFile(confPath, []byte(GenerateFPMPoolConf(*req.FPMConfig)), 0644); err != nil {
+		if err := os.WriteFile(confPath, []byte(confContent), 0644); err != nil {
 			return fmt.Errorf("write fpm.conf: %w", err)
 		}
 	}
@@ -337,6 +380,11 @@ func (s *Service) GetExtensions(id uint) ([]string, error) {
 
 // InstallExtensions adds extensions, rebuilds the image, and restarts.
 func (s *Service) InstallExtensions(id uint, extensions []string, progressCb func(string)) error {
+	// Validate extension names against allowlist.
+	if err := ValidateExtensionNames(extensions); err != nil {
+		return err
+	}
+
 	rt, err := s.GetRuntime(id)
 	if err != nil {
 		return err
@@ -346,33 +394,91 @@ func (s *Service) InstallExtensions(id uint, extensions []string, progressCb fun
 	existing := parseExtensions(rt.Extensions)
 	merged := mergeStringSlices(existing, extensions)
 	extJSON, _ := json.Marshal(merged)
-
-	// Regenerate Dockerfile.
-	progressCb("Generating Dockerfile with updated extensions...")
-	var dockerfile string
-	if rt.Type == RuntimeFPM {
-		dockerfile = GenerateFPMDockerfile(rt.Version, merged)
-	} else {
-		dockerfile = GenerateFrankenDockerfile(rt.Version, merged)
-	}
-	if err := os.WriteFile(filepath.Join(rt.DataDir, "Dockerfile"), []byte(dockerfile), 0644); err != nil {
-		return fmt.Errorf("write Dockerfile: %w", err)
-	}
+	rt.Extensions = string(extJSON)
 
 	// Update custom image name.
 	customImage := fmt.Sprintf("webcasa-php-%s-%s:custom", rt.Type, strings.ReplaceAll(rt.Version, ".", ""))
 	rt.CustomImage = customImage
+
+	// Save to DB first (before rebuild).
+	if err := s.db.Save(rt).Error; err != nil {
+		return fmt.Errorf("save extensions: %w", err)
+	}
+
+	return s.rebuildRuntimeImage(rt, merged, progressCb)
+}
+
+// RemoveExtension removes an extension, rebuilds the image, and restarts.
+func (s *Service) RemoveExtension(id uint, extName string, progressCb func(string)) error {
+	rt, err := s.GetRuntime(id)
+	if err != nil {
+		return err
+	}
+
+	existing := parseExtensions(rt.Extensions)
+	found := false
+	var filtered []string
+	for _, e := range existing {
+		if e != extName {
+			filtered = append(filtered, e)
+		} else {
+			found = true
+		}
+	}
+	if !found {
+		return fmt.Errorf("extension %q is not installed", extName)
+	}
+
+	extJSON, _ := json.Marshal(filtered)
 	rt.Extensions = string(extJSON)
+
+	// Save to DB first (before rebuild).
+	if err := s.db.Save(rt).Error; err != nil {
+		return fmt.Errorf("save extensions: %w", err)
+	}
+
+	if len(filtered) == 0 {
+		// No extensions left: remove Dockerfile, reset custom image.
+		os.Remove(filepath.Join(rt.DataDir, "Dockerfile"))
+		rt.CustomImage = ""
+		if err := s.db.Save(rt).Error; err != nil {
+			return fmt.Errorf("save runtime: %w", err)
+		}
+		// Regenerate compose without custom image.
+		tz := getSystemTimezone()
+		composeContent := GenerateFPMCompose(rt, tz)
+		if err := os.WriteFile(filepath.Join(rt.DataDir, "docker-compose.yml"), []byte(composeContent), 0644); err != nil {
+			return fmt.Errorf("write compose: %w", err)
+		}
+		progressCb("Recreating container with base image...")
+		return s.runComposeStream(rt.DataDir, progressCb, "up", "-d", "--force-recreate")
+	}
+
+	return s.rebuildRuntimeImage(rt, filtered, progressCb)
+}
+
+// rebuildRuntimeImage rebuilds the Docker image with the given extensions and restarts.
+func (s *Service) rebuildRuntimeImage(rt *PHPRuntime, extensions []string, progressCb func(string)) error {
+	progressCb("Generating Dockerfile with updated extensions...")
+	var dockerfile string
+	var err error
+	if rt.Type == RuntimeFPM {
+		dockerfile, err = GenerateFPMDockerfile(rt.Version, extensions)
+	} else {
+		dockerfile, err = GenerateFrankenDockerfile(rt.Version, extensions)
+	}
+	if err != nil {
+		return fmt.Errorf("generate Dockerfile: %w", err)
+	}
+	if err := os.WriteFile(filepath.Join(rt.DataDir, "Dockerfile"), []byte(dockerfile), 0644); err != nil {
+		return fmt.Errorf("write Dockerfile: %w", err)
+	}
 
 	// Regenerate compose with custom image.
 	tz := getSystemTimezone()
 	composeContent := GenerateFPMCompose(rt, tz)
 	if err := os.WriteFile(filepath.Join(rt.DataDir, "docker-compose.yml"), []byte(composeContent), 0644); err != nil {
 		return fmt.Errorf("write compose: %w", err)
-	}
-
-	if err := s.db.Save(rt).Error; err != nil {
-		return fmt.Errorf("save extensions: %w", err)
 	}
 
 	// Rebuild image.
@@ -388,28 +494,6 @@ func (s *Service) InstallExtensions(id uint, extensions []string, progressCb fun
 	}
 
 	return nil
-}
-
-// RemoveExtension removes an extension, rebuilds the image, and restarts.
-func (s *Service) RemoveExtension(id uint, extName string, progressCb func(string)) error {
-	rt, err := s.GetRuntime(id)
-	if err != nil {
-		return err
-	}
-
-	existing := parseExtensions(rt.Extensions)
-	var filtered []string
-	for _, e := range existing {
-		if e != extName {
-			filtered = append(filtered, e)
-		}
-	}
-
-	extJSON, _ := json.Marshal(filtered)
-	rt.Extensions = string(extJSON)
-
-	// Regenerate Dockerfile and rebuild.
-	return s.InstallExtensions(id, nil, progressCb)
 }
 
 // ── Site Management ──
@@ -443,9 +527,26 @@ func (s *Service) GetSite(id uint) (*PHPSite, error) {
 
 // CreateSite creates a new PHP site.
 func (s *Service) CreateSite(req *CreateSiteRequest, progressCb func(string)) (*PHPSite, error) {
+	// Validate domain.
+	if err := caddy.ValidateDomain(req.Domain); err != nil {
+		return nil, fmt.Errorf("invalid domain: %w", err)
+	}
+
+	// Validate extensions.
+	if err := ValidateExtensionNames(req.Extensions); err != nil {
+		return nil, err
+	}
+
+	// Validate worker script.
+	if err := ValidateWorkerScript(req.WorkerScript); err != nil {
+		return nil, err
+	}
+
 	// Validate uniqueness.
 	var count int64
-	s.db.Model(&PHPSite{}).Where("name = ?", req.Name).Count(&count)
+	if err := s.db.Model(&PHPSite{}).Where("name = ?", req.Name).Count(&count).Error; err != nil {
+		return nil, fmt.Errorf("check uniqueness: %w", err)
+	}
 	if count > 0 {
 		return nil, fmt.Errorf("site name %q already exists", req.Name)
 	}
@@ -453,6 +554,11 @@ func (s *Service) CreateSite(req *CreateSiteRequest, progressCb func(string)) (*
 	rootPath := req.RootPath
 	if rootPath == "" {
 		rootPath = filepath.Join("/var/www", req.Domain)
+	}
+
+	// Validate root path.
+	if err := ValidateRootPath(rootPath); err != nil {
+		return nil, err
 	}
 
 	site := &PHPSite{
@@ -494,8 +600,9 @@ func (s *Service) createFPMSite(site *PHPSite, req *CreateSiteRequest, progressC
 	}
 	indexPath := filepath.Join(site.RootPath, "index.php")
 	if _, err := os.Stat(indexPath); os.IsNotExist(err) {
-		defaultIndex := "<?php\nphpinfo();\n"
-		os.WriteFile(indexPath, []byte(defaultIndex), 0644)
+		if err := os.WriteFile(indexPath, []byte("<?php\nphpinfo();\n"), 0644); err != nil {
+			s.logger.Warn("failed to write default index.php", "err", err)
+		}
 	}
 
 	// Create Caddy host (php type).
@@ -516,6 +623,8 @@ func (s *Service) createFPMSite(site *PHPSite, req *CreateSiteRequest, progressC
 
 	progressCb("Saving site record...")
 	if err := s.db.Create(site).Error; err != nil {
+		// Rollback: delete Caddy host.
+		_ = s.coreAPI.DeleteHost(hostID)
 		return nil, fmt.Errorf("create site record: %w", err)
 	}
 
@@ -530,7 +639,11 @@ func (s *Service) createFrankenSite(site *PHPSite, req *CreateSiteRequest, progr
 	}
 
 	// Allocate port for this site (9100+).
-	site.Port = s.allocateFrankenPort()
+	port, err := s.allocatePort(9100, 1000)
+	if err != nil {
+		return nil, fmt.Errorf("allocate port: %w", err)
+	}
+	site.Port = port
 	site.ContainerName = fmt.Sprintf("webcasa-fp-%s", sanitizeName(req.Name))
 	site.DataDir = filepath.Join(s.dataDir, "sites", site.ContainerName)
 	site.WorkerMode = req.WorkerMode
@@ -548,14 +661,19 @@ func (s *Service) createFrankenSite(site *PHPSite, req *CreateSiteRequest, progr
 	// Default index.php.
 	indexPath := filepath.Join(site.RootPath, "index.php")
 	if _, err := os.Stat(indexPath); os.IsNotExist(err) {
-		defaultIndex := "<?php\nphpinfo();\n"
-		os.WriteFile(indexPath, []byte(defaultIndex), 0644)
+		if err := os.WriteFile(indexPath, []byte("<?php\nphpinfo();\n"), 0644); err != nil {
+			s.logger.Warn("failed to write default index.php", "err", err)
+		}
 	}
 
 	// Write default php.ini.
 	phpCfg := DefaultPHPIniConfig()
 	phpCfg.DateTimezone = getSystemTimezone()
-	if err := os.WriteFile(filepath.Join(site.DataDir, "conf.d", "99-webcasa.ini"), []byte(GeneratePHPIni(phpCfg)), 0644); err != nil {
+	iniContent, err := GeneratePHPIni(phpCfg)
+	if err != nil {
+		return nil, fmt.Errorf("generate php.ini: %w", err)
+	}
+	if err := os.WriteFile(filepath.Join(site.DataDir, "conf.d", "99-webcasa.ini"), []byte(iniContent), 0644); err != nil {
 		return nil, fmt.Errorf("write php.ini: %w", err)
 	}
 
@@ -567,9 +685,13 @@ func (s *Service) createFrankenSite(site *PHPSite, req *CreateSiteRequest, progr
 
 	// Dockerfile + extensions.
 	customImage := ""
+	memoryLimit := "256m"
 	if len(req.Extensions) > 0 {
 		progressCb("Generating Dockerfile with extensions...")
-		dockerfile := GenerateFrankenDockerfile(req.PHPVersion, req.Extensions)
+		dockerfile, err := GenerateFrankenDockerfile(req.PHPVersion, req.Extensions)
+		if err != nil {
+			return nil, fmt.Errorf("generate Dockerfile: %w", err)
+		}
 		if err := os.WriteFile(filepath.Join(site.DataDir, "Dockerfile"), []byte(dockerfile), 0644); err != nil {
 			return nil, fmt.Errorf("write Dockerfile: %w", err)
 		}
@@ -580,7 +702,7 @@ func (s *Service) createFrankenSite(site *PHPSite, req *CreateSiteRequest, progr
 
 	// Write docker-compose.yml.
 	tz := getSystemTimezone()
-	composeContent := GenerateFrankenCompose(site, tz, customImage)
+	composeContent := GenerateFrankenCompose(site, tz, customImage, memoryLimit)
 	if err := os.WriteFile(filepath.Join(site.DataDir, "docker-compose.yml"), []byte(composeContent), 0644); err != nil {
 		return nil, fmt.Errorf("write compose: %w", err)
 	}
@@ -608,12 +730,17 @@ func (s *Service) createFrankenSite(site *PHPSite, req *CreateSiteRequest, progr
 		Compression:  true,
 	})
 	if err != nil {
+		// Rollback: stop container.
+		_ = s.runCompose(site.DataDir, "down", "--volumes", "--remove-orphans")
 		return nil, fmt.Errorf("create Caddy host: %w", err)
 	}
 	site.HostID = hostID
 
 	progressCb("Saving site record...")
 	if err := s.db.Create(site).Error; err != nil {
+		// Rollback: delete Caddy host + stop container.
+		_ = s.coreAPI.DeleteHost(hostID)
+		_ = s.runCompose(site.DataDir, "down", "--volumes", "--remove-orphans")
 		return nil, fmt.Errorf("create site record: %w", err)
 	}
 
@@ -653,13 +780,21 @@ func (s *Service) UpdateSite(id uint, req *UpdateSiteRequest) error {
 		return err
 	}
 
+	domainChanged := false
 	if req.Domain != "" && req.Domain != site.Domain {
+		if err := caddy.ValidateDomain(req.Domain); err != nil {
+			return fmt.Errorf("invalid domain: %w", err)
+		}
 		site.Domain = req.Domain
+		domainChanged = true
 	}
 	if req.WorkerMode != nil {
 		site.WorkerMode = *req.WorkerMode
 	}
 	if req.WorkerScript != "" {
+		if err := ValidateWorkerScript(req.WorkerScript); err != nil {
+			return err
+		}
 		site.WorkerScript = req.WorkerScript
 	}
 
@@ -670,8 +805,17 @@ func (s *Service) UpdateSite(id uint, req *UpdateSiteRequest) error {
 	// Regenerate FrankenPHP Caddyfile if needed.
 	if site.RuntimeType == string(RuntimeFranken) && site.DataDir != "" {
 		caddyfile := GenerateFrankenCaddyfile(site)
-		os.WriteFile(filepath.Join(site.DataDir, "Caddyfile"), []byte(caddyfile), 0644)
+		if err := os.WriteFile(filepath.Join(site.DataDir, "Caddyfile"), []byte(caddyfile), 0644); err != nil {
+			return fmt.Errorf("write Caddyfile: %w", err)
+		}
 		_ = s.runCompose(site.DataDir, "restart")
+	}
+
+	// Sync domain change to Caddy host.
+	if domainChanged && site.HostID > 0 {
+		if err := s.coreAPI.UpdateHost(site.HostID, plugin.UpdateHostRequest{}); err != nil {
+			s.logger.Warn("failed to update Caddy host after domain change", "err", err)
+		}
 	}
 
 	return nil
@@ -680,8 +824,11 @@ func (s *Service) UpdateSite(id uint, req *UpdateSiteRequest) error {
 // ── Docker helpers ──
 
 func (s *Service) runCompose(dir string, args ...string) error {
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+	defer cancel()
+
 	fullArgs := append([]string{"compose"}, args...)
-	cmd := exec.Command("docker", fullArgs...)
+	cmd := exec.CommandContext(ctx, "docker", fullArgs...)
 	cmd.Dir = dir
 	cmd.Env = append(os.Environ(), "COMPOSE_PROJECT_NAME="+filepath.Base(dir))
 	out, err := cmd.CombinedOutput()
@@ -692,8 +839,11 @@ func (s *Service) runCompose(dir string, args ...string) error {
 }
 
 func (s *Service) runComposeStream(dir string, cb func(string), args ...string) error {
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
+	defer cancel()
+
 	fullArgs := append([]string{"compose"}, args...)
-	cmd := exec.Command("docker", fullArgs...)
+	cmd := exec.CommandContext(ctx, "docker", fullArgs...)
 	cmd.Dir = dir
 	cmd.Env = append(os.Environ(), "COMPOSE_PROJECT_NAME="+filepath.Base(dir))
 
@@ -727,7 +877,9 @@ func (s *Service) resolveRuntimeStatus(rt *PHPRuntime) string {
 }
 
 func (s *Service) resolveContainerStatus(containerName string) string {
-	out, err := exec.Command("docker", "inspect", "-f", "{{.State.Running}}", containerName).Output()
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	out, err := exec.CommandContext(ctx, "docker", "inspect", "-f", "{{.State.Running}}", containerName).Output()
 	if err != nil {
 		return "stopped"
 	}
@@ -737,36 +889,29 @@ func (s *Service) resolveContainerStatus(containerName string) string {
 	return "stopped"
 }
 
-func (s *Service) allocateFPMPort() int {
-	basePort := 9080
+// allocatePort finds the next available port in the given range.
+// It checks both PHPRuntime and PHPSite tables to avoid collisions.
+func (s *Service) allocatePort(basePort, maxRange int) (int, error) {
+	usedPorts := make(map[int]bool)
+
 	var runtimes []PHPRuntime
 	s.db.Select("port").Find(&runtimes)
-	usedPorts := make(map[int]bool)
 	for _, r := range runtimes {
 		usedPorts[r.Port] = true
 	}
-	for port := basePort; port < basePort+100; port++ {
-		if !usedPorts[port] {
-			return port
-		}
-	}
-	return basePort + len(runtimes)
-}
 
-func (s *Service) allocateFrankenPort() int {
-	basePort := 9100
 	var sites []PHPSite
-	s.db.Where("runtime_type = ? AND port > 0", string(RuntimeFranken)).Select("port").Find(&sites)
-	usedPorts := make(map[int]bool)
+	s.db.Where("port > 0").Select("port").Find(&sites)
 	for _, site := range sites {
 		usedPorts[site.Port] = true
 	}
-	for port := basePort; port < basePort+1000; port++ {
+
+	for port := basePort; port < basePort+maxRange; port++ {
 		if !usedPorts[port] {
-			return port
+			return port, nil
 		}
 	}
-	return basePort + len(sites)
+	return 0, fmt.Errorf("no available ports in range %d-%d", basePort, basePort+maxRange-1)
 }
 
 func mergeStringSlices(existing, additions []string) []string {
@@ -781,6 +926,7 @@ func mergeStringSlices(existing, additions []string) []string {
 	for k := range set {
 		result = append(result, k)
 	}
+	sort.Strings(result)
 	return result
 }
 

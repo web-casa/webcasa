@@ -16,7 +16,7 @@ type PHPRuntime struct {
 	Version       string      `gorm:"size:16;not null" json:"version"`
 	Type          RuntimeType `gorm:"size:16;not null" json:"type"`
 	Status        string      `gorm:"size:16;default:stopped" json:"status"`
-	Port          int         `gorm:"not null" json:"port"`
+	Port          int         `gorm:"not null;uniqueIndex" json:"port"`
 	ContainerName string      `gorm:"size:128" json:"container_name"`
 	DataDir       string      `gorm:"size:512" json:"data_dir"`
 	Extensions    string      `gorm:"type:text" json:"extensions"`     // JSON []string

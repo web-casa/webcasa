@@ -52,6 +52,11 @@ func (tm *TerminalManager) Create(cols, rows uint16) (*TerminalSession, error) {
 		tm.mu.Unlock()
 		return nil, fmt.Errorf("too many terminal sessions (max %d)", maxSessions)
 	}
+
+	// Reserve a slot immediately by pre-registering with a placeholder ID.
+	// This prevents concurrent requests from exceeding maxSessions.
+	slotID := uuid.New().String()
+	tm.sessions[slotID] = nil // placeholder
 	tm.mu.Unlock()
 
 	// Find available shell.
@@ -71,18 +76,22 @@ func (tm *TerminalManager) Create(cols, rows uint16) (*TerminalSession, error) {
 		Rows: rows,
 	})
 	if err != nil {
+		// Release the reserved slot on failure.
+		tm.mu.Lock()
+		delete(tm.sessions, slotID)
+		tm.mu.Unlock()
 		return nil, fmt.Errorf("start pty: %w", err)
 	}
 
 	session := &TerminalSession{
-		ID:      uuid.New().String(),
+		ID:      slotID,
 		PTY:     ptmx,
 		Cmd:     cmd,
 		Created: time.Now(),
 	}
 
 	tm.mu.Lock()
-	tm.sessions[session.ID] = session
+	tm.sessions[slotID] = session // replace placeholder with real session
 	tm.mu.Unlock()
 
 	tm.logger.Info("terminal session created", "id", session.ID)
@@ -128,6 +137,9 @@ func (tm *TerminalManager) CleanupStale(maxAge time.Duration) {
 
 	now := time.Now()
 	for id, s := range tm.sessions {
+		if s == nil {
+			continue // placeholder slot, skip
+		}
 		if now.Sub(s.Created) > maxAge {
 			s.PTY.Close()
 			if s.Cmd.Process != nil {
@@ -146,6 +158,10 @@ func (tm *TerminalManager) CloseAll() {
 	defer tm.mu.Unlock()
 
 	for id, s := range tm.sessions {
+		if s == nil {
+			delete(tm.sessions, id)
+			continue
+		}
 		s.PTY.Close()
 		if s.Cmd.Process != nil {
 			s.Cmd.Process.Kill()

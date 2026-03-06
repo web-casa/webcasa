@@ -111,6 +111,8 @@ func (s *stubCoreAPI) FirewallAddPort(zone, port, protocol string) error        
 func (s *stubCoreAPI) FirewallRemovePort(zone, port, protocol string) error     { return nil }
 func (s *stubCoreAPI) FirewallAddService(zone, service string) error            { return nil }
 func (s *stubCoreAPI) FirewallRemoveService(zone, service string) error         { return nil }
+func (s *stubCoreAPI) PHPListRuntimes() ([]map[string]interface{}, error)       { return nil, nil }
+func (s *stubCoreAPI) PHPListSites() ([]map[string]interface{}, error)          { return nil, nil }
 
 // ── stub plugin ──
 

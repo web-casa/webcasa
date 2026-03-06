@@ -61,6 +61,19 @@ func (a *CoreAPIImpl) CreateHost(req CreateHostRequest) (uint, error) {
 		hostType = "proxy"
 	}
 
+	// Validate host type.
+	switch hostType {
+	case "proxy", "php", "static":
+		// valid
+	default:
+		return 0, fmt.Errorf("invalid host type: %q (must be proxy, php, or static)", hostType)
+	}
+
+	// Validate domain.
+	if err := caddy.ValidateDomain(req.Domain); err != nil {
+		return 0, fmt.Errorf("invalid domain: %w", err)
+	}
+
 	hostReq := &model.HostCreateRequest{
 		Domain:       req.Domain,
 		HostType:     hostType,
@@ -73,9 +86,20 @@ func (a *CoreAPIImpl) CreateHost(req CreateHostRequest) (uint, error) {
 
 	switch hostType {
 	case "php":
+		// Validate RootPath for Caddyfile injection.
+		if strings.ContainsAny(req.RootPath, " \t\n\r{}\"'`;#$\\") {
+			return 0, fmt.Errorf("invalid root path: contains unsafe characters")
+		}
+		// Validate PHPFastCGI format (host:port).
+		if strings.ContainsAny(req.PHPFastCGI, " \t\n\r{}\"'`;#$\\") {
+			return 0, fmt.Errorf("invalid PHP FastCGI address: contains unsafe characters")
+		}
 		hostReq.RootPath = req.RootPath
 		hostReq.PHPFastCGI = req.PHPFastCGI
 	case "static":
+		if strings.ContainsAny(req.RootPath, " \t\n\r{}\"'`;#$\\") {
+			return 0, fmt.Errorf("invalid root path: contains unsafe characters")
+		}
 		hostReq.RootPath = req.RootPath
 	default: // "proxy"
 		hostReq.Upstreams = []model.UpstreamInput{
@@ -1165,6 +1189,7 @@ func (a *CoreAPIImpl) PHPListRuntimes() ([]map[string]interface{}, error) {
 		Select("id, version, type, status, port, container_name, extensions, memory_limit, created_at").
 		Find(&results).Error
 	if err != nil {
+		// Table may not exist if PHP plugin is not installed.
 		return []map[string]interface{}{}, nil
 	}
 	return results, nil
@@ -1176,6 +1201,7 @@ func (a *CoreAPIImpl) PHPListSites() ([]map[string]interface{}, error) {
 		Select("id, name, domain, root_path, php_version, runtime_type, worker_mode, status, created_at").
 		Find(&results).Error
 	if err != nil {
+		// Table may not exist if PHP plugin is not installed.
 		return []map[string]interface{}{}, nil
 	}
 	return results, nil

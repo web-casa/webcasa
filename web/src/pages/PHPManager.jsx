@@ -141,9 +141,19 @@ export default function PHPManager() {
             headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${token}` },
             body: JSON.stringify(body),
         }).then(async (response) => {
+            if (!response.ok) {
+                let errMsg = `HTTP ${response.status}`
+                try { const j = await response.json(); errMsg = j.error || errMsg } catch { /* ignore */ }
+                setProgressError(errMsg)
+                setProgressDone(true)
+                return
+            }
+
             const reader = response.body.getReader()
             const decoder = new TextDecoder()
             let buffer = ''
+            let nextEvent = null
+            let gotDone = false
 
             while (true) {
                 const { done, value } = await reader.read()
@@ -153,22 +163,26 @@ export default function PHPManager() {
                 buffer = lines.pop() || ''
 
                 for (const line of lines) {
-                    if (line.startsWith('data: ')) {
+                    if (line.startsWith('event: ')) {
+                        nextEvent = line.slice(7).trim()
+                    } else if (line.startsWith('data: ')) {
                         const msg = line.slice(6)
-                        setProgressLogs(prev => [...prev, msg])
-                    } else if (line.startsWith('event: error')) {
-                        // Next data line is the error
-                    } else if (line.startsWith('event: done')) {
-                        setProgressDone(true)
-                        if (onDone) onDone()
-                    }
-                    if (line.includes('event: error')) {
-                        setProgressError(true)
+                        if (nextEvent === 'error') {
+                            setProgressError(msg)
+                            setProgressDone(true)
+                        } else if (nextEvent === 'done') {
+                            gotDone = true
+                            setProgressDone(true)
+                            if (onDone) onDone()
+                        } else {
+                            setProgressLogs(prev => [...prev, msg])
+                        }
+                        nextEvent = null
                     }
                 }
             }
 
-            if (!buffer.includes('event: done')) {
+            if (!gotDone) {
                 setProgressDone(true)
                 if (onDone) onDone()
             }
@@ -217,7 +231,7 @@ export default function PHPManager() {
     const saveConfig = async () => {
         try {
             await phpAPI.updateConfig(configRuntimeId, { php_config: phpConfig, fpm_config: fpmConfig })
-            setMessage({ type: 'success', text: 'Config saved and runtime restarted' })
+            setMessage({ type: 'success', text: t('php.config_saved') })
         } catch (e) {
             setMessage({ type: 'error', text: e.response?.data?.error || e.message })
         }
@@ -227,7 +241,7 @@ export default function PHPManager() {
         try {
             const res = await phpAPI.optimize(configRuntimeId)
             setFPMConfig(res.data)
-            setMessage({ type: 'success', text: 'FPM settings auto-optimized' })
+            setMessage({ type: 'success', text: t('php.fpm_optimized') })
         } catch (e) {
             setMessage({ type: 'error', text: e.response?.data?.error || e.message })
         }
@@ -296,7 +310,7 @@ export default function PHPManager() {
                 {/* ── Runtimes Tab ── */}
                 <Tabs.Content value="runtimes">
                     <Flex justify="between" align="center" my="4">
-                        <Text size="2" color="gray">{runtimes.length} runtime(s) installed</Text>
+                        <Text size="2" color="gray">{t('php.runtime_count', { count: runtimes.length })}</Text>
                         <Button onClick={() => setInstallOpen(true)}><Plus size={14} /> {t('php.install_runtime')}</Button>
                     </Flex>
 
@@ -340,7 +354,7 @@ export default function PHPManager() {
                 {/* ── Sites Tab ── */}
                 <Tabs.Content value="sites">
                     <Flex justify="between" align="center" my="4">
-                        <Text size="2" color="gray">{sites.length} site(s)</Text>
+                        <Text size="2" color="gray">{t('php.site_count', { count: sites.length })}</Text>
                         <Button onClick={() => setSiteDialogOpen(true)} disabled={runtimes.length === 0}><Plus size={14} /> {t('php.create_site')}</Button>
                     </Flex>
 
@@ -364,7 +378,7 @@ export default function PHPManager() {
                                         </Flex>
                                     </Flex>
                                     <Text size="1" color="gray">PHP {site.php_version} | {site.root_path}</Text>
-                                    {site.worker_mode && <Badge color="orange" size="1" mt="1">Worker Mode</Badge>}
+                                    {site.worker_mode && <Badge color="orange" size="1" mt="1">{t('php.worker_mode_badge')}</Badge>}
                                     <Separator size="4" my="2" />
                                     <Flex gap="1">
                                         <Tooltip content={t('common.delete')}><IconButton size="1" variant="ghost" color="red" onClick={() => handleDeleteSite(site.id, site.name)}><Trash2 size={14} /></IconButton></Tooltip>
@@ -468,7 +482,7 @@ export default function PHPManager() {
                             </Card>
                         </Box>
                     ) : (
-                        <Box p="6"><Text color="gray">Select a runtime to configure</Text></Box>
+                        <Box p="6"><Text color="gray">{t('php.select_runtime_hint')}</Text></Box>
                     )}
                 </Tabs.Content>
             </Tabs.Root>
@@ -483,8 +497,8 @@ export default function PHPManager() {
                             <Select.Root value={installForm.type} onValueChange={v => setInstallForm(p => ({ ...p, type: v, version: v === 'fpm' ? '8.4' : '8.4' }))}>
                                 <Select.Trigger style={{ width: '100%' }} />
                                 <Select.Content>
-                                    <Select.Item value="fpm">{t('php.fpm')} — Traditional</Select.Item>
-                                    <Select.Item value="frankenphp">{t('php.frankenphp')} — Modern</Select.Item>
+                                    <Select.Item value="fpm">{t('php.fpm')} — {t('php.fpm_traditional')}</Select.Item>
+                                    <Select.Item value="frankenphp">{t('php.frankenphp')} — {t('php.frankenphp_modern')}</Select.Item>
                                 </Select.Content>
                             </Select.Root>
                         </Box>
@@ -633,7 +647,7 @@ export default function PHPManager() {
                     <Dialog.Title>{t('php.manage_extensions')}</Dialog.Title>
                     {installedExts.length > 0 && (
                         <Box mb="3">
-                            <Text size="2" weight="bold" mb="1">Installed:</Text>
+                            <Text size="2" weight="bold" mb="1">{t('php.installed_label')}</Text>
                             <Flex gap="1" wrap="wrap">
                                 {installedExts.map(e => <Badge key={e} color="green" size="1">{e}</Badge>)}
                             </Flex>
@@ -664,7 +678,7 @@ export default function PHPManager() {
             {/* ── Progress Dialog ── */}
             <Dialog.Root open={progressOpen} onOpenChange={(open) => { if (progressDone) setProgressOpen(open) }}>
                 <Dialog.Content maxWidth="600px">
-                    <Dialog.Title>{progressDone ? (progressError ? 'Error' : 'Complete') : t('php.installing')}</Dialog.Title>
+                    <Dialog.Title>{progressDone ? (progressError ? t('php.progress_error') : t('php.progress_complete')) : t('php.installing')}</Dialog.Title>
                     <Box ref={progressRef} style={{ maxHeight: '300px', overflow: 'auto', background: 'var(--gray-2)', borderRadius: '8px', padding: '12px', fontFamily: 'monospace', fontSize: '12px' }}>
                         {progressLogs.map((line, i) => <Text key={i} as="div" size="1" style={{ whiteSpace: 'pre-wrap' }}>{line}</Text>)}
                     </Box>

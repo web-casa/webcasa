@@ -1519,6 +1519,17 @@
         "manage_extensions": "Manage Extensions",
         "franken_tip_title": "FrankenPHP Suitability Guide",
         "franken_suitable": "Suitable for: Laravel Octane, Symfony Runtime, API services, modern framework apps",
-        "franken_unsuitable": "Not suitable for: WordPress, Drupal, traditional CMS, environments requiring Xdebug"
+        "franken_unsuitable": "Not suitable for: WordPress, Drupal, traditional CMS, environments requiring Xdebug",
+        "config_saved": "Config saved and runtime restarted",
+        "fpm_optimized": "FPM settings auto-optimized",
+        "runtime_count": "{{count}} runtime(s) installed",
+        "site_count": "{{count}} site(s)",
+        "worker_mode_badge": "Worker Mode",
+        "select_runtime_hint": "Select a runtime to configure",
+        "installed_label": "Installed:",
+        "progress_error": "Error",
+        "progress_complete": "Complete",
+        "fpm_traditional": "Traditional",
+        "frankenphp_modern": "Modern"
     }
 }

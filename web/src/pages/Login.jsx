@@ -169,7 +169,12 @@ export default function Login() {
 
         try {
             if (needSetup) {
-                await setup(username, password)
+                if (!altchaPayload) {
+                    setError(t('login.verify_first'))
+                    setSubmitting(false)
+                    return
+                }
+                await setup(username, password, altchaPayload)
                 navigate('/', { replace: true })
             } else if (requires2FA) {
                 // 2FA verification step
@@ -400,19 +405,17 @@ export default function Login() {
                                         />
                                     </Flex>
 
-                                    {/* PoW verification (not shown during initial setup) */}
-                                    {!needSetup && (
-                                        <PowCaptcha
-                                            key={captchaKey}
-                                            onVerified={handleVerified}
-                                            onReset={handleCaptchaReset}
-                                        />
-                                    )}
+                                    {/* PoW verification */}
+                                    <PowCaptcha
+                                        key={captchaKey}
+                                        onVerified={handleVerified}
+                                        onReset={handleCaptchaReset}
+                                    />
 
                                     <Button
                                         type="submit"
                                         size="3"
-                                        disabled={submitting || !username || !password || (!needSetup && !altchaPayload)}
+                                        disabled={submitting || !username || !password || !altchaPayload}
                                         style={{ cursor: 'pointer' }}
                                     >
                                         {submitting

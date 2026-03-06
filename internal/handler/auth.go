@@ -36,6 +36,7 @@ type loginRequest struct {
 type setupRequest struct {
 	Username string `json:"username" binding:"required,min=3"`
 	Password string `json:"password" binding:"required,min=6"`
+	Altcha   string `json:"altcha"`
 }
 
 // AltchaChallenge generates a new ALTCHA PoW challenge
@@ -48,8 +49,21 @@ func (h *AuthHandler) AltchaChallenge(c *gin.Context) {
 	c.JSON(http.StatusOK, ch)
 }
 
-// Setup creates the initial admin user (only works when no users exist)
+// Setup creates the initial admin user (only works when no users exist).
+// Protected by rate limiting and ALTCHA PoW to prevent first-to-arrive takeover.
 func (h *AuthHandler) Setup(c *gin.Context) {
+	ip := c.ClientIP()
+
+	// Rate limit: reuse the login limiter to prevent brute-force setup attempts.
+	allowed, waitSec := h.limiter.Check(ip)
+	if !allowed {
+		c.JSON(http.StatusTooManyRequests, gin.H{
+			"error":       "Too many attempts",
+			"retry_after": waitSec,
+		})
+		return
+	}
+
 	var count int64
 	h.db.Model(&model.User{}).Count(&count)
 	if count > 0 {
@@ -59,7 +73,21 @@ func (h *AuthHandler) Setup(c *gin.Context) {
 
 	var req setupRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
+		h.limiter.RecordFail(ip)
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+
+	// Verify ALTCHA PoW challenge to prevent automated takeover.
+	if req.Altcha == "" {
+		h.limiter.RecordFail(ip)
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Please complete security verification first"})
+		return
+	}
+	ok, err := auth.VerifyAltchaSolution(req.Altcha, h.cfg.JWTSecret)
+	if err != nil || !ok {
+		h.limiter.RecordFail(ip)
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Verification failed, please try again"})
 		return
 	}
 
@@ -79,6 +107,7 @@ func (h *AuthHandler) Setup(c *gin.Context) {
 		return
 	}
 
+	h.limiter.RecordSuccess(ip)
 	token, _ := auth.GenerateToken(user.ID, user.Username, h.cfg.JWTSecret)
 	c.JSON(http.StatusOK, gin.H{
 		"message": "Admin user created successfully",

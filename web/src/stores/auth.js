@@ -42,8 +42,8 @@ export const useAuthStore = create((set) => ({
         return data
     },
 
-    setup: async (username, password) => {
-        const res = await authAPI.setup({ username, password })
+    setup: async (username, password, altcha) => {
+        const res = await authAPI.setup({ username, password, altcha })
         const { token, user } = res.data
         localStorage.setItem('token', token)
         set({ token, user, needSetup: false })

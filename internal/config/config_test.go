@@ -71,21 +71,27 @@ func TestResolveJWTSecret_EnvOverride(t *testing.T) {
 }
 
 // TestResolveJWTSecret_IgnoresOldDefault verifies that when WEBCASA_JWT_SECRET
-// is set to the old hardcoded default "webcasa-change-me-in-production", the
-// function ignores it and generates a new random secret instead.
+// is set to a known insecure default, the function ignores it and generates a
+// new random secret instead.
 func TestResolveJWTSecret_IgnoresOldDefault(t *testing.T) {
-	dir := t.TempDir()
-
-	oldDefault := "webcasa-change-me-in-production"
-	t.Setenv("WEBCASA_JWT_SECRET", oldDefault)
-
-	secret := resolveJWTSecret(dir)
-
-	if secret == oldDefault {
-		t.Error("expected resolveJWTSecret to ignore the old default value, but it returned it")
+	insecureDefaults := []string{
+		"webcasa-change-me-in-production",
+		"change-me-in-production",
 	}
-	if secret == "" {
-		t.Error("expected a non-empty generated secret, got empty string")
+	for _, oldDefault := range insecureDefaults {
+		t.Run(oldDefault, func(t *testing.T) {
+			dir := t.TempDir()
+			t.Setenv("WEBCASA_JWT_SECRET", oldDefault)
+
+			secret := resolveJWTSecret(dir)
+
+			if secret == oldDefault {
+				t.Error("expected resolveJWTSecret to ignore the insecure default, but it returned it")
+			}
+			if secret == "" {
+				t.Error("expected a non-empty generated secret, got empty string")
+			}
+		})
 	}
 }
 
