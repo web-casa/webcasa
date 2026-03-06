@@ -268,6 +268,14 @@ func (sm *SourceManager) syncApps(sourceID uint, repoPath string) error {
 			Source:       app.Config.Source,
 			Available:   available,
 			UrlSuffix:   app.Config.UrlSuffix,
+			DescZh:      app.DescZh,
+		}
+
+		// Store i18n data if available
+		if len(app.I18n) > 0 {
+			if i18nBytes, err := json.Marshal(app.I18n); err == nil {
+				def.I18nJSON = string(i18nBytes)
+			}
 		}
 
 		// Upsert by source_id + app_id

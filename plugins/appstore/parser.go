@@ -51,12 +51,27 @@ type FormOption struct {
 	Value string `json:"value"`
 }
 
+// AppI18n holds localized strings for an app (from metadata/i18n/{lang}.json).
+type AppI18n struct {
+	Name      string                       `json:"name"`
+	ShortDesc string                       `json:"short_desc"`
+	Fields    map[string]FormFieldI18n     `json:"form_fields,omitempty"`
+}
+
+// FormFieldI18n holds localized label/hint for a form field.
+type FormFieldI18n struct {
+	Label string `json:"label"`
+	Hint  string `json:"hint,omitempty"`
+}
+
 // ParsedApp is the result of parsing one app directory.
 type ParsedApp struct {
 	Config      *AppConfig
-	ComposeFile string // raw docker-compose.yml content
-	Description string // markdown from metadata/description.md
-	LogoPath    string // relative path to logo (e.g. "nextcloud/metadata/logo.jpg")
+	ComposeFile string            // raw docker-compose.yml content
+	Description string            // markdown from metadata/description.md
+	DescZh      string            // markdown from metadata/description.zh.md
+	LogoPath    string            // relative path to logo (e.g. "nextcloud/metadata/logo.jpg")
+	I18n        map[string]*AppI18n // lang -> translations (e.g. "zh" -> {...})
 }
 
 // ParseAppDir parses a single app directory containing config.json + docker-compose.yml.
@@ -95,6 +110,12 @@ func ParseAppDir(dirPath string) (*ParsedApp, error) {
 		result.Description = string(data)
 	}
 
+	// Read optional metadata/description.zh.md
+	descZhPath := filepath.Join(dirPath, "metadata", "description.zh.md")
+	if data, err := os.ReadFile(descZhPath); err == nil {
+		result.DescZh = string(data)
+	}
+
 	// Check for logo image
 	for _, ext := range []string{".jpg", ".png", ".svg", ".webp"} {
 		logoPath := filepath.Join(dirPath, "metadata", "logo"+ext)
@@ -102,6 +123,26 @@ func ParseAppDir(dirPath string) (*ParsedApp, error) {
 			// Store relative to the source root
 			result.LogoPath = logoPath
 			break
+		}
+	}
+
+	// Load i18n translations (metadata/i18n/*.json)
+	i18nDir := filepath.Join(dirPath, "metadata", "i18n")
+	if entries, err := os.ReadDir(i18nDir); err == nil {
+		result.I18n = make(map[string]*AppI18n)
+		for _, entry := range entries {
+			if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".json") {
+				continue
+			}
+			lang := strings.TrimSuffix(entry.Name(), ".json")
+			data, err := os.ReadFile(filepath.Join(i18nDir, entry.Name()))
+			if err != nil {
+				continue
+			}
+			var i18n AppI18n
+			if err := json.Unmarshal(data, &i18n); err == nil {
+				result.I18n[lang] = &i18n
+			}
 		}
 	}
 

@@ -2,6 +2,7 @@ package appstore
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"net/http"
 	"os"
@@ -73,6 +74,8 @@ func (h *Handler) GetApp(c *gin.Context) {
 		"available":         app.Available,
 		"url_suffix":        app.UrlSuffix,
 		"security_warnings": DetectSecurityFlags(app.ComposeFile),
+		"i18n":              parseI18nJSON(app.I18nJSON),
+		"desc_zh":           app.DescZh,
 	})
 }
 
@@ -467,4 +470,16 @@ func parseID(c *gin.Context) (uint, error) {
 		return 0, err
 	}
 	return uint(id), nil
+}
+
+// parseI18nJSON safely parses the i18n JSON string into a map.
+func parseI18nJSON(raw string) interface{} {
+	if raw == "" {
+		return nil
+	}
+	var result map[string]interface{}
+	if err := json.Unmarshal([]byte(raw), &result); err != nil {
+		return nil
+	}
+	return result
 }
