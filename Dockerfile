@@ -14,6 +14,8 @@ COPY go.mod go.sum ./
 RUN go mod download
 COPY . .
 COPY --from=frontend /app/web/dist ./web/dist
+# seed_apps.json.gz is pre-generated and committed to the repo.
+# Run "make seed-data" to regenerate it before building a release.
 RUN CGO_ENABLED=1 go build -o webcasa .
 
 # Runtime stage

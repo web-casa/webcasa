@@ -175,7 +175,7 @@ function HostFormDialog({ open, onClose, onSaved, host }) {
                     ? form.upstreams.filter((u) => u.address.trim())
                     : [],
                 basic_auths: form.basic_auths.filter((a) => a.username && a.password),
-                group_id: form.group_id || 0,
+                group_id: form.group_id || null,
                 tag_ids: form.tag_ids || [],
             }
             if (isEdit) {

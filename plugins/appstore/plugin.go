@@ -46,8 +46,12 @@ func (p *Plugin) Init(ctx *pluginpkg.Context) error {
 		return fmt.Errorf("migrate: %w", err)
 	}
 
-	// 2. Seed official sources
+	// 2. Seed official sources and pre-populate from embedded data
 	SeedOfficialSources(ctx.DB)
+	var defaultSource AppSource
+	if err := ctx.DB.Where("is_default = ?", true).First(&defaultSource).Error; err == nil {
+		SeedAppsFromEmbedded(ctx.DB, defaultSource.ID, ctx.Logger)
+	}
 
 	// 3. Create services
 	sourceMgr := NewSourceManager(ctx.DB, ctx.DataDir, ctx.Logger)

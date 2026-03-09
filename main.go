@@ -163,6 +163,7 @@ func main() {
 	// Dashboard stats
 	dashH := handler.NewDashboardHandler(hostSvc, caddyMgr, Version)
 	protected.GET("/dashboard/stats", dashH.Stats)
+	protected.GET("/news", dashH.News)
 
 	// Host CRUD
 	hostH := handler.NewHostHandler(hostSvc, db)

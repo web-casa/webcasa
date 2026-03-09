@@ -268,6 +268,9 @@ func (sm *SourceManager) syncApps(sourceID uint, repoPath string) error {
 			Source:       app.Config.Source,
 			Available:   available,
 			UrlSuffix:   app.Config.UrlSuffix,
+			Deprecated:  app.Config.Deprecated,
+			NoGUI:       app.Config.NoGUI,
+			ForceExpose: app.Config.ForceExpose,
 			DescZh:      app.DescZh,
 		}
 
@@ -404,13 +407,13 @@ func SeedOfficialSources(db *gorm.DB) {
 		return
 	}
 
-	// Official Runtipi-compatible app source
+	// Official Web.Casa app source (Runtipi-compatible with Chinese translations)
 	db.Create(&AppSource{
-		Name:       "Runtipi App Store",
-		URL:        "https://github.com/runtipi/runtipi-appstore",
+		Name:       "Web.Casa App Store",
+		URL:        "https://github.com/web-casa/appstore",
 		Branch:     "master",
 		Kind:       "app",
 		IsDefault:  true,
-		SyncStatus: "pending",
+		SyncStatus: "seeded",
 	})
 }

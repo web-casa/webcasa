@@ -26,6 +26,10 @@ type AppConfig struct {
 	FormFields             []FormField `json:"form_fields"`
 	SupportedArchitectures []string    `json:"supported_architectures"`
 	UrlSuffix              string      `json:"url_suffix"`
+	Deprecated             bool        `json:"deprecated"`
+	NoGUI                  bool        `json:"no_gui"`
+	ForceExpose            bool        `json:"force_expose"`
+	GenerateVapidKeys      bool        `json:"generate_vapid_keys"`
 }
 
 // FormField defines a user-configurable parameter in an app's install form.

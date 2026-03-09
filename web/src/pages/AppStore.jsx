@@ -1,13 +1,14 @@
 import { useState, useEffect, useCallback, useRef } from 'react'
 import { Box, Flex, Heading, Text, Card, Button, TextField, Badge, Tabs, Dialog, Select, Separator, IconButton, Tooltip, Callout } from '@radix-ui/themes'
 import { Store, Search, RefreshCw, Settings2, Plus, Trash2, Play, Square, ArrowUpCircle, ExternalLink, Package, Copy, Check, Globe } from 'lucide-react'
-import { useNavigate } from 'react-router'
+import { useNavigate, useSearchParams } from 'react-router'
 import { appstoreAPI } from '../api/index.js'
 import { useTranslation } from 'react-i18next'
 
 export default function AppStore() {
-    const { t } = useTranslation()
+    const { t, i18n } = useTranslation()
     const navigate = useNavigate()
+    const [searchParams] = useSearchParams()
     const [loading, setLoading] = useState(true)
     const [apps, setApps] = useState([])
     const [installed, setInstalled] = useState([])
@@ -17,7 +18,7 @@ export default function AppStore() {
     const [category, setCategory] = useState('')
     const [page, setPage] = useState(1)
     const [total, setTotal] = useState(0)
-    const [tab, setTab] = useState('apps')
+    const [tab, setTab] = useState(searchParams.get('tab') || 'apps')
     const [sourcesOpen, setSourcesOpen] = useState(false)
     const [sources, setSources] = useState([])
     const [newSource, setNewSource] = useState({ name: '', url: '', branch: 'main' })
@@ -38,11 +39,11 @@ export default function AppStore() {
 
     const fetchApps = useCallback(async () => {
         try {
-            const res = await appstoreAPI.listApps({ category, search, page, page_size: pageSize })
+            const res = await appstoreAPI.listApps({ category, search, page, page_size: pageSize, lang: i18n.language })
             setApps(res.data?.apps || [])
             setTotal(res.data?.total || 0)
         } catch { /* ignore */ }
-    }, [category, search, page])
+    }, [category, search, page, i18n.language])
 
     const fetchInstalled = useCallback(async () => {
         try {

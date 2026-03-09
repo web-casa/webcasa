@@ -1,4 +1,4 @@
-.PHONY: all build dev clean frontend backend run
+.PHONY: all build dev clean frontend backend run seed-data
 
 # Default target
 all: build
@@ -54,6 +54,16 @@ docker-run:
 # Run tests
 test:
 	go test ./... -v
+
+# Generate app store seed data from upstream repo
+APPSTORE_REPO ?= https://github.com/web-casa/appstore
+seed-data:
+	@echo "📦 Generating app store seed data..."
+	@rm -rf /tmp/webcasa-appstore-seed
+	@git clone --depth 1 --branch master $(APPSTORE_REPO) /tmp/webcasa-appstore-seed
+	@go run ./plugins/appstore/cmd/seedgen /tmp/webcasa-appstore-seed plugins/appstore/seed_apps.json.gz
+	@rm -rf /tmp/webcasa-appstore-seed
+	@echo "✅ Seed data generated: $$(ls -lh plugins/appstore/seed_apps.json.gz | awk '{print $$5}')"
 
 # Format code
 fmt:

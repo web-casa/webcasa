@@ -2,6 +2,8 @@ package appstore
 
 import (
 	"bufio"
+	"crypto/ecdsa"
+	"crypto/elliptic"
 	"crypto/rand"
 	"encoding/base64"
 	"encoding/hex"
@@ -154,19 +156,19 @@ func SanitizeCompose(compose string) string {
 			continue
 		}
 
-		// Skip "- tipi_main_network" service-level network reference
-		if trimmed == "- tipi_main_network" {
+		// Skip "- tipi_main_network" or "- tipi-main-network" service-level network reference
+		if trimmed == "- tipi_main_network" || trimmed == "- tipi-main-network" {
 			continue
 		}
 
-		// Skip top-level "tipi_main_network:" block and its children
+		// Skip top-level "tipi_main_network:" or "tipi-main-network:" block and its children
 		if skipTopNetwork {
 			if strings.HasPrefix(line, "  ") || strings.HasPrefix(line, "\t") {
 				continue
 			}
 			skipTopNetwork = false
 		}
-		if trimmed == "tipi_main_network:" {
+		if trimmed == "tipi_main_network:" || trimmed == "tipi-main-network:" {
 			skipTopNetwork = true
 			continue
 		}
@@ -225,6 +227,29 @@ func GenerateRandomBase64Value(length int) string {
 	b := make([]byte, length)
 	_, _ = rand.Read(b)
 	return base64.StdEncoding.EncodeToString(b)
+}
+
+// GenerateVapidKeys generates a VAPID key pair for Web Push.
+// Returns (publicKey, privateKey) as base64url-encoded strings.
+func GenerateVapidKeys() (string, string, error) {
+	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		return "", "", fmt.Errorf("generate ECDSA key: %w", err)
+	}
+
+	// Private key: raw 32-byte scalar
+	privBytes := key.D.Bytes()
+	// Pad to 32 bytes if needed
+	padded := make([]byte, 32)
+	copy(padded[32-len(privBytes):], privBytes)
+
+	// Public key: uncompressed 65-byte point (0x04 || x || y)
+	pubBytes := elliptic.Marshal(elliptic.P256(), key.PublicKey.X, key.PublicKey.Y)
+
+	privB64 := base64.RawURLEncoding.EncodeToString(padded)
+	pubB64 := base64.RawURLEncoding.EncodeToString(pubBytes)
+
+	return pubB64, privB64, nil
 }
 
 // getLocalIP returns the first non-loopback IPv4 address of the host.

@@ -146,9 +146,9 @@ func (s *HostService) Create(req *model.HostCreateRequest) (*model.Host, error) 
 		PHPFastCGI:       req.PHPFastCGI,
 		IndexFiles:       req.IndexFiles,
 		TLSMode:          stringOrDefault(req.TLSMode, "auto"),
-		DnsProviderID:    req.DnsProviderID,
+		DnsProviderID:    uintPtrOrNil(req.DnsProviderID),
 		CustomDirectives: req.CustomDirectives,
-		GroupID:          req.GroupID,
+		GroupID:          uintPtrOrNil(req.GroupID),
 	}
 
 	for i, u := range req.Upstreams {
@@ -284,8 +284,8 @@ func (s *HostService) Update(id uint, req *model.HostCreateRequest) (*model.Host
 	if req.TLSMode != "" {
 		host.TLSMode = req.TLSMode
 	}
-	host.DnsProviderID = req.DnsProviderID
-	host.GroupID = req.GroupID
+	host.DnsProviderID = uintPtrOrNil(req.DnsProviderID)
+	host.GroupID = uintPtrOrNil(req.GroupID)
 
 	// Replace associations
 	s.db.Where("host_id = ?", id).Delete(&model.Upstream{})
@@ -693,4 +693,12 @@ func copyBoolPtr(ptr *bool) *bool {
 	}
 	v := *ptr
 	return &v
+}
+
+// uintPtrOrNil returns nil if the pointer is nil or points to 0 (treat 0 as "no value").
+func uintPtrOrNil(ptr *uint) *uint {
+	if ptr == nil || *ptr == 0 {
+		return nil
+	}
+	return ptr
 }

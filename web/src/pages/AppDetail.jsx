@@ -7,7 +7,7 @@ import { useTranslation } from 'react-i18next'
 import Markdown from 'react-markdown'
 
 export default function AppDetail() {
-    const { t } = useTranslation()
+    const { t, i18n } = useTranslation()
     const { id } = useParams()
     const navigate = useNavigate()
     const [loading, setLoading] = useState(true)
@@ -22,7 +22,7 @@ export default function AppDetail() {
 
     const fetchApp = useCallback(async () => {
         try {
-            const res = await appstoreAPI.getApp(id)
+            const res = await appstoreAPI.getApp(id, { lang: i18n.language })
             setApp(res.data)
             // Pre-fill instance name from app_id
             setInstanceName(res.data?.app_id || '')
@@ -31,7 +31,7 @@ export default function AppDetail() {
         } finally {
             setLoading(false)
         }
-    }, [id, navigate])
+    }, [id, navigate, i18n.language])
 
     useEffect(() => { fetchApp() }, [fetchApp])
 
@@ -239,15 +239,26 @@ export default function AppDetail() {
                                     placeholder="my-app"
                                 />
                             </Box>
-                            <Box>
-                                <Text size="2" weight="bold" mb="1">{t('appstore.domain_optional')}</Text>
-                                <Text size="1" color="gray" mb="1">{t('appstore.domain_hint')}</Text>
-                                <TextField.Root
-                                    value={domain}
-                                    onChange={e => setDomain(e.target.value)}
-                                    placeholder="app.example.com"
-                                />
-                            </Box>
+                            {app.no_gui ? (
+                                <Callout.Root color="gray" size="1">
+                                    <Callout.Text>{t('appstore.no_gui_hint')}</Callout.Text>
+                                </Callout.Root>
+                            ) : (
+                                <Box>
+                                    <Text size="2" weight="bold" mb="1">
+                                        {app.force_expose ? t('appstore.domain_required') : t('appstore.domain_optional')}
+                                        {app.force_expose && ' *'}
+                                    </Text>
+                                    <Text size="1" color="gray" mb="1">
+                                        {app.force_expose ? t('appstore.force_expose_hint') : t('appstore.domain_hint')}
+                                    </Text>
+                                    <TextField.Root
+                                        value={domain}
+                                        onChange={e => setDomain(e.target.value)}
+                                        placeholder="app.example.com"
+                                    />
+                                </Box>
+                            )}
                             <Flex align="center" gap="2">
                                 <Switch checked={autoUpdate} onCheckedChange={setAutoUpdate} />
                                 <Text size="2">{t('appstore.auto_update')}</Text>
@@ -255,7 +266,10 @@ export default function AppDetail() {
                             <Flex justify="between" mt="2">
                                 {hasConfig && <Button variant="soft" onClick={() => setStep(0)}>&larr; {t('common.previous')}</Button>}
                                 <Box style={{ flex: 1 }} />
-                                <Button onClick={() => setStep(2)}>{t('common.next')} &rarr;</Button>
+                                <Button
+                                    onClick={() => setStep(2)}
+                                    disabled={app.force_expose && !domain}
+                                >{t('common.next')} &rarr;</Button>
                             </Flex>
                         </Flex>
                     )}
@@ -285,7 +299,7 @@ export default function AppDetail() {
                             <Flex justify="between" mt="2">
                                 <Button variant="soft" onClick={() => setStep(1)}>&larr; {t('common.previous')}</Button>
                                 <Button
-                                    disabled={!instanceName || installing}
+                                    disabled={!instanceName || installing || (app.force_expose && !domain)}
                                     loading={installing}
                                     onClick={handleInstall}
                                 >

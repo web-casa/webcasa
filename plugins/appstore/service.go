@@ -48,7 +48,9 @@ type AppListResponse struct {
 }
 
 // ListApps returns available apps with filtering, search, and pagination.
-func (s *Service) ListApps(category, search string, page, pageSize int) (*AppListResponse, error) {
+// lang is the user's language code (e.g. "zh"); when non-empty and not "en",
+// search also covers the i18n_json field for localized matches.
+func (s *Service) ListApps(category, search, lang string, page, pageSize int) (*AppListResponse, error) {
 	if page < 1 {
 		page = 1
 	}
@@ -56,11 +58,15 @@ func (s *Service) ListApps(category, search string, page, pageSize int) (*AppLis
 		pageSize = 24
 	}
 
-	query := s.db.Model(&AppDefinition{}).Where("available = ?", true)
+	query := s.db.Model(&AppDefinition{}).Where("available = ? AND deprecated = ?", true, false)
 
 	if search != "" {
 		like := "%" + strings.ToLower(search) + "%"
-		query = query.Where("LOWER(name) LIKE ? OR LOWER(short_desc) LIKE ? OR LOWER(app_id) LIKE ?", like, like, like)
+		if lang != "" && lang != "en" {
+			query = query.Where("LOWER(name) LIKE ? OR LOWER(short_desc) LIKE ? OR LOWER(app_id) LIKE ? OR LOWER(i18n_json) LIKE ?", like, like, like, like)
+		} else {
+			query = query.Where("LOWER(name) LIKE ? OR LOWER(short_desc) LIKE ? OR LOWER(app_id) LIKE ?", like, like, like)
+		}
 	}
 
 	if category != "" {
@@ -95,9 +101,10 @@ func (s *Service) GetApp(id uint) (*AppDefinition, error) {
 }
 
 // GetAppByAppID returns an app by its app_id string.
+// Deprecated apps are excluded to prevent new installations.
 func (s *Service) GetAppByAppID(appID string) (*AppDefinition, error) {
 	var app AppDefinition
-	if err := s.db.Where("app_id = ? AND available = ?", appID, true).First(&app).Error; err != nil {
+	if err := s.db.Where("app_id = ? AND available = ? AND deprecated = ?", appID, true, false).First(&app).Error; err != nil {
 		return nil, err
 	}
 	return &app, nil
@@ -144,7 +151,12 @@ func (s *Service) InstallApp(req *InstallAppRequest) (*InstalledApp, error) {
 		return nil, fmt.Errorf("app %q not found", req.AppID)
 	}
 
-	// 2. Parse form fields
+	// 2. Validate force_expose: app requires a domain
+	if app.ForceExpose && req.Domain == "" {
+		return nil, fmt.Errorf("this app requires a domain to function properly")
+	}
+
+	// 3. Parse form fields
 	var fields []FormField
 	if app.FormFields != "" {
 		if err := json.Unmarshal([]byte(app.FormFields), &fields); err != nil {
@@ -217,6 +229,7 @@ func (s *Service) InstallApp(req *InstallAppRequest) (*InstalledApp, error) {
 		"APP_PORT":          fmt.Sprintf("%d", app.Port),
 		"APP_DATA_DIR":      filepath.Join(composeDir, "data"),
 		"APP_DOMAIN":        req.Domain,
+		"APP_LOCAL_DOMAIN":  req.Domain,
 		"ROOT_FOLDER_HOST":  s.dataDir,
 		"APP_EXPOSED":       exposed,
 		"APP_PROTOCOL":      protocol,
@@ -226,6 +239,19 @@ func (s *Service) InstallApp(req *InstallAppRequest) (*InstalledApp, error) {
 		"NETWORK_INTERFACE": "127.0.0.1",
 		"DNS_IP":            "1.1.1.1",
 		"INTERNAL_IP":       getLocalIP(),
+		"TIPI_UID":          "1000",
+		"TIPI_GID":          "1000",
+	}
+
+	// Generate VAPID keys if required by the app
+	if appConfig.GenerateVapidKeys {
+		pubKey, privKey, err := GenerateVapidKeys()
+		if err != nil {
+			s.logger.Error("generate VAPID keys failed", "err", err)
+		} else {
+			builtins["VAPID_PUBLIC_KEY"] = pubKey
+			builtins["VAPID_PRIVATE_KEY"] = privKey
+		}
 	}
 
 	// 8. Render compose and env
@@ -416,7 +442,7 @@ func (s *Service) UpdateDomain(id uint, domain string) error {
 		envPath := filepath.Join(installed.ComposeDir, ".env")
 		if data, err := os.ReadFile(envPath); err == nil {
 			lines := strings.Split(string(data), "\n")
-			domainVars := map[string]bool{"APP_DOMAIN": true, "APP_HOST": true, "LOCAL_DOMAIN": true}
+			domainVars := map[string]bool{"APP_DOMAIN": true, "APP_HOST": true, "LOCAL_DOMAIN": true, "APP_LOCAL_DOMAIN": true}
 			var out []string
 			for _, line := range lines {
 				parts := strings.SplitN(line, "=", 2)
@@ -533,6 +559,7 @@ func (s *Service) UpdateApp(id uint) error {
 		"APP_PORT":          fmt.Sprintf("%d", app.Port),
 		"APP_DATA_DIR":      filepath.Join(installed.ComposeDir, "data"),
 		"APP_DOMAIN":        installed.Domain,
+		"APP_LOCAL_DOMAIN":  installed.Domain,
 		"ROOT_FOLDER_HOST":  s.dataDir,
 		"APP_EXPOSED":       exposed,
 		"APP_PROTOCOL":      "https",
@@ -542,6 +569,20 @@ func (s *Service) UpdateApp(id uint) error {
 		"NETWORK_INTERFACE": "127.0.0.1",
 		"DNS_IP":            "1.1.1.1",
 		"INTERNAL_IP":       getLocalIP(),
+		"TIPI_UID":          "1000",
+		"TIPI_GID":          "1000",
+	}
+
+	// Preserve VAPID keys from existing env if present
+	if installed.ComposeDir != "" {
+		if envData, err := os.ReadFile(filepath.Join(installed.ComposeDir, ".env")); err == nil {
+			for _, line := range strings.Split(string(envData), "\n") {
+				parts := strings.SplitN(line, "=", 2)
+				if len(parts) == 2 && (parts[0] == "VAPID_PUBLIC_KEY" || parts[0] == "VAPID_PRIVATE_KEY") && parts[1] != "" {
+					builtins[parts[0]] = parts[1]
+				}
+			}
+		}
 	}
 
 	rendered := SanitizeCompose(RenderCompose(app.ComposeFile, formValues, builtins))

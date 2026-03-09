@@ -105,6 +105,7 @@ export const configAPI = {
 // ============ Dashboard ============
 export const dashboardAPI = {
     stats: () => api.get('/dashboard/stats'),
+    news: () => api.get('/news'),
 }
 
 // ============ Users ============
@@ -373,7 +374,7 @@ export const backupAPI = {
 export const appstoreAPI = {
     // Catalog
     listApps: (params) => api.get('/plugins/appstore/apps', { params }),
-    getApp: (id) => api.get(`/plugins/appstore/apps/${id}`),
+    getApp: (id, params) => api.get(`/plugins/appstore/apps/${id}`, { params }),
     appLogoUrl: (id) => `/api/plugins/appstore/apps/${id}/logo`,
     listCategories: () => api.get('/plugins/appstore/categories'),
     // Sources

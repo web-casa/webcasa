@@ -43,9 +43,12 @@ type AppDefinition struct {
 	Website     string    `gorm:"size:512" json:"website"`
 	Source      string    `gorm:"size:512" json:"source_url"`  // upstream source code URL
 	Available   bool      `gorm:"default:true" json:"available"`
-	UrlSuffix   string    `gorm:"size:128" json:"url_suffix"`  // e.g. "/admin" for Pi-hole
-	I18nJSON    string    `gorm:"type:text" json:"-"`          // JSON map of lang -> AppI18n
-	DescZh      string    `gorm:"type:text" json:"-"`          // Chinese description markdown
+	UrlSuffix   string    `gorm:"size:128" json:"url_suffix"`   // e.g. "/admin" for Pi-hole
+	Deprecated  bool      `gorm:"default:false" json:"deprecated"`
+	NoGUI       bool      `gorm:"default:false" json:"no_gui"`
+	ForceExpose bool      `gorm:"default:false" json:"force_expose"`
+	I18nJSON    string    `gorm:"type:text" json:"-"`           // JSON map of lang -> AppI18n
+	DescZh      string    `gorm:"type:text" json:"-"`           // Chinese description markdown
 	CreatedAt   time.Time `json:"created_at"`
 	UpdatedAt   time.Time `json:"updated_at"`
 }
