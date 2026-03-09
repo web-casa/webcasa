@@ -3,15 +3,19 @@ package caddy
 import (
 	"context"
 	"fmt"
+	"io"
 	"log"
+	"net/http"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"sync"
 	"time"
 
 	"github.com/web-casa/webcasa/internal/config"
+	"github.com/web-casa/webcasa/internal/versions"
 )
 
 // Manager handles Caddy process lifecycle and configuration reloading
@@ -216,17 +220,9 @@ func (m *Manager) Status() map[string]interface{} {
 		"caddyfile_path": m.cfg.CaddyfilePath,
 	}
 
-	if running {
-		// Get Caddy version
-		cmd := exec.Command(m.cfg.CaddyBin, "version")
-		output, err := cmd.Output()
-		if err == nil {
-			ver := strings.TrimSpace(string(output))
-			if idx := strings.IndexByte(ver, ' '); idx > 0 {
-				ver = ver[:idx]
-			}
-			status["version"] = ver
-		}
+	ver := m.Version()
+	if ver != "" {
+		status["version"] = ver
 	}
 
 	return status
@@ -266,6 +262,177 @@ func (m *Manager) Validate(content string) error {
 		return fmt.Errorf("%s", strings.TrimSpace(string(output)))
 	}
 	return nil
+}
+
+// Version returns the current Caddy version string (e.g. "2.11.2").
+func (m *Manager) Version() string {
+	cmd := exec.Command(m.cfg.CaddyBin, "version")
+	output, err := cmd.Output()
+	if err != nil {
+		return ""
+	}
+	ver := strings.TrimSpace(string(output))
+	if idx := strings.IndexByte(ver, ' '); idx > 0 {
+		ver = ver[:idx]
+	}
+	return strings.TrimPrefix(ver, "v")
+}
+
+// LocalPinnedVersion returns the Caddy version compiled into this binary.
+func (m *Manager) LocalPinnedVersion() string {
+	return versions.Caddy
+}
+
+// remoteVersionsURL is the canonical source for the latest pinned versions.
+const remoteVersionsURL = "https://raw.githubusercontent.com/web-casa/webcasa/refs/heads/main/VERSIONS"
+
+// LatestPinnedVersion fetches the CADDY version from the upstream VERSIONS file.
+// Falls back to the compiled-in constant if the network request fails.
+func (m *Manager) LatestPinnedVersion() string {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, remoteVersionsURL, nil)
+	if err != nil {
+		return versions.Caddy
+	}
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil || resp.StatusCode != http.StatusOK {
+		return versions.Caddy
+	}
+	defer resp.Body.Close()
+
+	body, err := io.ReadAll(io.LimitReader(resp.Body, 4096))
+	if err != nil {
+		return versions.Caddy
+	}
+
+	for _, line := range strings.Split(string(body), "\n") {
+		line = strings.TrimSpace(line)
+		if strings.HasPrefix(line, "CADDY=") {
+			return strings.TrimPrefix(line, "CADDY=")
+		}
+	}
+	return versions.Caddy
+}
+
+// Upgrade downloads the given Caddy version (or latest pinned) and replaces the binary.
+// If Caddy is running, it is stopped before replacement and restarted after.
+func (m *Manager) Upgrade(targetVer string) (string, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	if targetVer == "" {
+		targetVer = m.LatestPinnedVersion()
+	}
+	currentVer := m.Version()
+	if currentVer == targetVer {
+		return currentVer, fmt.Errorf("already running v%s", targetVer)
+	}
+
+	goArch := runtime.GOARCH // "amd64" or "arm64"
+	url := fmt.Sprintf(
+		"https://github.com/caddyserver/caddy/releases/download/v%s/caddy_%s_linux_%s.tar.gz",
+		targetVer, targetVer, goArch,
+	)
+
+	// Download
+	log.Printf("Downloading Caddy v%s from %s", targetVer, url)
+	resp, err := http.Get(url)
+	if err != nil {
+		return currentVer, fmt.Errorf("download failed: %w", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return currentVer, fmt.Errorf("download returned HTTP %d", resp.StatusCode)
+	}
+
+	tmpDir, err := os.MkdirTemp("", "caddy-upgrade-*")
+	if err != nil {
+		return currentVer, fmt.Errorf("create temp dir: %w", err)
+	}
+	defer os.RemoveAll(tmpDir)
+
+	tarPath := filepath.Join(tmpDir, "caddy.tar.gz")
+	f, err := os.Create(tarPath)
+	if err != nil {
+		return currentVer, fmt.Errorf("create temp file: %w", err)
+	}
+	if _, err := io.Copy(f, resp.Body); err != nil {
+		f.Close()
+		return currentVer, fmt.Errorf("download write: %w", err)
+	}
+	f.Close()
+
+	// Extract
+	extractCmd := exec.Command("tar", "-xzf", tarPath, "-C", tmpDir, "caddy")
+	if out, err := extractCmd.CombinedOutput(); err != nil {
+		return currentVer, fmt.Errorf("extract failed: %s %w", string(out), err)
+	}
+
+	newBin := filepath.Join(tmpDir, "caddy")
+	if _, err := os.Stat(newBin); err != nil {
+		return currentVer, fmt.Errorf("caddy binary not found in archive")
+	}
+
+	// Stop Caddy if running
+	wasRunning := m.IsRunning()
+	if wasRunning {
+		stopCmd := exec.Command(m.cfg.CaddyBin, "stop")
+		stopCmd.CombinedOutput() // best-effort
+		log.Println("Stopped Caddy for upgrade")
+	}
+
+	// Backup current binary
+	caddyBin := m.cfg.CaddyBin
+	backupPath := caddyBin + ".bak"
+	if _, err := os.Stat(caddyBin); err == nil {
+		os.Rename(caddyBin, backupPath)
+	}
+
+	// Install new binary
+	data, err := os.ReadFile(newBin)
+	if err != nil {
+		// Rollback
+		os.Rename(backupPath, caddyBin)
+		return currentVer, fmt.Errorf("read new binary: %w", err)
+	}
+	if err := os.WriteFile(caddyBin, data, 0755); err != nil {
+		os.Rename(backupPath, caddyBin)
+		return currentVer, fmt.Errorf("write new binary: %w", err)
+	}
+
+	// setcap for privileged ports
+	exec.Command("setcap", "cap_net_bind_service=+ep", caddyBin).Run()
+
+	// Restart if was running
+	if wasRunning {
+		startCmd := exec.Command(caddyBin, "start", "--config", m.cfg.CaddyfilePath)
+		caddyDataDir := filepath.Join(filepath.Dir(m.cfg.CaddyfilePath), "caddy_data")
+		caddyConfigDir := filepath.Join(filepath.Dir(m.cfg.CaddyfilePath), "caddy_config")
+		startCmd.Env = append(os.Environ(),
+			"XDG_DATA_HOME="+caddyDataDir,
+			"XDG_CONFIG_HOME="+caddyConfigDir,
+		)
+		startCmd.Stdout = nil
+		startCmd.Stderr = nil
+		if err := startCmd.Run(); err != nil {
+			// Rollback
+			log.Printf("Failed to start new Caddy, rolling back: %v", err)
+			exec.Command(caddyBin, "stop").Run()
+			os.Rename(backupPath, caddyBin)
+			exec.Command(caddyBin, "start", "--config", m.cfg.CaddyfilePath).Run()
+			return currentVer, fmt.Errorf("new Caddy failed to start, rolled back: %w", err)
+		}
+		log.Println("Caddy restarted with new version")
+	}
+
+	// Clean up backup
+	os.Remove(backupPath)
+
+	newVer := m.Version()
+	log.Printf("Caddy upgraded: %s → %s", currentVer, newVer)
+	return newVer, nil
 }
 
 func (m *Manager) cleanupBackups(dir string, keep int) {

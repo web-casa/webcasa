@@ -16,5 +16,8 @@ GO_MAJOR=1.26
 # Node.js — major version, latest LTS patch auto-detected at install time
 NODE_MAJOR=24
 
+# Caddy web server — exact version for tar.gz install from GitHub Releases
+CADDY=2.11.2
+
 # Kopia backup tool — exact version for RPM/DEB install
 KOPIA=0.22.3

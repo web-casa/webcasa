@@ -3,6 +3,7 @@
 package versions
 
 const (
+	Caddy = "2.11.2"
 	Kopia = "0.22.3"
 	GoMajor = "1.26"
 	NodeMajor = "24"

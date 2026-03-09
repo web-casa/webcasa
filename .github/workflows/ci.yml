@@ -84,17 +84,15 @@ jobs:
       - name: Prepare binary
         run: chmod +x webcasa
 
-      # --- Install Caddy only (via official repo) ---
+      # --- Install Caddy (tar.gz from GitHub Releases) ---
       - name: Install Caddy
         run: |
-          sudo apt-get install -y debian-keyring debian-archive-keyring apt-transport-https > /dev/null 2>&1
-          curl -1sLf 'https://dl.cloudsmith.io/public/caddy/stable/gpg.key' | sudo gpg --dearmor -o /usr/share/keyrings/caddy-stable-archive-keyring.gpg 2>/dev/null
-          curl -1sLf 'https://dl.cloudsmith.io/public/caddy/stable/debian.deb.txt' | sudo tee /etc/apt/sources.list.d/caddy-stable.list > /dev/null
-          sudo apt-get update -qq
-          sudo apt-get install -y caddy > /dev/null
+          CADDY_VER=$(grep '^CADDY=' VERSIONS | cut -d= -f2)
+          CADDY_ARCH=$([ "$(uname -m)" = "x86_64" ] && echo "amd64" || echo "arm64")
+          curl -fsSL "https://github.com/caddyserver/caddy/releases/download/v${CADDY_VER}/caddy_${CADDY_VER}_linux_${CADDY_ARCH}.tar.gz" | tar -xz -C /usr/local/bin caddy
+          sudo chmod +x /usr/local/bin/caddy
+          sudo setcap 'cap_net_bind_service=+ep' /usr/local/bin/caddy 2>/dev/null || true
           caddy version
-          sudo systemctl stop caddy
-          sudo systemctl disable caddy
 
       # --- Setup directories & start panel ---
       - name: Setup and start WebCasa

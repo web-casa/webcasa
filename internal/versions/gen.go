@@ -32,6 +32,7 @@ func main() {
 
 	// Map VERSIONS keys → Go constant names.
 	entries := []struct{ goName, key string }{
+		{"Caddy", "CADDY"},
 		{"Kopia", "KOPIA"},
 		{"GoMajor", "GO_MAJOR"},
 		{"NodeMajor", "NODE_MAJOR"},

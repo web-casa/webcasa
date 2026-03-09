@@ -36,6 +36,7 @@ fi
 # Defaults if VERSIONS file is missing (e.g. curl|bash without local clone)
 : "${GO_MAJOR:=1.26}"
 : "${NODE_MAJOR:=24}"
+: "${CADDY:=2.11.2}"
 : "${KOPIA:=0.22.3}"
 
 # ==================== Configuration ====================
@@ -308,40 +309,46 @@ install_caddy() {
         return
     fi
 
-    step "Installing Caddy"
+    step "Installing Caddy v${CADDY}"
 
     if command -v caddy &>/dev/null; then
-        success "Caddy $(caddy version 2>/dev/null || echo 'unknown') already installed"
-        return
+        local CURRENT_VER
+        CURRENT_VER=$(caddy version 2>/dev/null | awk '{print $1}' | sed 's/^v//' || echo "unknown")
+        if [[ "$CURRENT_VER" == "$CADDY" ]]; then
+            success "Caddy ${CURRENT_VER} already installed (up to date)"
+            return
+        fi
+        info "Caddy ${CURRENT_VER} → ${CADDY} (upgrading...)"
     fi
 
-    case "$OS_FAMILY" in
-        debian)
-            info "Setting up Caddy repository..."
-            apt-get install -y -qq debian-keyring debian-archive-keyring apt-transport-https > /dev/null 2>&1 || true
-            curl -1sLf 'https://dl.cloudsmith.io/public/caddy/stable/gpg.key' | gpg --dearmor -o /usr/share/keyrings/caddy-stable-archive-keyring.gpg 2>/dev/null
-            curl -1sLf 'https://dl.cloudsmith.io/public/caddy/stable/debian.deb.txt' > /etc/apt/sources.list.d/caddy-stable.list
-            apt-get update -qq
-            DEBIAN_FRONTEND=noninteractive apt-get install -y -qq caddy > /dev/null
-            ;;
-        rhel)
-            info "Setting up Caddy repository..."
-            if command -v dnf &>/dev/null; then
-                dnf install -y -q 'dnf-command(copr)' > /dev/null 2>&1 || true
-                dnf copr enable -y @caddy/caddy > /dev/null 2>&1
-                dnf install -y -q caddy
-            else
-                yum-config-manager --add-repo https://copr.fedorainfracloud.org/coprs/@caddy/caddy/repo/epel-8/@caddy-caddy-epel-8.repo > /dev/null 2>&1
-                yum install -y -q caddy
-            fi
-            ;;
+    # Map architecture to Caddy release naming
+    local CADDY_ARCH
+    case "$(uname -m)" in
+        x86_64)  CADDY_ARCH="amd64" ;;
+        aarch64) CADDY_ARCH="arm64" ;;
+        *)       fatal "Unsupported architecture for Caddy: $(uname -m)" ;;
     esac
 
-    # Stop the default caddy service (WebCasa manages it)
-    systemctl stop caddy 2>/dev/null || true
-    systemctl disable caddy 2>/dev/null || true
+    local CADDY_URL="https://github.com/caddyserver/caddy/releases/download/v${CADDY}/caddy_${CADDY}_linux_${CADDY_ARCH}.tar.gz"
+    local CADDY_TMP
+    CADDY_TMP=$(mktemp -d)
 
-    success "Caddy $(caddy version 2>/dev/null || echo '') installed"
+    info "Downloading from ${CADDY_URL}..."
+    curl -fsSL "$CADDY_URL" -o "${CADDY_TMP}/caddy.tar.gz" || fatal "Failed to download Caddy v${CADDY}"
+
+    tar -xzf "${CADDY_TMP}/caddy.tar.gz" -C "$CADDY_TMP" || fatal "Failed to extract Caddy archive"
+
+    if [[ ! -f "${CADDY_TMP}/caddy" ]]; then
+        fatal "Caddy binary not found in archive"
+    fi
+
+    install -m 0755 "${CADDY_TMP}/caddy" /usr/local/bin/caddy
+    rm -rf "$CADDY_TMP"
+
+    # Allow Caddy to bind to privileged ports (80, 443)
+    setcap 'cap_net_bind_service=+ep' /usr/local/bin/caddy 2>/dev/null || true
+
+    success "Caddy $(caddy version 2>/dev/null || echo "$CADDY") installed to /usr/local/bin/caddy"
 }
 
 # ==================== Install WebCasa (Download Pre-built) ====================
@@ -584,7 +591,7 @@ setup_config() {
         fi
     else
         JWT_SECRET=$(head -c 32 /dev/urandom | base64 | tr -dc 'a-zA-Z0-9' | head -c 48)
-        CADDY_BIN=$(command -v caddy 2>/dev/null || echo "/usr/bin/caddy")
+        CADDY_BIN=$(command -v caddy 2>/dev/null || echo "/usr/local/bin/caddy")
 
         cat > "$ENV_FILE" <<ENVEOF
 # Web.Casa Configuration
@@ -699,9 +706,10 @@ setup_firewall() {
 setup_caddy_permissions() {
     if $SKIP_CADDY; then return; fi
 
+    local CADDY_BIN
     CADDY_BIN=$(command -v caddy 2>/dev/null || echo "")
     if [[ -n "$CADDY_BIN" ]]; then
-        # Allow Caddy to bind to privileged ports when invoked by the service
+        # Allow Caddy to bind to privileged ports (80, 443)
         setcap 'cap_net_bind_service=+ep' "$CADDY_BIN" 2>/dev/null || true
     fi
 }
@@ -918,6 +926,10 @@ do_upgrade() {
         fi
         exit 1
     fi
+
+    # Upgrade Caddy if a newer version is pinned
+    install_caddy
+    setup_caddy_permissions
 
     # Update systemd service in case it changed
     setup_systemd

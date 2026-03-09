@@ -185,6 +185,8 @@ func main() {
 	adminOnly.POST("/caddy/start", caddyH.Start)
 	adminOnly.POST("/caddy/stop", caddyH.Stop)
 	adminOnly.POST("/caddy/reload", caddyH.Reload)
+	adminOnly.GET("/caddy/check-upgrade", caddyH.CheckUpgrade)
+	adminOnly.POST("/caddy/upgrade", caddyH.Upgrade)
 	protected.GET("/caddy/caddyfile", caddyH.GetCaddyfile)
 	adminOnly.POST("/caddy/caddyfile", caddyH.SaveCaddyfile)
 	adminOnly.POST("/caddy/fmt", caddyH.Format)

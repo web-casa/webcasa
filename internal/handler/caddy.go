@@ -111,6 +111,41 @@ func (h *CaddyHandler) Validate(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"valid": true})
 }
 
+// CheckUpgrade checks if a newer Caddy version is available upstream.
+func (h *CaddyHandler) CheckUpgrade(c *gin.Context) {
+	currentVer := h.mgr.Version()
+	latestVer := h.mgr.LatestPinnedVersion()
+	c.JSON(http.StatusOK, gin.H{
+		"current_version":   currentVer,
+		"latest_version":    latestVer,
+		"upgrade_available": currentVer != "" && currentVer != latestVer,
+	})
+}
+
+// Upgrade downloads and installs the latest pinned Caddy version from upstream.
+func (h *CaddyHandler) Upgrade(c *gin.Context) {
+	var req struct {
+		Version string `json:"version"` // optional: specify exact version
+	}
+	c.ShouldBindJSON(&req) // ignore error — version is optional
+
+	currentVer := h.mgr.Version()
+	newVer, err := h.mgr.Upgrade(req.Version)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{
+			"error":           err.Error(),
+			"current_version": currentVer,
+		})
+		return
+	}
+	h.audit(c, "UPGRADE_CADDY", fmt.Sprintf("Upgraded Caddy: %s → %s", currentVer, newVer))
+	c.JSON(http.StatusOK, gin.H{
+		"message":          "Caddy upgraded successfully",
+		"previous_version": currentVer,
+		"current_version":  newVer,
+	})
+}
+
 // SaveCaddyfile saves and optionally reloads the Caddyfile
 func (h *CaddyHandler) SaveCaddyfile(c *gin.Context) {
 	var req struct {
