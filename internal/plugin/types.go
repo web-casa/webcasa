@@ -120,6 +120,35 @@ type CoreAPI interface {
 	// PHP management
 	PHPListRuntimes() ([]map[string]interface{}, error)
 	PHPListSites() ([]map[string]interface{}, error)
+
+	// ── NLOps: Host management additions ──
+	ToggleHost(id uint) error
+	CloneHost(id uint, newDomain string) (uint, error)
+
+	// ── NLOps: Caddy management ──
+	GetCaddyStatus() (map[string]interface{}, error)
+	RestartCaddy() error
+
+	// ── NLOps: Deploy lifecycle ──
+	StartProject(id uint) error
+	StopProject(id uint) error
+	RollbackProject(projectID uint, buildNum int) error
+
+	// ── NLOps: Docker cleanup ──
+	DockerRemoveContainer(containerID string, force bool) error
+	DockerPrune(what string) (map[string]interface{}, error)
+
+	// ── NLOps: Notification channel management ──
+	ListNotifyChannels() ([]map[string]interface{}, error)
+	TestNotifyChannel(id uint) error
+
+	// ── NLOps: Monitoring alert management ──
+	ListAlertRules() ([]map[string]interface{}, error)
+	CreateAlertRule(name, metric, operator string, threshold float64, duration int) (uint, error)
+	DeleteAlertRule(id uint) error
+
+	// ── NLOps: System information ──
+	GetSystemInfo() (map[string]interface{}, error)
 }
 
 // UpdateHostRequest describes fields that can be changed on an existing host via AI.

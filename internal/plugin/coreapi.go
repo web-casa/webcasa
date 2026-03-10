@@ -1208,6 +1208,302 @@ func (a *CoreAPIImpl) PHPListSites() ([]map[string]interface{}, error) {
 }
 
 // ──────────────────────────────────────────────────
+// NLOps: Host management additions
+// ──────────────────────────────────────────────────
+
+func (a *CoreAPIImpl) ToggleHost(id uint) error {
+	var h model.Host
+	if err := a.db.First(&h, id).Error; err != nil {
+		return fmt.Errorf("host not found: %w", err)
+	}
+	newVal := !(h.Enabled != nil && *h.Enabled)
+	if err := a.db.Model(&h).Update("enabled", newVal).Error; err != nil {
+		return fmt.Errorf("toggle host: %w", err)
+	}
+	return a.hostSvc.ApplyConfig()
+}
+
+func (a *CoreAPIImpl) CloneHost(id uint, newDomain string) (uint, error) {
+	var src model.Host
+	if err := a.db.Preload("Upstreams").First(&src, id).Error; err != nil {
+		return 0, fmt.Errorf("host not found: %w", err)
+	}
+
+	if err := caddy.ValidateDomain(newDomain); err != nil {
+		return 0, fmt.Errorf("invalid domain: %w", err)
+	}
+
+	// Build upstream input from source.
+	upstreamAddr := ""
+	if len(src.Upstreams) > 0 {
+		upstreamAddr = src.Upstreams[0].Address
+	}
+
+	return a.CreateHost(CreateHostRequest{
+		Domain:       newDomain,
+		HostType:     src.HostType,
+		UpstreamAddr: upstreamAddr,
+		TLSEnabled:   src.TLSEnabled != nil && *src.TLSEnabled,
+		HTTPRedirect: src.HTTPRedirect != nil && *src.HTTPRedirect,
+		WebSocket:    src.WebSocket != nil && *src.WebSocket,
+		Compression:  src.Compression != nil && *src.Compression,
+		RootPath:     src.RootPath,
+		PHPFastCGI:   src.PHPFastCGI,
+	})
+}
+
+// ──────────────────────────────────────────────────
+// NLOps: Caddy management
+// ──────────────────────────────────────────────────
+
+func (a *CoreAPIImpl) GetCaddyStatus() (map[string]interface{}, error) {
+	status := a.caddyMgr.Status()
+	status["installed"] = true
+	return status, nil
+}
+
+func (a *CoreAPIImpl) RestartCaddy() error {
+	_ = a.caddyMgr.Stop()
+	return a.caddyMgr.Start()
+}
+
+// ──────────────────────────────────────────────────
+// NLOps: Deploy lifecycle
+// ──────────────────────────────────────────────────
+
+func (a *CoreAPIImpl) StartProject(id uint) error {
+	if a.eventBus == nil {
+		return fmt.Errorf("event bus not available")
+	}
+	a.eventBus.Publish(Event{
+		Type:    "deploy.start_project",
+		Payload: map[string]interface{}{"project_id": id},
+		Source:  "core",
+	})
+	return nil
+}
+
+func (a *CoreAPIImpl) StopProject(id uint) error {
+	if a.eventBus == nil {
+		return fmt.Errorf("event bus not available")
+	}
+	a.eventBus.Publish(Event{
+		Type:    "deploy.stop_project",
+		Payload: map[string]interface{}{"project_id": id},
+		Source:  "core",
+	})
+	return nil
+}
+
+func (a *CoreAPIImpl) RollbackProject(projectID uint, buildNum int) error {
+	if a.eventBus == nil {
+		return fmt.Errorf("event bus not available")
+	}
+	a.eventBus.Publish(Event{
+		Type: "deploy.rollback",
+		Payload: map[string]interface{}{
+			"project_id":   projectID,
+			"build_number": buildNum,
+		},
+		Source: "core",
+	})
+	return nil
+}
+
+// ──────────────────────────────────────────────────
+// NLOps: Docker cleanup
+// ──────────────────────────────────────────────────
+
+func (a *CoreAPIImpl) DockerRemoveContainer(containerID string, force bool) error {
+	if containerID == "" {
+		return fmt.Errorf("container ID is required")
+	}
+	args := []string{"rm"}
+	if force {
+		args = append(args, "-f")
+	}
+	args = append(args, containerID)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	cmd := exec.CommandContext(ctx, "docker", args...)
+	var buf bytes.Buffer
+	cmd.Stdout = &buf
+	cmd.Stderr = &buf
+	if err := cmd.Run(); err != nil {
+		return fmt.Errorf("docker rm %s: %s — %w", containerID, buf.String(), err)
+	}
+	return nil
+}
+
+func (a *CoreAPIImpl) DockerPrune(what string) (map[string]interface{}, error) {
+	var args []string
+	switch what {
+	case "containers":
+		args = []string{"container", "prune", "-f"}
+	case "images":
+		args = []string{"image", "prune", "-a", "-f"}
+	case "volumes":
+		args = []string{"volume", "prune", "-f"}
+	case "all":
+		args = []string{"system", "prune", "-a", "-f"}
+	default:
+		return nil, fmt.Errorf("invalid prune target %q: must be containers, images, volumes, or all", what)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
+	defer cancel()
+
+	cmd := exec.CommandContext(ctx, "docker", args...)
+	var buf bytes.Buffer
+	cmd.Stdout = &buf
+	cmd.Stderr = &buf
+	if err := cmd.Run(); err != nil {
+		return nil, fmt.Errorf("docker prune: %s — %w", buf.String(), err)
+	}
+
+	return map[string]interface{}{
+		"target": what,
+		"output": strings.TrimSpace(buf.String()),
+	}, nil
+}
+
+// ──────────────────────────────────────────────────
+// NLOps: Notification channel management
+// ──────────────────────────────────────────────────
+
+func (a *CoreAPIImpl) ListNotifyChannels() ([]map[string]interface{}, error) {
+	var results []map[string]interface{}
+	err := a.db.Table("notify_channels").
+		Select("id, type, name, enabled, events, created_at, updated_at").
+		Find(&results).Error
+	if err != nil {
+		return []map[string]interface{}{}, nil
+	}
+	return results, nil
+}
+
+func (a *CoreAPIImpl) TestNotifyChannel(id uint) error {
+	if a.eventBus == nil {
+		return fmt.Errorf("event bus not available")
+	}
+	a.eventBus.Publish(Event{
+		Type:    "notify.test_channel",
+		Payload: map[string]interface{}{"channel_id": id},
+		Source:  "core",
+	})
+	return nil
+}
+
+// ──────────────────────────────────────────────────
+// NLOps: Monitoring alert management
+// ──────────────────────────────────────────────────
+
+func (a *CoreAPIImpl) ListAlertRules() ([]map[string]interface{}, error) {
+	var results []map[string]interface{}
+	err := a.db.Table("plugin_monitoring_alert_rules").
+		Find(&results).Error
+	if err != nil {
+		return []map[string]interface{}{}, nil
+	}
+	return results, nil
+}
+
+func (a *CoreAPIImpl) CreateAlertRule(name, metric, operator string, threshold float64, duration int) (uint, error) {
+	if operator == "" {
+		operator = ">"
+	}
+	if duration <= 0 {
+		duration = 1
+	}
+
+	type alertRuleRow struct {
+		ID          uint      `gorm:"primaryKey"`
+		Name        string    `gorm:"size:128"`
+		Metric      string    `gorm:"size:64"`
+		Operator    string    `gorm:"size:4"`
+		Threshold   float64
+		Duration    int
+		Enabled     bool
+		CooldownMin int       `gorm:"column:cooldown_min"`
+		CreatedAt   time.Time
+		UpdatedAt   time.Time
+	}
+	row := alertRuleRow{
+		Name: name, Metric: metric, Operator: operator,
+		Threshold: threshold, Duration: duration,
+		Enabled: true, CooldownMin: 30,
+		CreatedAt: time.Now(), UpdatedAt: time.Now(),
+	}
+
+	result := a.db.Table("plugin_monitoring_alert_rules").Create(&row)
+	if result.Error != nil {
+		return 0, fmt.Errorf("create alert rule: %w", result.Error)
+	}
+
+	return row.ID, nil
+}
+
+func (a *CoreAPIImpl) DeleteAlertRule(id uint) error {
+	result := a.db.Table("plugin_monitoring_alert_rules").Where("id = ?", id).Delete(nil)
+	if result.Error != nil {
+		return fmt.Errorf("delete alert rule: %w", result.Error)
+	}
+	if result.RowsAffected == 0 {
+		return fmt.Errorf("alert rule not found: %d", id)
+	}
+	return nil
+}
+
+// ──────────────────────────────────────────────────
+// NLOps: System information
+// ──────────────────────────────────────────────────
+
+func (a *CoreAPIImpl) GetSystemInfo() (map[string]interface{}, error) {
+	result := map[string]interface{}{}
+
+	// Hostname.
+	if h, err := os.Hostname(); err == nil {
+		result["hostname"] = h
+	}
+
+	// Kernel.
+	result["kernel"] = runtime.GOOS + "/" + runtime.GOARCH
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if out, err := exec.CommandContext(ctx, "uname", "-r").Output(); err == nil {
+		result["kernel_version"] = strings.TrimSpace(string(out))
+	}
+
+	// OS info.
+	if data, err := os.ReadFile("/etc/os-release"); err == nil {
+		for _, line := range strings.Split(string(data), "\n") {
+			if strings.HasPrefix(line, "PRETTY_NAME=") {
+				result["os"] = strings.Trim(strings.TrimPrefix(line, "PRETTY_NAME="), "\"")
+				break
+			}
+		}
+	}
+
+	// Uptime.
+	if data, err := os.ReadFile("/proc/uptime"); err == nil {
+		fields := strings.Fields(string(data))
+		if len(fields) > 0 {
+			result["uptime_seconds"] = fields[0]
+		}
+	}
+
+	// CPU.
+	result["cpu_cores"] = runtime.NumCPU()
+
+	// Architecture.
+	result["arch"] = runtime.GOARCH
+
+	return result, nil
+}
+
+// ──────────────────────────────────────────────────
 // Internal helpers
 // ──────────────────────────────────────────────────
 

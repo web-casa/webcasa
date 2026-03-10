@@ -28,20 +28,23 @@ func (MetricRecord) TableName() string { return "plugin_monitoring_metrics" }
 
 // AlertRule defines a threshold-based alert.
 type AlertRule struct {
-	ID          uint      `gorm:"primaryKey" json:"id"`
-	Name        string    `gorm:"size:128;not null" json:"name"`
-	Metric      string    `gorm:"size:64;not null" json:"metric"`
-	Operator    string    `gorm:"size:4;default:>" json:"operator"`
-	Threshold   float64   `gorm:"not null" json:"threshold"`
-	Duration    int       `gorm:"default:1" json:"duration"`
-	Enabled     bool      `gorm:"default:true" json:"enabled"`
-	NotifyType  string    `gorm:"size:16;default:webhook" json:"notify_type"`
-	NotifyURL   string    `gorm:"size:512" json:"notify_url"`
-	NotifyEmail string    `gorm:"size:256" json:"notify_email"`
-	CooldownMin int       `gorm:"default:30" json:"cooldown_min"`
-	LastFiredAt time.Time `json:"last_fired_at"`
-	CreatedAt   time.Time `json:"created_at"`
-	UpdatedAt   time.Time `json:"updated_at"`
+	ID            uint       `gorm:"primaryKey" json:"id"`
+	Name          string     `gorm:"size:128;not null" json:"name"`
+	Metric        string     `gorm:"size:64;not null" json:"metric"`
+	Operator      string     `gorm:"size:4;default:>" json:"operator"`
+	Threshold     float64    `gorm:"not null" json:"threshold"`
+	Duration      int        `gorm:"default:1" json:"duration"`
+	Enabled       bool       `gorm:"default:true" json:"enabled"`
+	NotifyType    string     `gorm:"size:16;default:webhook" json:"notify_type"`
+	NotifyURL     string     `gorm:"size:512" json:"notify_url"`
+	NotifyEmail   string     `gorm:"size:256" json:"notify_email"`
+	CooldownMin   int        `gorm:"default:30" json:"cooldown_min"`
+	AutoHealMode  string     `gorm:"size:16;default:notify" json:"auto_heal_mode"` // notify | suggest | auto
+	LastDiagnosis string     `gorm:"type:text" json:"last_diagnosis,omitempty"`
+	LastHealAt    *time.Time `json:"last_heal_at,omitempty"`
+	LastFiredAt   time.Time  `json:"last_fired_at"`
+	CreatedAt     time.Time  `json:"created_at"`
+	UpdatedAt     time.Time  `json:"updated_at"`
 }
 
 func (AlertRule) TableName() string { return "plugin_monitoring_alert_rules" }
@@ -65,29 +68,31 @@ func (AlertHistory) TableName() string { return "plugin_monitoring_alert_history
 
 // CreateAlertRequest is the input for creating an alert rule.
 type CreateAlertRequest struct {
-	Name        string  `json:"name" binding:"required"`
-	Metric      string  `json:"metric" binding:"required"`
-	Operator    string  `json:"operator"`
-	Threshold   float64 `json:"threshold" binding:"required"`
-	Duration    int     `json:"duration"`
-	NotifyType  string  `json:"notify_type"`
-	NotifyURL   string  `json:"notify_url"`
-	NotifyEmail string  `json:"notify_email"`
-	CooldownMin int     `json:"cooldown_min"`
+	Name         string  `json:"name" binding:"required"`
+	Metric       string  `json:"metric" binding:"required"`
+	Operator     string  `json:"operator"`
+	Threshold    float64 `json:"threshold" binding:"required"`
+	Duration     int     `json:"duration"`
+	NotifyType   string  `json:"notify_type"`
+	NotifyURL    string  `json:"notify_url"`
+	NotifyEmail  string  `json:"notify_email"`
+	CooldownMin  int     `json:"cooldown_min"`
+	AutoHealMode string  `json:"auto_heal_mode"`
 }
 
 // UpdateAlertRequest is the input for updating an alert rule.
 type UpdateAlertRequest struct {
-	Name        string  `json:"name"`
-	Metric      string  `json:"metric"`
-	Operator    string  `json:"operator"`
-	Threshold   float64 `json:"threshold"`
-	Duration    int     `json:"duration"`
-	Enabled     *bool   `json:"enabled"`
-	NotifyType  string  `json:"notify_type"`
-	NotifyURL   string  `json:"notify_url"`
-	NotifyEmail string  `json:"notify_email"`
-	CooldownMin int     `json:"cooldown_min"`
+	Name         string  `json:"name"`
+	Metric       string  `json:"metric"`
+	Operator     string  `json:"operator"`
+	Threshold    float64 `json:"threshold"`
+	Duration     int     `json:"duration"`
+	Enabled      *bool   `json:"enabled"`
+	NotifyType   string  `json:"notify_type"`
+	NotifyURL    string  `json:"notify_url"`
+	NotifyEmail  string  `json:"notify_email"`
+	CooldownMin  int     `json:"cooldown_min"`
+	AutoHealMode string  `json:"auto_heal_mode"`
 }
 
 // ContainerMetric is per-container stats.

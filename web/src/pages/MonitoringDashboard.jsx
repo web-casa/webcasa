@@ -1,7 +1,7 @@
 import { useState, useEffect, useRef, useCallback } from 'react'
 import {
     Box, Flex, Text, Card, Badge, Button, Table, Dialog, TextField,
-    Select, Switch, Tabs, ScrollArea, Heading,
+    Select, Switch, Tabs, ScrollArea, Heading, Callout,
 } from '@radix-ui/themes'
 import {
     Cpu, MemoryStick, HardDrive, Network, Plus, Trash2, RefreshCw,
@@ -126,6 +126,7 @@ const emptyAlert = {
     cooldown: 5,
     notify_type: 'webhook',
     notify_url: '',
+    auto_heal_mode: 'notify',
     enabled: true,
 }
 
@@ -286,6 +287,7 @@ export default function MonitoringDashboard({ embedded }) {
             cooldown: rule.cooldown ?? 5,
             notify_type: rule.notify_type || 'webhook',
             notify_url: rule.notify_url || '',
+            auto_heal_mode: rule.auto_heal_mode || 'notify',
             enabled: rule.enabled !== false,
         })
         setEditingId(rule.id)
@@ -586,6 +588,7 @@ export default function MonitoringDashboard({ embedded }) {
                                             <Table.ColumnHeaderCell>{t('monitoring.operator')}</Table.ColumnHeaderCell>
                                             <Table.ColumnHeaderCell>{t('monitoring.threshold')}</Table.ColumnHeaderCell>
                                             <Table.ColumnHeaderCell>{t('common.enabled')}</Table.ColumnHeaderCell>
+                                            <Table.ColumnHeaderCell>AI</Table.ColumnHeaderCell>
                                             <Table.ColumnHeaderCell>{t('common.actions')}</Table.ColumnHeaderCell>
                                         </Table.Row>
                                     </Table.Header>
@@ -612,6 +615,15 @@ export default function MonitoringDashboard({ embedded }) {
                                                         checked={rule.enabled !== false}
                                                         onCheckedChange={() => handleToggleAlert(rule)}
                                                     />
+                                                </Table.Cell>
+                                                <Table.Cell>
+                                                    {rule.auto_heal_mode === 'auto' ? (
+                                                        <Badge size="1" color="orange">Auto-Fix</Badge>
+                                                    ) : rule.auto_heal_mode === 'suggest' ? (
+                                                        <Badge size="1" color="blue">Suggest</Badge>
+                                                    ) : (
+                                                        <Badge size="1" variant="soft" color="gray">—</Badge>
+                                                    )}
                                                 </Table.Cell>
                                                 <Table.Cell>
                                                     <Flex gap="2">
@@ -791,6 +803,29 @@ export default function MonitoringDashboard({ embedded }) {
                                 onChange={(e) => setAlertForm({ ...alertForm, notify_url: e.target.value })}
                                 placeholder="https://hooks.example.com/webhook"
                             />
+                        </Box>
+                        <Box>
+                            <Text size="2" weight="medium" mb="1" style={{ display: 'block', color: 'var(--cp-text)' }}>
+                                {t('monitoring.auto_heal_mode', 'AI Auto-Heal')}
+                            </Text>
+                            <Select.Root
+                                value={alertForm.auto_heal_mode}
+                                onValueChange={(v) => setAlertForm({ ...alertForm, auto_heal_mode: v })}
+                            >
+                                <Select.Trigger />
+                                <Select.Content>
+                                    <Select.Item value="notify">{t('monitoring.heal_notify', 'Notify Only')}</Select.Item>
+                                    <Select.Item value="suggest">{t('monitoring.heal_suggest', 'AI Diagnose + Suggest')}</Select.Item>
+                                    <Select.Item value="auto">{t('monitoring.heal_auto', 'AI Auto-Fix')}</Select.Item>
+                                </Select.Content>
+                            </Select.Root>
+                            {alertForm.auto_heal_mode === 'auto' && (
+                                <Callout.Root color="orange" size="1" mt="2">
+                                    <Callout.Text style={{ fontSize: 11 }}>
+                                        {t('monitoring.heal_auto_warning', 'Auto mode will automatically restart services when alerts trigger. Only safe actions (restart Caddy, restart containers) are allowed.')}
+                                    </Callout.Text>
+                                </Callout.Root>
+                            )}
                         </Box>
                     </Flex>
 

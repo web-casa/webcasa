@@ -9,6 +9,7 @@ import (
 	"sync"
 	"time"
 
+	pluginpkg "github.com/web-casa/webcasa/internal/plugin"
 	"gorm.io/gorm"
 )
 
@@ -16,15 +17,17 @@ import (
 type Alerter struct {
 	db         *gorm.DB
 	logger     *slog.Logger
+	eventBus   *pluginpkg.EventBus
 	mu         sync.Mutex
 	violations map[uint]int // ruleID -> consecutive violation count
 }
 
 // NewAlerter creates a new Alerter.
-func NewAlerter(db *gorm.DB, logger *slog.Logger) *Alerter {
+func NewAlerter(db *gorm.DB, logger *slog.Logger, eventBus *pluginpkg.EventBus) *Alerter {
 	return &Alerter{
 		db:         db,
 		logger:     logger,
+		eventBus:   eventBus,
 		violations: make(map[uint]int),
 	}
 }
@@ -96,6 +99,23 @@ func (a *Alerter) Evaluate(snap *MetricSnapshot) {
 		a.violations[rule.ID] = 0
 
 		a.logger.Warn("alert fired", "rule", rule.Name, "metric", rule.Metric, "value", value)
+
+		// Publish event for self-heal and notification integrations.
+		if a.eventBus != nil {
+			a.eventBus.Publish(pluginpkg.Event{
+				Type:   "monitoring.alert.fired",
+				Source: "monitoring",
+				Payload: map[string]interface{}{
+					"rule_id":        rule.ID,
+					"rule_name":      rule.Name,
+					"metric":         rule.Metric,
+					"value":          value,
+					"threshold":      rule.Threshold,
+					"auto_heal_mode": rule.AutoHealMode,
+				},
+				Time: time.Now(),
+			})
+		}
 	}
 }
 

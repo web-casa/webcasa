@@ -1783,7 +1783,7 @@ function APITokensTab() {
     const [tokens, setTokens] = useState([])
     const [loading, setLoading] = useState(true)
     const [createOpen, setCreateOpen] = useState(false)
-    const [form, setForm] = useState({ name: '', expires_in: 0 })
+    const [form, setForm] = useState({ name: '', expires_in: 0, permissions: [] })
     const [creating, setCreating] = useState(false)
     const [newToken, setNewToken] = useState(null) // plaintext shown once
     const [copied, setCopied] = useState(false)
@@ -1804,10 +1804,10 @@ function APITokensTab() {
         if (!form.name.trim()) return
         setCreating(true)
         try {
-            const res = await mcpAPI.createToken({ name: form.name.trim(), permissions: [], expires_in: form.expires_in })
+            const res = await mcpAPI.createToken({ name: form.name.trim(), permissions: form.permissions, expires_in: form.expires_in })
             setNewToken(res.data.token)
             setCopied(false)
-            setForm({ name: '', expires_in: 0 })
+            setForm({ name: '', expires_in: 0, permissions: [] })
             fetchTokens()
         } catch (err) {
             showMsg('error', err.response?.data?.error || t('common.operation_failed'))
@@ -1975,6 +1975,36 @@ function APITokensTab() {
                                     </Select.Content>
                                 </Select.Root>
                             </Flex>
+                            <Flex direction="column" gap="1">
+                                <Text size="2" weight="medium">{t('mcp.permissions', 'Permissions')}</Text>
+                                <Text size="1" color="gray">{t('mcp.permissions_hint', 'Leave empty for full access')}</Text>
+                                <Flex wrap="wrap" gap="2" mt="1">
+                                    {[
+                                        { scope: 'hosts:read', label: 'Hosts Read' }, { scope: 'hosts:write', label: 'Hosts Write' },
+                                        { scope: 'deploy:read', label: 'Deploy Read' }, { scope: 'deploy:write', label: 'Deploy Write' },
+                                        { scope: 'docker:read', label: 'Docker Read' }, { scope: 'docker:write', label: 'Docker Write' },
+                                        { scope: 'database:read', label: 'Database Read' }, { scope: 'database:write', label: 'Database Write' },
+                                        { scope: 'monitoring:read', label: 'Monitoring Read' }, { scope: 'monitoring:write', label: 'Monitoring Write' },
+                                        { scope: 'files:read', label: 'Files Read' }, { scope: 'files:write', label: 'Files Write' },
+                                        { scope: 'system:read', label: 'System Read' }, { scope: 'system:write', label: 'System Write' },
+                                        { scope: 'backup:write', label: 'Backup' },
+                                        { scope: 'firewall:read', label: 'Firewall Read' }, { scope: 'firewall:write', label: 'Firewall Write' },
+                                        { scope: 'notify:read', label: 'Notify Read' },
+                                        { scope: 'ai:read', label: 'AI' },
+                                    ].map(({ scope, label }) => (
+                                        <label key={scope} style={{ display: 'flex', alignItems: 'center', gap: 4, fontSize: 12, cursor: 'pointer' }}>
+                                            <input type="checkbox" checked={form.permissions.includes(scope)}
+                                                onChange={(e) => {
+                                                    const perms = e.target.checked
+                                                        ? [...form.permissions, scope]
+                                                        : form.permissions.filter(p => p !== scope)
+                                                    setForm({ ...form, permissions: perms })
+                                                }} />
+                                            {label}
+                                        </label>
+                                    ))}
+                                </Flex>
+                            </Flex>
                             <Flex gap="3" mt="2" justify="end">
                                 <Dialog.Close><Button variant="soft" color="gray">{t('common.cancel')}</Button></Dialog.Close>
                                 <Button onClick={handleCreate} disabled={creating || !form.name.trim()}>
@@ -2008,6 +2038,8 @@ const EVENT_OPTIONS = [
     { value: 'deploy.build.success', label: 'Build Success' },
     { value: 'backup.*', label: 'Backup Events' },
     { value: 'monitoring.alert.*', label: 'Monitoring Alerts' },
+    { value: 'system.inspection.*', label: 'System Inspection' },
+    { value: 'system.selfheal.*', label: 'Self-Heal Actions' },
     { value: '*', label: 'All Events' },
 ]
 

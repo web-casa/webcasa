@@ -4,6 +4,7 @@ import (
 	"log/slog"
 	"time"
 
+	pluginpkg "github.com/web-casa/webcasa/internal/plugin"
 	"gorm.io/gorm"
 )
 
@@ -18,12 +19,12 @@ type Service struct {
 }
 
 // NewService creates a new monitoring Service.
-func NewService(db *gorm.DB, logger *slog.Logger) *Service {
+func NewService(db *gorm.DB, logger *slog.Logger, eventBus *pluginpkg.EventBus) *Service {
 	return &Service{
 		db:          db,
 		logger:      logger,
 		collector:   NewCollector(logger),
-		alerter:     NewAlerter(db, logger),
+		alerter:     NewAlerter(db, logger, eventBus),
 		broadcaster: NewWSBroadcaster(logger),
 	}
 }
@@ -235,16 +236,17 @@ func (s *Service) ListAlertRules() ([]AlertRule, error) {
 // CreateAlertRule creates a new alert rule.
 func (s *Service) CreateAlertRule(req *CreateAlertRequest) (*AlertRule, error) {
 	rule := &AlertRule{
-		Name:        req.Name,
-		Metric:      req.Metric,
-		Operator:    req.Operator,
-		Threshold:   req.Threshold,
-		Duration:    req.Duration,
-		Enabled:     true,
-		NotifyType:  req.NotifyType,
-		NotifyURL:   req.NotifyURL,
-		NotifyEmail: req.NotifyEmail,
-		CooldownMin: req.CooldownMin,
+		Name:         req.Name,
+		Metric:       req.Metric,
+		Operator:     req.Operator,
+		Threshold:    req.Threshold,
+		Duration:     req.Duration,
+		Enabled:      true,
+		NotifyType:   req.NotifyType,
+		NotifyURL:    req.NotifyURL,
+		NotifyEmail:  req.NotifyEmail,
+		CooldownMin:  req.CooldownMin,
+		AutoHealMode: req.AutoHealMode,
 	}
 
 	if rule.Operator == "" {
@@ -258,6 +260,9 @@ func (s *Service) CreateAlertRule(req *CreateAlertRequest) (*AlertRule, error) {
 	}
 	if rule.CooldownMin < 1 {
 		rule.CooldownMin = 30
+	}
+	if rule.AutoHealMode == "" {
+		rule.AutoHealMode = "notify"
 	}
 
 	if err := s.db.Create(rule).Error; err != nil {
@@ -303,6 +308,9 @@ func (s *Service) UpdateAlertRule(id uint, req *UpdateAlertRequest) (*AlertRule,
 	}
 	if req.CooldownMin > 0 {
 		updates["cooldown_min"] = req.CooldownMin
+	}
+	if req.AutoHealMode != "" {
+		updates["auto_heal_mode"] = req.AutoHealMode
 	}
 
 	if len(updates) > 0 {

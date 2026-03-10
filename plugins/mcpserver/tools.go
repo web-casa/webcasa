@@ -4,7 +4,9 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"net/url"
 	"strconv"
+	"strings"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 
@@ -230,6 +232,136 @@ func (ts *ToolService) RegisterTools(srv *mcp.Server) {
 		Title:       "Diagnose Error Logs",
 		Description: "Analyze error logs or stack traces using AI to identify root causes and suggest fixes.",
 	}, ts.handleDiagnoseError)
+
+	// ── Host Extended ──
+	mcp.AddTool(srv, &mcp.Tool{
+		Name:        "update_host",
+		Title:       "Update Host Configuration",
+		Description: "Update a reverse proxy host's upstream, TLS mode, WebSocket, compression, or enabled state.",
+	}, ts.handleUpdateHost)
+
+	// ── System Monitoring ──
+	mcp.AddTool(srv, &mcp.Tool{
+		Name:        "get_system_metrics",
+		Title:       "Get System Metrics",
+		Description: "Get current system metrics: CPU, memory, disk usage, load average.",
+	}, ts.handleGetSystemMetrics)
+
+	mcp.AddTool(srv, &mcp.Tool{
+		Name:        "list_alert_rules",
+		Title:       "List Alert Rules",
+		Description: "List all monitoring alert rules with their thresholds and status.",
+	}, ts.handleListAlertRules)
+
+	mcp.AddTool(srv, &mcp.Tool{
+		Name:        "create_alert_rule",
+		Title:       "Create Alert Rule",
+		Description: "Create a monitoring alert rule (e.g., alert when CPU > 90% for 5 minutes).",
+	}, ts.handleCreateAlertRule)
+
+	mcp.AddTool(srv, &mcp.Tool{
+		Name:        "get_alert_history",
+		Title:       "Get Alert History",
+		Description: "Get recent monitoring alerts.",
+	}, ts.handleGetAlertHistory)
+
+	// ── File Management ──
+	mcp.AddTool(srv, &mcp.Tool{
+		Name:        "read_file",
+		Title:       "Read File",
+		Description: "Read the contents of a file on the server.",
+	}, ts.handleReadFile)
+
+	mcp.AddTool(srv, &mcp.Tool{
+		Name:        "list_directory",
+		Title:       "List Directory",
+		Description: "List files and directories at a given path.",
+	}, ts.handleListDirectory)
+
+	mcp.AddTool(srv, &mcp.Tool{
+		Name:        "write_file",
+		Title:       "Write File",
+		Description: "Write content to a file on the server.",
+	}, ts.handleWriteFile)
+
+	mcp.AddTool(srv, &mcp.Tool{
+		Name:        "delete_file",
+		Title:       "Delete File",
+		Description: "Delete a file on the server.",
+	}, ts.handleDeleteFile)
+
+	// ── System ──
+	mcp.AddTool(srv, &mcp.Tool{
+		Name:        "get_system_info",
+		Title:       "Get System Info",
+		Description: "Get system information: hostname, OS, kernel, uptime, CPU cores, architecture.",
+	}, ts.handleGetSystemInfo)
+
+	mcp.AddTool(srv, &mcp.Tool{
+		Name:        "run_command",
+		Title:       "Run Shell Command",
+		Description: "Execute a shell command on the server with a timeout.",
+	}, ts.handleRunCommand)
+
+	// ── Backup ──
+	mcp.AddTool(srv, &mcp.Tool{
+		Name:        "trigger_backup",
+		Title:       "Trigger Backup",
+		Description: "Trigger an immediate system backup.",
+	}, ts.handleTriggerBackup)
+
+	// ── Firewall ──
+	mcp.AddTool(srv, &mcp.Tool{
+		Name:        "firewall_status",
+		Title:       "Firewall Status",
+		Description: "Get the current firewall status and active zones.",
+	}, ts.handleFirewallStatus)
+
+	mcp.AddTool(srv, &mcp.Tool{
+		Name:        "manage_firewall_rule",
+		Title:       "Manage Firewall Rule",
+		Description: "Add or remove a firewall port or service rule.",
+	}, ts.handleManageFirewallRule)
+
+	// ── Docker Extended ──
+	mcp.AddTool(srv, &mcp.Tool{
+		Name:        "docker_ps",
+		Title:       "List Docker Containers",
+		Description: "List all Docker containers with their status, ports, and resource usage.",
+	}, ts.handleDockerPS)
+
+	mcp.AddTool(srv, &mcp.Tool{
+		Name:        "docker_logs",
+		Title:       "Get Container Logs",
+		Description: "Get logs from a Docker container.",
+	}, ts.handleDockerLogs)
+
+	mcp.AddTool(srv, &mcp.Tool{
+		Name:        "docker_run",
+		Title:       "Run Docker Container",
+		Description: "Run a new Docker container with specified image, ports, volumes, and environment variables.",
+	}, ts.handleDockerRun)
+
+	// ── Deploy Extended ──
+	mcp.AddTool(srv, &mcp.Tool{
+		Name:        "auto_deploy",
+		Title:       "One-Command Deploy",
+		Description: "Deploy from a Git URL: create project, detect framework, trigger build, and set up reverse proxy.",
+	}, ts.handleAutoDeploy)
+
+	// ── Notification ──
+	mcp.AddTool(srv, &mcp.Tool{
+		Name:        "list_notify_channels",
+		Title:       "List Notification Channels",
+		Description: "List all configured notification channels (Webhook, Email, Discord, Telegram).",
+	}, ts.handleListNotifyChannels)
+
+	// ── Inspection ──
+	mcp.AddTool(srv, &mcp.Tool{
+		Name:        "run_inspection",
+		Title:       "Run System Inspection",
+		Description: "Run a system health inspection with AI-powered analysis.",
+	}, ts.handleRunInspection)
 }
 
 // ──────────────────────────── Host Tools ────────────────────────────
@@ -701,6 +833,456 @@ func (ts *ToolService) handleDiagnoseError(ctx context.Context, req *mcp.CallToo
 	data, err := ts.caller.Post("/api/plugins/ai/diagnose", body, token)
 	if err != nil {
 		r, _ := errorResult("failed to diagnose error: " + err.Error())
+		return r, nil, nil
+	}
+	return &mcp.CallToolResult{
+		Content: []mcp.Content{&mcp.TextContent{Text: string(data)}},
+	}, nil, nil
+}
+
+// ──────────────────────────── Host Extended ────────────────────────────
+
+type updateHostInput struct {
+	HostID      uint   `json:"host_id" jsonschema:"required"`
+	Upstream    string `json:"upstream,omitempty"`
+	TLSMode     string `json:"tls_mode,omitempty"`
+	ForceHTTPS  *bool  `json:"force_https,omitempty"`
+	WebSocket   *bool  `json:"websocket,omitempty"`
+	Compression *bool  `json:"compression,omitempty"`
+	Enabled     *bool  `json:"enabled,omitempty"`
+}
+
+func (ts *ToolService) handleUpdateHost(ctx context.Context, req *mcp.CallToolRequest, input updateHostInput) (*mcp.CallToolResult, any, error) {
+	if r, denied := requirePerm(ctx, "hosts:write"); denied {
+		return r, nil, nil
+	}
+	err := ts.coreAPI.UpdateHost(input.HostID, plugin.UpdateHostRequest{
+		Upstream:    input.Upstream,
+		TLSMode:     input.TLSMode,
+		ForceHTTPS:  input.ForceHTTPS,
+		WebSocket:   input.WebSocket,
+		Compression: input.Compression,
+		Enabled:     input.Enabled,
+	})
+	if err != nil {
+		r, _ := errorResult("failed to update host: " + err.Error())
+		return r, nil, nil
+	}
+	r, _ := jsonText(map[string]string{"message": "Host updated successfully"})
+	return r, nil, nil
+}
+
+// ──────────────────────────── System Monitoring ────────────────────────────
+
+func (ts *ToolService) handleGetSystemMetrics(ctx context.Context, req *mcp.CallToolRequest, _ emptyInput) (*mcp.CallToolResult, any, error) {
+	if r, denied := requirePerm(ctx, "monitoring:read"); denied {
+		return r, nil, nil
+	}
+	metrics, err := ts.coreAPI.GetMetrics()
+	if err != nil {
+		r, _ := errorResult("failed to get metrics: " + err.Error())
+		return r, nil, nil
+	}
+	r, e := jsonText(metrics)
+	return r, nil, e
+}
+
+func (ts *ToolService) handleListAlertRules(ctx context.Context, req *mcp.CallToolRequest, _ emptyInput) (*mcp.CallToolResult, any, error) {
+	if r, denied := requirePerm(ctx, "monitoring:read"); denied {
+		return r, nil, nil
+	}
+	rules, err := ts.coreAPI.ListAlertRules()
+	if err != nil {
+		r, _ := errorResult("failed to list alert rules: " + err.Error())
+		return r, nil, nil
+	}
+	r, e := jsonText(rules)
+	return r, nil, e
+}
+
+type createAlertRuleInput struct {
+	Name      string  `json:"name" jsonschema:"required"`
+	Metric    string  `json:"metric" jsonschema:"required"`
+	Operator  string  `json:"operator" jsonschema:"required"`
+	Threshold float64 `json:"threshold" jsonschema:"required"`
+	Duration  int     `json:"duration" jsonschema:"required"`
+}
+
+func (ts *ToolService) handleCreateAlertRule(ctx context.Context, req *mcp.CallToolRequest, input createAlertRuleInput) (*mcp.CallToolResult, any, error) {
+	if r, denied := requirePerm(ctx, "monitoring:write"); denied {
+		return r, nil, nil
+	}
+	id, err := ts.coreAPI.CreateAlertRule(input.Name, input.Metric, input.Operator, input.Threshold, input.Duration)
+	if err != nil {
+		r, _ := errorResult("failed to create alert rule: " + err.Error())
+		return r, nil, nil
+	}
+	r, e := jsonText(map[string]interface{}{"id": id, "message": "Alert rule created"})
+	return r, nil, e
+}
+
+func (ts *ToolService) handleGetAlertHistory(ctx context.Context, req *mcp.CallToolRequest, _ emptyInput) (*mcp.CallToolResult, any, error) {
+	if r, denied := requirePerm(ctx, "monitoring:read"); denied {
+		return r, nil, nil
+	}
+	alerts, err := ts.coreAPI.GetRecentAlerts()
+	if err != nil {
+		r, _ := errorResult("failed to get alerts: " + err.Error())
+		return r, nil, nil
+	}
+	r, e := jsonText(alerts)
+	return r, nil, e
+}
+
+// ──────────────────────────── File Management ────────────────────────────
+
+type readFileInput struct {
+	Path string `json:"path" jsonschema:"required"`
+}
+
+func (ts *ToolService) handleReadFile(ctx context.Context, req *mcp.CallToolRequest, input readFileInput) (*mcp.CallToolResult, any, error) {
+	if r, denied := requirePerm(ctx, "files:read"); denied {
+		return r, nil, nil
+	}
+	token := tokenFromContext(ctx)
+	data, err := ts.caller.Get("/api/plugins/filemanager/read?path="+url.QueryEscape(input.Path), token)
+	if err != nil {
+		r, _ := errorResult("failed to read file: " + err.Error())
+		return r, nil, nil
+	}
+	return &mcp.CallToolResult{
+		Content: []mcp.Content{&mcp.TextContent{Text: string(data)}},
+	}, nil, nil
+}
+
+type listDirectoryInput struct {
+	Path string `json:"path" jsonschema:"required"`
+}
+
+func (ts *ToolService) handleListDirectory(ctx context.Context, req *mcp.CallToolRequest, input listDirectoryInput) (*mcp.CallToolResult, any, error) {
+	if r, denied := requirePerm(ctx, "files:read"); denied {
+		return r, nil, nil
+	}
+	token := tokenFromContext(ctx)
+	data, err := ts.caller.Get("/api/plugins/filemanager/list?path="+url.QueryEscape(input.Path), token)
+	if err != nil {
+		r, _ := errorResult("failed to list directory: " + err.Error())
+		return r, nil, nil
+	}
+	return &mcp.CallToolResult{
+		Content: []mcp.Content{&mcp.TextContent{Text: string(data)}},
+	}, nil, nil
+}
+
+type writeFileInput struct {
+	Path    string `json:"path" jsonschema:"required"`
+	Content string `json:"content" jsonschema:"required"`
+}
+
+func (ts *ToolService) handleWriteFile(ctx context.Context, req *mcp.CallToolRequest, input writeFileInput) (*mcp.CallToolResult, any, error) {
+	if r, denied := requirePerm(ctx, "files:write"); denied {
+		return r, nil, nil
+	}
+	if err := ts.coreAPI.FileWrite(input.Path, input.Content); err != nil {
+		r, _ := errorResult("failed to write file: " + err.Error())
+		return r, nil, nil
+	}
+	r, _ := jsonText(map[string]string{"message": "File written successfully"})
+	return r, nil, nil
+}
+
+type deleteFileInput struct {
+	Path string `json:"path" jsonschema:"required"`
+}
+
+func (ts *ToolService) handleDeleteFile(ctx context.Context, req *mcp.CallToolRequest, input deleteFileInput) (*mcp.CallToolResult, any, error) {
+	if r, denied := requirePerm(ctx, "files:write"); denied {
+		return r, nil, nil
+	}
+	if err := ts.coreAPI.FileDelete(input.Path); err != nil {
+		r, _ := errorResult("failed to delete file: " + err.Error())
+		return r, nil, nil
+	}
+	r, _ := jsonText(map[string]string{"message": "File deleted successfully"})
+	return r, nil, nil
+}
+
+// ──────────────────────────── System ────────────────────────────
+
+func (ts *ToolService) handleGetSystemInfo(ctx context.Context, req *mcp.CallToolRequest, _ emptyInput) (*mcp.CallToolResult, any, error) {
+	if r, denied := requirePerm(ctx, "system:read"); denied {
+		return r, nil, nil
+	}
+	info, err := ts.coreAPI.GetSystemInfo()
+	if err != nil {
+		r, _ := errorResult("failed to get system info: " + err.Error())
+		return r, nil, nil
+	}
+	r, e := jsonText(info)
+	return r, nil, e
+}
+
+type runCommandInput struct {
+	Command    string `json:"command" jsonschema:"required"`
+	TimeoutSec int    `json:"timeout_sec,omitempty"`
+}
+
+func (ts *ToolService) handleRunCommand(ctx context.Context, req *mcp.CallToolRequest, input runCommandInput) (*mcp.CallToolResult, any, error) {
+	if r, denied := requirePerm(ctx, "system:write"); denied {
+		return r, nil, nil
+	}
+	timeout := 30
+	if input.TimeoutSec > 0 {
+		timeout = input.TimeoutSec
+	}
+	output, err := ts.coreAPI.RunCommand(input.Command, timeout)
+	if err != nil {
+		r, _ := errorResult("command failed: " + err.Error())
+		return r, nil, nil
+	}
+	return &mcp.CallToolResult{
+		Content: []mcp.Content{&mcp.TextContent{Text: output}},
+	}, nil, nil
+}
+
+// ──────────────────────────── Backup ────────────────────────────
+
+func (ts *ToolService) handleTriggerBackup(ctx context.Context, req *mcp.CallToolRequest, _ emptyInput) (*mcp.CallToolResult, any, error) {
+	if r, denied := requirePerm(ctx, "backup:write"); denied {
+		return r, nil, nil
+	}
+	if err := ts.coreAPI.TriggerBackup(); err != nil {
+		r, _ := errorResult("failed to trigger backup: " + err.Error())
+		return r, nil, nil
+	}
+	r, _ := jsonText(map[string]string{"message": "Backup triggered successfully"})
+	return r, nil, nil
+}
+
+// ──────────────────────────── Firewall ────────────────────────────
+
+func (ts *ToolService) handleFirewallStatus(ctx context.Context, req *mcp.CallToolRequest, _ emptyInput) (*mcp.CallToolResult, any, error) {
+	if r, denied := requirePerm(ctx, "firewall:read"); denied {
+		return r, nil, nil
+	}
+	status, err := ts.coreAPI.FirewallStatus()
+	if err != nil {
+		r, _ := errorResult("failed to get firewall status: " + err.Error())
+		return r, nil, nil
+	}
+	r, e := jsonText(status)
+	return r, nil, e
+}
+
+type manageFirewallRuleInput struct {
+	Action   string `json:"action" jsonschema:"required"`   // add, remove
+	Type     string `json:"type" jsonschema:"required"`     // port, service
+	Value    string `json:"value" jsonschema:"required"`    // e.g. "8080" or "8080/tcp" or "http"
+	Zone     string `json:"zone,omitempty"`
+}
+
+func (ts *ToolService) handleManageFirewallRule(ctx context.Context, req *mcp.CallToolRequest, input manageFirewallRuleInput) (*mcp.CallToolResult, any, error) {
+	if r, denied := requirePerm(ctx, "firewall:write"); denied {
+		return r, nil, nil
+	}
+	zone := input.Zone
+	if zone == "" {
+		zone = "public"
+	}
+
+	// Parse port and protocol from value (e.g. "8080/tcp" → port="8080", proto="tcp").
+	port, proto := input.Value, "tcp"
+	if input.Type == "port" {
+		if parts := strings.SplitN(input.Value, "/", 2); len(parts) == 2 {
+			port, proto = parts[0], parts[1]
+		}
+	}
+
+	var err error
+	switch {
+	case input.Action == "add" && input.Type == "port":
+		err = ts.coreAPI.FirewallAddPort(zone, port, proto)
+	case input.Action == "remove" && input.Type == "port":
+		err = ts.coreAPI.FirewallRemovePort(zone, port, proto)
+	case input.Action == "add" && input.Type == "service":
+		err = ts.coreAPI.FirewallAddService(zone, input.Value)
+	case input.Action == "remove" && input.Type == "service":
+		err = ts.coreAPI.FirewallRemoveService(zone, input.Value)
+	default:
+		r, _ := errorResult("invalid action/type combination: use add/remove with port/service")
+		return r, nil, nil
+	}
+	if err != nil {
+		r, _ := errorResult("firewall operation failed: " + err.Error())
+		return r, nil, nil
+	}
+	r, _ := jsonText(map[string]string{"message": fmt.Sprintf("Firewall rule %sed: %s %s", input.Action, input.Type, input.Value)})
+	return r, nil, nil
+}
+
+// ──────────────────────────── Docker Extended ────────────────────────────
+
+func (ts *ToolService) handleDockerPS(ctx context.Context, req *mcp.CallToolRequest, _ emptyInput) (*mcp.CallToolResult, any, error) {
+	if r, denied := requirePerm(ctx, "docker:read"); denied {
+		return r, nil, nil
+	}
+	containers, err := ts.coreAPI.DockerPS()
+	if err != nil {
+		r, _ := errorResult("failed to list containers: " + err.Error())
+		return r, nil, nil
+	}
+	r, e := jsonText(containers)
+	return r, nil, e
+}
+
+type dockerLogsInput struct {
+	ContainerID string `json:"container_id" jsonschema:"required"`
+	Tail        int    `json:"tail,omitempty"`
+}
+
+func (ts *ToolService) handleDockerLogs(ctx context.Context, req *mcp.CallToolRequest, input dockerLogsInput) (*mcp.CallToolResult, any, error) {
+	if r, denied := requirePerm(ctx, "docker:read"); denied {
+		return r, nil, nil
+	}
+	tail := 100
+	if input.Tail > 0 {
+		tail = input.Tail
+	}
+	logs, err := ts.coreAPI.DockerLogs(input.ContainerID, tail)
+	if err != nil {
+		r, _ := errorResult("failed to get container logs: " + err.Error())
+		return r, nil, nil
+	}
+	return &mcp.CallToolResult{
+		Content: []mcp.Content{&mcp.TextContent{Text: logs}},
+	}, nil, nil
+}
+
+type dockerRunInput struct {
+	Image         string            `json:"image" jsonschema:"required"`
+	Name          string            `json:"name,omitempty"`
+	Ports         []string          `json:"ports,omitempty"`
+	Env           map[string]string `json:"env,omitempty"`
+	Volumes       []string          `json:"volumes,omitempty"`
+	RestartPolicy string            `json:"restart_policy,omitempty"`
+}
+
+func (ts *ToolService) handleDockerRun(ctx context.Context, req *mcp.CallToolRequest, input dockerRunInput) (*mcp.CallToolResult, any, error) {
+	if r, denied := requirePerm(ctx, "docker:write"); denied {
+		return r, nil, nil
+	}
+	containerID, err := ts.coreAPI.DockerRunContainer(plugin.DockerRunContainerRequest{
+		Image:         input.Image,
+		Name:          input.Name,
+		Ports:         input.Ports,
+		Env:           input.Env,
+		Volumes:       input.Volumes,
+		RestartPolicy: input.RestartPolicy,
+	})
+	if err != nil {
+		r, _ := errorResult("failed to run container: " + err.Error())
+		return r, nil, nil
+	}
+	r, e := jsonText(map[string]string{"container_id": containerID, "message": "Container started"})
+	return r, nil, e
+}
+
+// ──────────────────────────── Deploy Extended ────────────────────────────
+
+type autoDeployInput struct {
+	GitURL     string `json:"git_url" jsonschema:"required"`
+	Domain     string `json:"domain,omitempty"`
+	Branch     string `json:"branch,omitempty"`
+	DeployMode string `json:"deploy_mode,omitempty"`
+	Name       string `json:"name,omitempty"`
+}
+
+func (ts *ToolService) handleAutoDeploy(ctx context.Context, req *mcp.CallToolRequest, input autoDeployInput) (*mcp.CallToolResult, any, error) {
+	if r, denied := requirePerm(ctx, "deploy:write"); denied {
+		return r, nil, nil
+	}
+	branch := input.Branch
+	if branch == "" {
+		branch = "main"
+	}
+	mode := input.DeployMode
+	if mode == "" {
+		mode = "docker"
+	}
+	name := input.Name
+	if name == "" {
+		parts := splitRepoURL(input.GitURL)
+		name = parts
+	}
+
+	projectID, err := ts.coreAPI.CreateProject(plugin.CreateProjectRequest{
+		Name:       name,
+		GitURL:     input.GitURL,
+		GitBranch:  branch,
+		Domain:     input.Domain,
+		DeployMode: mode,
+		AutoDeploy: true,
+	})
+	if err != nil {
+		r, _ := errorResult("failed to create project: " + err.Error())
+		return r, nil, nil
+	}
+
+	if err := ts.coreAPI.TriggerBuild(projectID); err != nil {
+		r, _ := jsonText(map[string]interface{}{
+			"project_id": projectID,
+			"status":     "created_but_build_failed",
+			"error":      err.Error(),
+		})
+		return r, nil, nil
+	}
+
+	r, e := jsonText(map[string]interface{}{
+		"project_id": projectID,
+		"name":       name,
+		"domain":     input.Domain,
+		"status":     "building",
+		"message":    "Project created and build started",
+	})
+	return r, nil, e
+}
+
+// splitRepoURL extracts the repo name from a git URL.
+func splitRepoURL(rawURL string) string {
+	rawURL = strings.TrimSuffix(rawURL, ".git")
+	for i := len(rawURL) - 1; i >= 0; i-- {
+		if rawURL[i] == '/' {
+			return rawURL[i+1:]
+		}
+	}
+	return "auto-project"
+}
+
+// ──────────────────────────── Notification ────────────────────────────
+
+func (ts *ToolService) handleListNotifyChannels(ctx context.Context, req *mcp.CallToolRequest, _ emptyInput) (*mcp.CallToolResult, any, error) {
+	if r, denied := requirePerm(ctx, "notify:read"); denied {
+		return r, nil, nil
+	}
+	channels, err := ts.coreAPI.ListNotifyChannels()
+	if err != nil {
+		r, _ := errorResult("failed to list channels: " + err.Error())
+		return r, nil, nil
+	}
+	r, e := jsonText(channels)
+	return r, nil, e
+}
+
+// ──────────────────────────── Inspection ────────────────────────────
+
+func (ts *ToolService) handleRunInspection(ctx context.Context, req *mcp.CallToolRequest, _ emptyInput) (*mcp.CallToolResult, any, error) {
+	if r, denied := requirePerm(ctx, "ai:read"); denied {
+		return r, nil, nil
+	}
+	token := tokenFromContext(ctx)
+	data, err := ts.caller.Post("/api/plugins/ai/inspection/run", nil, token)
+	if err != nil {
+		r, _ := errorResult("failed to run inspection: " + err.Error())
 		return r, nil, nil
 	}
 	return &mcp.CallToolResult{

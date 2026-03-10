@@ -1,6 +1,7 @@
 package mcpserver
 
 import (
+	"encoding/json"
 	"net/http"
 	"strconv"
 	"time"
@@ -34,13 +35,28 @@ func (h *Handler) CreateToken(c *gin.Context) {
 	userID := c.GetUint("user_id")
 
 	var req struct {
-		Name        string `json:"name" binding:"required"`
-		Permissions string `json:"permissions"` // JSON array
-		ExpiresIn   int    `json:"expires_in"`  // days, 0 = never
+		Name        string          `json:"name" binding:"required"`
+		Permissions json.RawMessage `json:"permissions"` // string or []string
+		ExpiresIn   int             `json:"expires_in"`  // days, 0 = never
 	}
 	if err := c.ShouldBindJSON(&req); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "name is required"})
 		return
+	}
+
+	// Normalise permissions: accept both string ("[]") and []string (["a","b"]).
+	permissions := "[]"
+	if len(req.Permissions) > 0 {
+		var arr []string
+		if json.Unmarshal(req.Permissions, &arr) == nil {
+			b, _ := json.Marshal(arr)
+			permissions = string(b)
+		} else {
+			var s string
+			if json.Unmarshal(req.Permissions, &s) == nil {
+				permissions = s
+			}
+		}
 	}
 
 	var expiresAt *time.Time
@@ -49,7 +65,7 @@ func (h *Handler) CreateToken(c *gin.Context) {
 		expiresAt = &t
 	}
 
-	token, plaintext, err := h.tokenSvc.CreateToken(userID, req.Name, req.Permissions, expiresAt)
+	token, plaintext, err := h.tokenSvc.CreateToken(userID, req.Name, permissions, expiresAt)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return

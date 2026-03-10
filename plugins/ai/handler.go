@@ -403,3 +403,99 @@ func (h *Handler) Diagnose(c *gin.Context) {
 	writeSSEEvent(c.Writer, "done", "")
 	c.Writer.Flush()
 }
+
+// RunInspection triggers a manual system inspection.
+func (h *Handler) RunInspection(c *gin.Context) {
+	inspection := h.svc.tools.inspection
+	if inspection == nil {
+		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "inspection service not configured"})
+		return
+	}
+	report, err := inspection.RunInspection()
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	c.JSON(http.StatusOK, report)
+}
+
+// GetInspectionConfig returns the inspection configuration.
+func (h *Handler) GetInspectionConfig(c *gin.Context) {
+	cs := h.svc.configStore
+	c.JSON(http.StatusOK, gin.H{
+		"enabled":    cs.Get("inspection_enabled") == "true",
+		"hour":       cs.Get("inspection_hour"),
+		"ai_summary": cs.Get("inspection_ai_summary") != "false",
+	})
+}
+
+// UpdateInspectionConfig saves the inspection configuration.
+func (h *Handler) UpdateInspectionConfig(c *gin.Context) {
+	var req struct {
+		Enabled   *bool `json:"enabled"`
+		Hour      *int  `json:"hour"`
+		AISummary *bool `json:"ai_summary"`
+	}
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+
+	cs := h.svc.configStore
+	if req.Enabled != nil {
+		val := "false"
+		if *req.Enabled {
+			val = "true"
+		}
+		if err := cs.Set("inspection_enabled", val); err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+			return
+		}
+	}
+	if req.Hour != nil {
+		if *req.Hour < 0 || *req.Hour > 23 {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "hour must be 0-23"})
+			return
+		}
+		if err := cs.Set("inspection_hour", strconv.Itoa(*req.Hour)); err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+			return
+		}
+	}
+	if req.AISummary != nil {
+		val := "false"
+		if *req.AISummary {
+			val = "true"
+		}
+		if err := cs.Set("inspection_ai_summary", val); err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+			return
+		}
+	}
+
+	// Reschedule the inspection loop based on the updated config.
+	if inspection := h.svc.tools.inspection; inspection != nil {
+		inspection.Reschedule()
+	}
+
+	c.JSON(http.StatusOK, gin.H{"message": "inspection config updated"})
+}
+
+// GetInspectionHistory returns recent inspection records.
+func (h *Handler) GetInspectionHistory(c *gin.Context) {
+	inspection := h.svc.tools.inspection
+	if inspection == nil {
+		c.JSON(http.StatusOK, []interface{}{})
+		return
+	}
+	limit := 20
+	if l, err := strconv.Atoi(c.DefaultQuery("limit", "20")); err == nil && l > 0 && l <= 100 {
+		limit = l
+	}
+	records, err := inspection.GetHistory(limit)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	c.JSON(http.StatusOK, records)
+}

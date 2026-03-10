@@ -39,7 +39,7 @@ func (p *Plugin) Init(ctx *pluginpkg.Context) error {
 	}
 
 	// Create service and handler.
-	p.svc = NewService(ctx.DB, ctx.Logger)
+	p.svc = NewService(ctx.DB, ctx.Logger, ctx.EventBus)
 	p.handler = NewHandler(p.svc)
 
 	// Register API routes under /api/plugins/monitoring/

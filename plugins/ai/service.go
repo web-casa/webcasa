@@ -280,8 +280,8 @@ func (s *Service) ChatWithTools(ctx context.Context, req ChatRequest, userID uin
 		toolSchemas = s.tools.OpenAIToolSchema()
 	}
 
-	// Tool use loop: max 5 rounds to prevent infinite loops.
-	const maxRounds = 5
+	// Tool use loop: max 10 rounds for multi-step operations (e.g. auto_deploy).
+	const maxRounds = 10
 	var fullContent strings.Builder
 
 	for round := 0; round < maxRounds; round++ {

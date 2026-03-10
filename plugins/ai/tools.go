@@ -41,11 +41,12 @@ type ToolResult struct {
 
 // ToolRegistry manages available tools.
 type ToolRegistry struct {
-	mu      sync.RWMutex
-	tools   map[string]*Tool
-	coreAPI pluginpkg.CoreAPI
-	logger  *slog.Logger
-	svc     *Service // back-reference for tools that need AI generation (e.g. generate_dockerfile)
+	mu         sync.RWMutex
+	tools      map[string]*Tool
+	coreAPI    pluginpkg.CoreAPI
+	logger     *slog.Logger
+	svc        *Service            // back-reference for tools that need AI generation (e.g. generate_dockerfile)
+	inspection *InspectionService  // set after Init for the run_inspection tool
 }
 
 // NewToolRegistry creates a new tool registry.

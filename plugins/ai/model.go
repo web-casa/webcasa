@@ -48,6 +48,18 @@ type DiagnoseRequest struct {
 	Context string `json:"context"` // optional: what the user was trying to do
 }
 
+// InspectionRecord stores the result of a system health inspection.
+type InspectionRecord struct {
+	ID           uint      `json:"id" gorm:"primaryKey"`
+	Timestamp    time.Time `json:"timestamp"`
+	OverallScore string    `json:"overall_score" gorm:"size:16"`
+	FindingsJSON string    `json:"findings_json" gorm:"type:text"`
+	AISummary    string    `json:"ai_summary" gorm:"type:text"`
+	CreatedAt    time.Time `json:"created_at"`
+}
+
+func (InspectionRecord) TableName() string { return "plugin_ai_inspections" }
+
 // AIConfig holds the AI provider configuration.
 type AIConfig struct {
 	BaseURL        string `json:"base_url"`

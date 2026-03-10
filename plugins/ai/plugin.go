@@ -14,8 +14,10 @@ import (
 
 // Plugin implements the plugin.Plugin interface for AI Assistant.
 type Plugin struct {
-	svc     *Service
-	handler *Handler
+	svc        *Service
+	handler    *Handler
+	inspection *InspectionService
+	selfHeal   *SelfHealEngine
 }
 
 // New creates a new AI assistant plugin instance.
@@ -40,7 +42,7 @@ func (p *Plugin) Metadata() pluginpkg.Metadata {
 // Init initialises the AI plugin: migrates DB, registers routes.
 func (p *Plugin) Init(ctx *pluginpkg.Context) error {
 	// Migrate models.
-	if err := ctx.DB.AutoMigrate(&Conversation{}, &Message{}, &Memory{}); err != nil {
+	if err := ctx.DB.AutoMigrate(&Conversation{}, &Message{}, &Memory{}, &InspectionRecord{}); err != nil {
 		return fmt.Errorf("migrate: %w", err)
 	}
 
@@ -63,9 +65,17 @@ func (p *Plugin) Init(ctx *pluginpkg.Context) error {
 		}
 	}
 
-	// Create service and handler.
+	// Create service, handler, and inspection service.
 	p.svc = NewService(ctx.DB, ctx.ConfigStore, ctx.CoreAPI, ctx.Logger, jwtSecret)
 	p.handler = NewHandler(p.svc)
+	p.inspection = NewInspectionService(p.svc, ctx.CoreAPI, ctx.ConfigStore, ctx.EventBus, ctx.DB, ctx.Logger)
+
+	// Wire inspection into the tool registry so run_inspection tool can access it.
+	p.svc.tools.inspection = p.inspection
+
+	// Create self-heal engine and subscribe to monitoring events.
+	p.selfHeal = NewSelfHealEngine(p.svc, ctx.CoreAPI, ctx.EventBus, ctx.Logger)
+	p.selfHeal.Subscribe()
 
 	// Register API routes under /api/plugins/ai/
 	r := ctx.Router       // read-only
@@ -98,6 +108,12 @@ func (p *Plugin) Init(ctx *pluginpkg.Context) error {
 	r.GET("/memories", p.handler.ListMemories)
 	a.DELETE("/memories/:id", p.handler.DeleteMemory)
 	a.POST("/memories/clear", p.handler.ClearMemories)
+
+	// Inspection routes
+	a.POST("/inspection/run", p.handler.RunInspection)
+	r.GET("/inspection/config", p.handler.GetInspectionConfig)
+	a.PUT("/inspection/config", p.handler.UpdateInspectionConfig)
+	r.GET("/inspection/history", p.handler.GetInspectionHistory)
 
 	// Subscribe to build failure events for auto-diagnosis
 	db := ctx.DB
@@ -141,13 +157,19 @@ func (p *Plugin) handleBuildFailureDiagnosis(db *gorm.DB, logger *slog.Logger, e
 	logger.Info("auto AI diagnosis completed", "deployment_id", uint(deploymentID), "project", projectName)
 }
 
-// Start is called after Init. No background tasks.
+// Start is called after Init. Starts the inspection scheduler.
 func (p *Plugin) Start() error {
+	if p.inspection != nil {
+		p.inspection.Start()
+	}
 	return nil
 }
 
 // Stop cleans up resources.
 func (p *Plugin) Stop() error {
+	if p.inspection != nil {
+		p.inspection.Stop()
+	}
 	return nil
 }
 

@@ -158,12 +158,12 @@ FAKESC
     echo -e "${YELLOW}[2/5] Verifying installation artifacts...${NC}"
 
     # Binary exists
-    docker exec "$CONTAINER" test -f /usr/local/bin/webcasa && \
-        pass "Binary at /usr/local/bin/webcasa" || fail "Binary missing"
+    docker exec "$CONTAINER" test -f /usr/local/bin/webcasa-server && \
+        pass "Binary at /usr/local/bin/webcasa-server" || fail "Binary missing"
 
     # Binary is executable and responds to --version
     local VERSION_OUT
-    VERSION_OUT=$(docker exec "$CONTAINER" /usr/local/bin/webcasa --version 2>&1) && \
+    VERSION_OUT=$(docker exec "$CONTAINER" /usr/local/bin/webcasa-server --version 2>&1) && \
         pass "Binary --version: $VERSION_OUT" || fail "Binary --version failed"
 
     # Config file exists
@@ -244,7 +244,7 @@ FAKESC
         export WEBCASA_LOG_DIR GIN_MODE
         export WEBCASA_CADDY_BIN=/bin/false
         cd /var/lib/webcasa
-        /usr/local/bin/webcasa > /tmp/webcasa.log 2>&1
+        /usr/local/bin/webcasa-server > /tmp/webcasa.log 2>&1
     '
 
     # Wait for API

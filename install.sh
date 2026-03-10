@@ -257,6 +257,7 @@ do_uninstall() {
 
     # Remove files
     rm -f /etc/systemd/system/webcasa.service
+    rm -f "$INSTALL_DIR/webcasa-server"
     rm -f "$INSTALL_DIR/webcasa"
     systemctl daemon-reload
 
@@ -401,9 +402,9 @@ install_prebuilt() {
 
     local EXTRACT_DIR="/tmp/webcasa-${ARCH_SUFFIX}"
 
-    # Install binary
-    cp -f "${EXTRACT_DIR}/webcasa" "$INSTALL_DIR/webcasa"
-    chmod 755 "$INSTALL_DIR/webcasa"
+    # Install server binary (renamed from webcasa to webcasa-server)
+    cp -f "${EXTRACT_DIR}/webcasa" "$INSTALL_DIR/webcasa-server"
+    chmod 755 "$INSTALL_DIR/webcasa-server"
 
     # Install frontend
     mkdir -p "$DATA_DIR/web"
@@ -468,15 +469,55 @@ install_from_source() {
     go build -ldflags="-s -w -X main.Version=${WEBCASA_VERSION}" -o webcasa .
     success "Backend built"
 
-    # Install binary
-    cp -f webcasa "$INSTALL_DIR/webcasa"
-    chmod 755 "$INSTALL_DIR/webcasa"
+    # Install server binary (renamed from webcasa to webcasa-server)
+    cp -f webcasa "$INSTALL_DIR/webcasa-server"
+    chmod 755 "$INSTALL_DIR/webcasa-server"
 
     # Install frontend
     mkdir -p "$DATA_DIR/web/dist"
     cp -r web/dist/* "$DATA_DIR/web/dist/"
 
     success "WebCasa v${WEBCASA_VERSION} installed"
+}
+
+install_cli_script() {
+    step "Installing CLI management tool"
+
+    local CLI_SRC=""
+
+    # Check if scripts/webcasa-cli.sh exists locally (build from source / local install)
+    if [[ -n "${SRC_DIR:-}" && -f "${SRC_DIR}/scripts/webcasa-cli.sh" ]]; then
+        CLI_SRC="${SRC_DIR}/scripts/webcasa-cli.sh"
+    elif [[ -f "${SCRIPT_SELF_DIR}/scripts/webcasa-cli.sh" ]]; then
+        CLI_SRC="${SCRIPT_SELF_DIR}/scripts/webcasa-cli.sh"
+    fi
+
+    if [[ -n "$CLI_SRC" ]]; then
+        cp -f "$CLI_SRC" "$INSTALL_DIR/webcasa"
+    else
+        # Download from GitHub
+        info "Downloading CLI script..."
+        curl -fsSL "https://raw.githubusercontent.com/${GITHUB_REPO}/v${WEBCASA_VERSION}/scripts/webcasa-cli.sh" \
+            -o "$INSTALL_DIR/webcasa" || {
+            # Fallback to main branch
+            curl -fsSL "https://raw.githubusercontent.com/${GITHUB_REPO}/main/scripts/webcasa-cli.sh" \
+                -o "$INSTALL_DIR/webcasa" || {
+                warn "Failed to download CLI script, creating minimal wrapper"
+                cat > "$INSTALL_DIR/webcasa" <<'MINEOF'
+#!/usr/bin/env bash
+echo "Web.Casa CLI (minimal). Reinstall for full functionality."
+echo "Usage: webcasa-server --version"
+exec /usr/local/bin/webcasa-server "$@"
+MINEOF
+            }
+        }
+    fi
+
+    chmod 755 "$INSTALL_DIR/webcasa"
+    # Embed actual version into the CLI script
+    sed -i "s/^VERSION=.*/VERSION=\"${WEBCASA_VERSION}\"/" "$INSTALL_DIR/webcasa"
+
+    success "CLI tool installed: ${INSTALL_DIR}/webcasa"
 }
 
 install_go() {
@@ -653,7 +694,7 @@ Wants=network-online.target
 Type=simple
 User=root
 Group=root
-ExecStart=${INSTALL_DIR}/webcasa
+ExecStart=${INSTALL_DIR}/webcasa-server
 WorkingDirectory=${DATA_DIR}
 Restart=on-failure
 RestartSec=5
@@ -840,12 +881,15 @@ print_summary() {
     echo -e "  ${BOLD}Config:${NC}         ${CONFIG_DIR}/webcasa.env"
     echo -e "  ${BOLD}Data:${NC}           ${DATA_DIR}/"
     echo -e "  ${BOLD}Logs:${NC}           ${LOG_DIR}/"
-    echo -e "  ${BOLD}Binary:${NC}         ${INSTALL_DIR}/webcasa"
+    echo -e "  ${BOLD}Binary:${NC}         ${INSTALL_DIR}/webcasa-server"
+    echo -e "  ${BOLD}CLI:${NC}            ${INSTALL_DIR}/webcasa"
     echo ""
-    echo -e "  ${BOLD}Service Commands:${NC}"
-    echo -e "    systemctl status webcasa    ${CYAN}# Check status${NC}"
-    echo -e "    systemctl restart webcasa   ${CYAN}# Restart${NC}"
-    echo -e "    journalctl -u webcasa -f    ${CYAN}# View logs${NC}"
+    echo -e "  ${BOLD}Management Commands:${NC}"
+    echo -e "    webcasa                     ${CYAN}# Interactive menu${NC}"
+    echo -e "    webcasa panel restart       ${CYAN}# Restart panel${NC}"
+    echo -e "    webcasa caddy restart       ${CYAN}# Restart Caddy${NC}"
+    echo -e "    webcasa info                ${CYAN}# System info${NC}"
+    echo -e "    webcasa help                ${CYAN}# All commands${NC}"
     echo ""
     echo -e "  ${BOLD}Included Features:${NC}"
     echo -e "    Reverse Proxy  │  File Manager  │  Web Terminal"
@@ -862,14 +906,19 @@ print_summary() {
 do_upgrade() {
     local BUILD_MODE="$1" # "prebuilt" or "source"
 
-    # Verify WebCasa is installed
-    if [[ ! -f "$INSTALL_DIR/webcasa" ]]; then
-        fatal "WebCasa is not installed. Run install.sh without --upgrade first."
+    # Verify WebCasa is installed — migrate from old binary name if needed
+    if [[ ! -f "$INSTALL_DIR/webcasa-server" ]]; then
+        if [[ -f "$INSTALL_DIR/webcasa" ]] && file "$INSTALL_DIR/webcasa" 2>/dev/null | grep -q "ELF"; then
+            info "Migrating old binary name: webcasa → webcasa-server"
+            mv -f "$INSTALL_DIR/webcasa" "$INSTALL_DIR/webcasa-server"
+        else
+            fatal "WebCasa is not installed. Run install.sh without --upgrade first."
+        fi
     fi
 
     # Show current version
     local CURRENT_VERSION
-    CURRENT_VERSION=$("$INSTALL_DIR/webcasa" --version 2>/dev/null || echo "unknown")
+    CURRENT_VERSION=$("$INSTALL_DIR/webcasa-server" --version 2>/dev/null || echo "unknown")
     info "Current version: ${CURRENT_VERSION}"
     info "Target version:  ${WEBCASA_VERSION}"
 
@@ -891,9 +940,9 @@ do_upgrade() {
     fi
 
     # Backup current binary
-    if [[ -f "$INSTALL_DIR/webcasa" ]]; then
-        cp -f "$INSTALL_DIR/webcasa" "$INSTALL_DIR/webcasa.bak"
-        info "Backed up current binary to webcasa.bak"
+    if [[ -f "$INSTALL_DIR/webcasa-server" ]]; then
+        cp -f "$INSTALL_DIR/webcasa-server" "$INSTALL_DIR/webcasa-server.bak"
+        info "Backed up current binary to webcasa-server.bak"
     fi
 
     # Build or download new version.
@@ -913,9 +962,9 @@ do_upgrade() {
 
     if [[ "$INSTALL_OK" != "true" ]]; then
         error "Install step failed during upgrade!"
-        if [[ -f "$INSTALL_DIR/webcasa.bak" ]]; then
+        if [[ -f "$INSTALL_DIR/webcasa-server.bak" ]]; then
             warn "Rolling back to previous binary..."
-            mv -f "$INSTALL_DIR/webcasa.bak" "$INSTALL_DIR/webcasa"
+            mv -f "$INSTALL_DIR/webcasa-server.bak" "$INSTALL_DIR/webcasa-server"
         fi
         warn "Restarting previous version..."
         systemctl start webcasa || true
@@ -926,6 +975,9 @@ do_upgrade() {
         fi
         exit 1
     fi
+
+    # Update CLI management script
+    install_cli_script
 
     # Upgrade Caddy if a newer version is pinned
     install_caddy
@@ -941,14 +993,14 @@ do_upgrade() {
 
     if systemctl is-active --quiet webcasa; then
         # Remove backup on success
-        rm -f "$INSTALL_DIR/webcasa.bak"
+        rm -f "$INSTALL_DIR/webcasa-server.bak"
         success "WebCasa upgraded to v${WEBCASA_VERSION}!"
     else
         # Rollback on failure
         error "WebCasa failed to start after upgrade!"
-        if [[ -f "$INSTALL_DIR/webcasa.bak" ]]; then
+        if [[ -f "$INSTALL_DIR/webcasa-server.bak" ]]; then
             warn "Rolling back to previous version..."
-            mv -f "$INSTALL_DIR/webcasa.bak" "$INSTALL_DIR/webcasa"
+            mv -f "$INSTALL_DIR/webcasa-server.bak" "$INSTALL_DIR/webcasa-server"
             systemctl start webcasa
             if systemctl is-active --quiet webcasa; then
                 success "Rollback successful. Previous version restored."
@@ -965,7 +1017,8 @@ do_upgrade() {
     echo -e "${GREEN}${BOLD}╚══════════════════════════════════════════════════════════════╝${NC}"
     echo ""
     echo -e "  ${BOLD}Version:${NC}  ${CURRENT_VERSION} → ${WEBCASA_VERSION}"
-    echo -e "  ${BOLD}Binary:${NC}   ${INSTALL_DIR}/webcasa"
+    echo -e "  ${BOLD}Binary:${NC}   ${INSTALL_DIR}/webcasa-server"
+    echo -e "  ${BOLD}CLI:${NC}      ${INSTALL_DIR}/webcasa"
     echo -e "  ${BOLD}Status:${NC}   $(systemctl is-active webcasa)"
     echo ""
 
@@ -1026,6 +1079,9 @@ main() {
     else
         install_prebuilt
     fi
+
+    # Install CLI management script
+    install_cli_script
 
     setup_config
     setup_systemd

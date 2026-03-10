@@ -307,6 +307,18 @@ func main() {
 			Type: e.Type, Title: title, Message: formatEventMessage(e), Data: e.Payload, Time: e.Time,
 		})
 	})
+	eventBus.Subscribe("system.inspection.*", func(e plugin.Event) {
+		title := formatEventTitle(e)
+		notifier.Send(notify.NotifyEvent{
+			Type: e.Type, Title: title, Message: formatEventMessage(e), Data: e.Payload, Time: e.Time,
+		})
+	})
+	eventBus.Subscribe("system.selfheal.*", func(e plugin.Event) {
+		title := formatEventTitle(e)
+		notifier.Send(notify.NotifyEvent{
+			Type: e.Type, Title: title, Message: formatEventMessage(e), Data: e.Payload, Time: e.Time,
+		})
+	})
 
 	// ============ Version Checker ============
 	versionChecker := versioncheck.NewChecker(

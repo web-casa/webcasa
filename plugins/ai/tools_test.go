@@ -103,6 +103,25 @@ func (s *stubCoreAPI) FirewallRemoveService(zone, service string) error         
 func (s *stubCoreAPI) PHPListRuntimes() ([]map[string]interface{}, error)       { return nil, nil }
 func (s *stubCoreAPI) PHPListSites() ([]map[string]interface{}, error)          { return nil, nil }
 
+// NLOps stubs
+func (s *stubCoreAPI) ToggleHost(id uint) error                                          { return nil }
+func (s *stubCoreAPI) CloneHost(id uint, newDomain string) (uint, error)                 { return 1, nil }
+func (s *stubCoreAPI) GetCaddyStatus() (map[string]interface{}, error)                   { return nil, nil }
+func (s *stubCoreAPI) RestartCaddy() error                                               { return nil }
+func (s *stubCoreAPI) StartProject(id uint) error                                        { return nil }
+func (s *stubCoreAPI) StopProject(id uint) error                                         { return nil }
+func (s *stubCoreAPI) RollbackProject(projectID uint, buildNum int) error                { return nil }
+func (s *stubCoreAPI) DockerRemoveContainer(containerID string, force bool) error        { return nil }
+func (s *stubCoreAPI) DockerPrune(what string) (map[string]interface{}, error)           { return nil, nil }
+func (s *stubCoreAPI) ListNotifyChannels() ([]map[string]interface{}, error)             { return nil, nil }
+func (s *stubCoreAPI) TestNotifyChannel(id uint) error                                   { return nil }
+func (s *stubCoreAPI) ListAlertRules() ([]map[string]interface{}, error)                 { return nil, nil }
+func (s *stubCoreAPI) CreateAlertRule(name, metric, operator string, threshold float64, duration int) (uint, error) {
+	return 1, nil
+}
+func (s *stubCoreAPI) DeleteAlertRule(id uint) error                                     { return nil }
+func (s *stubCoreAPI) GetSystemInfo() (map[string]interface{}, error)                    { return nil, nil }
+
 func newTestRegistry() *ToolRegistry {
 	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError}))
 	r := NewToolRegistry(&stubCoreAPI{}, logger)

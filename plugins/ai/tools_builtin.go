@@ -1788,6 +1788,9 @@ func registerMemoryTools(r *ToolRegistry) {
 
 	// ── PHP management tools ──
 	registerPHPTools(r)
+
+	// ── NLOps tools (AI direct operations) ──
+	registerNLOpsTools(r)
 }
 
 // registerPHPTools adds PHP management AI tools.
@@ -1815,6 +1818,593 @@ func registerPHPTools(r *ToolRegistry) {
 		ReadOnly: true,
 		Handler: func(ctx context.Context, args json.RawMessage) (interface{}, error) {
 			return r.coreAPI.PHPListSites()
+		},
+	})
+}
+
+// registerNLOpsTools adds AI tools for direct panel operations (NLOps).
+func registerNLOpsTools(r *ToolRegistry) {
+	// ── Host management ──
+
+	r.Register(&Tool{
+		Name:        "delete_host",
+		Description: "Delete a reverse proxy site (domain) by its ID. This is irreversible.",
+		Parameters: jsonSchema(map[string]interface{}{
+			"type": "object",
+			"properties": map[string]interface{}{
+				"id": map[string]interface{}{
+					"type":        "number",
+					"description": "The host ID to delete",
+				},
+			},
+			"required": []string{"id"},
+		}),
+		NeedsConfirmation: true,
+		AdminOnly:         true,
+		Handler: func(ctx context.Context, args json.RawMessage) (interface{}, error) {
+			var p struct {
+				ID uint `json:"id"`
+			}
+			if err := json.Unmarshal(args, &p); err != nil {
+				return nil, fmt.Errorf("parse args: %w", err)
+			}
+			if err := r.coreAPI.DeleteHost(p.ID); err != nil {
+				return nil, err
+			}
+			return map[string]interface{}{"message": fmt.Sprintf("Host %d deleted successfully", p.ID)}, nil
+		},
+	})
+
+	r.Register(&Tool{
+		Name:        "toggle_host",
+		Description: "Enable or disable a reverse proxy site. Toggles the current enabled/disabled state.",
+		Parameters: jsonSchema(map[string]interface{}{
+			"type": "object",
+			"properties": map[string]interface{}{
+				"id": map[string]interface{}{
+					"type":        "number",
+					"description": "The host ID to toggle",
+				},
+			},
+			"required": []string{"id"},
+		}),
+		NeedsConfirmation: true,
+		AdminOnly:         true,
+		Handler: func(ctx context.Context, args json.RawMessage) (interface{}, error) {
+			var p struct {
+				ID uint `json:"id"`
+			}
+			if err := json.Unmarshal(args, &p); err != nil {
+				return nil, fmt.Errorf("parse args: %w", err)
+			}
+			if err := r.coreAPI.ToggleHost(p.ID); err != nil {
+				return nil, err
+			}
+			return map[string]interface{}{"message": fmt.Sprintf("Host %d toggled successfully", p.ID)}, nil
+		},
+	})
+
+	r.Register(&Tool{
+		Name:        "clone_host",
+		Description: "Clone an existing reverse proxy site configuration to a new domain.",
+		Parameters: jsonSchema(map[string]interface{}{
+			"type": "object",
+			"properties": map[string]interface{}{
+				"id": map[string]interface{}{
+					"type":        "number",
+					"description": "The source host ID to clone",
+				},
+				"new_domain": map[string]interface{}{
+					"type":        "string",
+					"description": "The new domain name for the cloned site",
+				},
+			},
+			"required": []string{"id", "new_domain"},
+		}),
+		NeedsConfirmation: true,
+		AdminOnly:         true,
+		Handler: func(ctx context.Context, args json.RawMessage) (interface{}, error) {
+			var p struct {
+				ID        uint   `json:"id"`
+				NewDomain string `json:"new_domain"`
+			}
+			if err := json.Unmarshal(args, &p); err != nil {
+				return nil, fmt.Errorf("parse args: %w", err)
+			}
+			newID, err := r.coreAPI.CloneHost(p.ID, p.NewDomain)
+			if err != nil {
+				return nil, err
+			}
+			return map[string]interface{}{
+				"new_host_id": newID,
+				"domain":      p.NewDomain,
+				"message":     fmt.Sprintf("Host cloned successfully. New host ID: %d", newID),
+			}, nil
+		},
+	})
+
+	// ── Caddy management ──
+
+	r.Register(&Tool{
+		Name:        "caddy_status",
+		Description: "Get the current status of the Caddy web server, including version, running state, and configuration path.",
+		Parameters: jsonSchema(map[string]interface{}{
+			"type":       "object",
+			"properties": map[string]interface{}{},
+		}),
+		ReadOnly: true,
+		Handler: func(ctx context.Context, args json.RawMessage) (interface{}, error) {
+			return r.coreAPI.GetCaddyStatus()
+		},
+	})
+
+	r.Register(&Tool{
+		Name:        "caddy_restart",
+		Description: "Restart the Caddy web server. Use this when Caddy is unresponsive or after major configuration changes.",
+		Parameters: jsonSchema(map[string]interface{}{
+			"type":       "object",
+			"properties": map[string]interface{}{},
+		}),
+		NeedsConfirmation: true,
+		AdminOnly:         true,
+		Handler: func(ctx context.Context, args json.RawMessage) (interface{}, error) {
+			if err := r.coreAPI.RestartCaddy(); err != nil {
+				return nil, err
+			}
+			return map[string]interface{}{"message": "Caddy restarted successfully"}, nil
+		},
+	})
+
+	r.Register(&Tool{
+		Name:        "caddy_reload",
+		Description: "Reload Caddy configuration without downtime. Use this after making site changes.",
+		Parameters: jsonSchema(map[string]interface{}{
+			"type":       "object",
+			"properties": map[string]interface{}{},
+		}),
+		AdminOnly: true,
+		Handler: func(ctx context.Context, args json.RawMessage) (interface{}, error) {
+			if err := r.coreAPI.ReloadCaddy(); err != nil {
+				return nil, err
+			}
+			return map[string]interface{}{"message": "Caddy configuration reloaded successfully"}, nil
+		},
+	})
+
+	// ── Deploy lifecycle ──
+
+	r.Register(&Tool{
+		Name:        "start_project",
+		Description: "Start a stopped deployment project by its ID.",
+		Parameters: jsonSchema(map[string]interface{}{
+			"type": "object",
+			"properties": map[string]interface{}{
+				"project_id": map[string]interface{}{
+					"type":        "number",
+					"description": "The project ID to start",
+				},
+			},
+			"required": []string{"project_id"},
+		}),
+		NeedsConfirmation: true,
+		AdminOnly:         true,
+		Handler: func(ctx context.Context, args json.RawMessage) (interface{}, error) {
+			var p struct {
+				ProjectID uint `json:"project_id"`
+			}
+			if err := json.Unmarshal(args, &p); err != nil {
+				return nil, fmt.Errorf("parse args: %w", err)
+			}
+			if err := r.coreAPI.StartProject(p.ProjectID); err != nil {
+				return nil, err
+			}
+			return map[string]interface{}{"message": fmt.Sprintf("Project %d start requested", p.ProjectID)}, nil
+		},
+	})
+
+	r.Register(&Tool{
+		Name:        "stop_project",
+		Description: "Stop a running deployment project by its ID.",
+		Parameters: jsonSchema(map[string]interface{}{
+			"type": "object",
+			"properties": map[string]interface{}{
+				"project_id": map[string]interface{}{
+					"type":        "number",
+					"description": "The project ID to stop",
+				},
+			},
+			"required": []string{"project_id"},
+		}),
+		NeedsConfirmation: true,
+		AdminOnly:         true,
+		Handler: func(ctx context.Context, args json.RawMessage) (interface{}, error) {
+			var p struct {
+				ProjectID uint `json:"project_id"`
+			}
+			if err := json.Unmarshal(args, &p); err != nil {
+				return nil, fmt.Errorf("parse args: %w", err)
+			}
+			if err := r.coreAPI.StopProject(p.ProjectID); err != nil {
+				return nil, err
+			}
+			return map[string]interface{}{"message": fmt.Sprintf("Project %d stop requested", p.ProjectID)}, nil
+		},
+	})
+
+	r.Register(&Tool{
+		Name:        "rollback_project",
+		Description: "Rollback a deployment project to a specific build number. Check deployment history first to find the correct build number.",
+		Parameters: jsonSchema(map[string]interface{}{
+			"type": "object",
+			"properties": map[string]interface{}{
+				"project_id": map[string]interface{}{
+					"type":        "number",
+					"description": "The project ID",
+				},
+				"build_number": map[string]interface{}{
+					"type":        "number",
+					"description": "The build number to rollback to",
+				},
+			},
+			"required": []string{"project_id", "build_number"},
+		}),
+		NeedsConfirmation: true,
+		AdminOnly:         true,
+		Handler: func(ctx context.Context, args json.RawMessage) (interface{}, error) {
+			var p struct {
+				ProjectID   uint `json:"project_id"`
+				BuildNumber int  `json:"build_number"`
+			}
+			if err := json.Unmarshal(args, &p); err != nil {
+				return nil, fmt.Errorf("parse args: %w", err)
+			}
+			if err := r.coreAPI.RollbackProject(p.ProjectID, p.BuildNumber); err != nil {
+				return nil, err
+			}
+			return map[string]interface{}{
+				"message": fmt.Sprintf("Project %d rollback to build #%d requested", p.ProjectID, p.BuildNumber),
+			}, nil
+		},
+	})
+
+	// ── Docker cleanup ──
+
+	r.Register(&Tool{
+		Name:        "docker_remove_container",
+		Description: "Remove a Docker container by its ID or name. Use force=true to remove a running container.",
+		Parameters: jsonSchema(map[string]interface{}{
+			"type": "object",
+			"properties": map[string]interface{}{
+				"container_id": map[string]interface{}{
+					"type":        "string",
+					"description": "Container ID or name",
+				},
+				"force": map[string]interface{}{
+					"type":        "boolean",
+					"description": "Force remove even if running (default: false)",
+				},
+			},
+			"required": []string{"container_id"},
+		}),
+		NeedsConfirmation: true,
+		AdminOnly:         true,
+		Handler: func(ctx context.Context, args json.RawMessage) (interface{}, error) {
+			var p struct {
+				ContainerID string `json:"container_id"`
+				Force       bool   `json:"force"`
+			}
+			if err := json.Unmarshal(args, &p); err != nil {
+				return nil, fmt.Errorf("parse args: %w", err)
+			}
+			if err := r.coreAPI.DockerRemoveContainer(p.ContainerID, p.Force); err != nil {
+				return nil, err
+			}
+			return map[string]interface{}{
+				"message": fmt.Sprintf("Container %s removed successfully", p.ContainerID),
+			}, nil
+		},
+	})
+
+	r.Register(&Tool{
+		Name:        "docker_prune",
+		Description: "Clean up unused Docker resources. Specify what to prune: containers, images, volumes, or all.",
+		Parameters: jsonSchema(map[string]interface{}{
+			"type": "object",
+			"properties": map[string]interface{}{
+				"what": map[string]interface{}{
+					"type":        "string",
+					"description": "What to prune: containers, images, volumes, or all",
+					"enum":        []string{"containers", "images", "volumes", "all"},
+				},
+			},
+			"required": []string{"what"},
+		}),
+		NeedsConfirmation: true,
+		AdminOnly:         true,
+		Handler: func(ctx context.Context, args json.RawMessage) (interface{}, error) {
+			var p struct {
+				What string `json:"what"`
+			}
+			if err := json.Unmarshal(args, &p); err != nil {
+				return nil, fmt.Errorf("parse args: %w", err)
+			}
+			result, err := r.coreAPI.DockerPrune(p.What)
+			if err != nil {
+				return nil, err
+			}
+			return result, nil
+		},
+	})
+
+	// ── Notification channels ──
+
+	r.Register(&Tool{
+		Name:        "list_notify_channels",
+		Description: "List all configured notification channels (Webhook, Email, Discord, Telegram) and their status.",
+		Parameters: jsonSchema(map[string]interface{}{
+			"type":       "object",
+			"properties": map[string]interface{}{},
+		}),
+		ReadOnly: true,
+		Handler: func(ctx context.Context, args json.RawMessage) (interface{}, error) {
+			return r.coreAPI.ListNotifyChannels()
+		},
+	})
+
+	r.Register(&Tool{
+		Name:        "test_notify_channel",
+		Description: "Send a test message to a notification channel to verify it works.",
+		Parameters: jsonSchema(map[string]interface{}{
+			"type": "object",
+			"properties": map[string]interface{}{
+				"id": map[string]interface{}{
+					"type":        "number",
+					"description": "The notification channel ID to test",
+				},
+			},
+			"required": []string{"id"},
+		}),
+		AdminOnly: true,
+		Handler: func(ctx context.Context, args json.RawMessage) (interface{}, error) {
+			var p struct {
+				ID uint `json:"id"`
+			}
+			if err := json.Unmarshal(args, &p); err != nil {
+				return nil, fmt.Errorf("parse args: %w", err)
+			}
+			if err := r.coreAPI.TestNotifyChannel(p.ID); err != nil {
+				return nil, err
+			}
+			return map[string]interface{}{"message": "Test notification sent successfully"}, nil
+		},
+	})
+
+	// ── Monitoring alert rules ──
+
+	r.Register(&Tool{
+		Name:        "list_alert_rules",
+		Description: "List all monitoring alert rules with their configuration and current status.",
+		Parameters: jsonSchema(map[string]interface{}{
+			"type":       "object",
+			"properties": map[string]interface{}{},
+		}),
+		ReadOnly: true,
+		Handler: func(ctx context.Context, args json.RawMessage) (interface{}, error) {
+			return r.coreAPI.ListAlertRules()
+		},
+	})
+
+	r.Register(&Tool{
+		Name:        "create_alert_rule",
+		Description: "Create a new monitoring alert rule. Example: alert when cpu_percent > 90 for 5 minutes.",
+		Parameters: jsonSchema(map[string]interface{}{
+			"type": "object",
+			"properties": map[string]interface{}{
+				"name": map[string]interface{}{
+					"type":        "string",
+					"description": "Name of the alert rule",
+				},
+				"metric": map[string]interface{}{
+					"type":        "string",
+					"description": "Metric to monitor: cpu_percent, memory_percent, disk_percent, load1",
+				},
+				"operator": map[string]interface{}{
+					"type":        "string",
+					"description": "Comparison operator: >, <, >=, <=, ==",
+				},
+				"threshold": map[string]interface{}{
+					"type":        "number",
+					"description": "Threshold value",
+				},
+				"duration": map[string]interface{}{
+					"type":        "number",
+					"description": "Duration in minutes before alerting",
+				},
+			},
+			"required": []string{"name", "metric", "operator", "threshold", "duration"},
+		}),
+		NeedsConfirmation: true,
+		AdminOnly:         true,
+		Handler: func(ctx context.Context, args json.RawMessage) (interface{}, error) {
+			var p struct {
+				Name      string  `json:"name"`
+				Metric    string  `json:"metric"`
+				Operator  string  `json:"operator"`
+				Threshold float64 `json:"threshold"`
+				Duration  int     `json:"duration"`
+			}
+			if err := json.Unmarshal(args, &p); err != nil {
+				return nil, fmt.Errorf("parse args: %w", err)
+			}
+			id, err := r.coreAPI.CreateAlertRule(p.Name, p.Metric, p.Operator, p.Threshold, p.Duration)
+			if err != nil {
+				return nil, err
+			}
+			return map[string]interface{}{
+				"id":      id,
+				"message": fmt.Sprintf("Alert rule '%s' created (ID: %d)", p.Name, id),
+			}, nil
+		},
+	})
+
+	r.Register(&Tool{
+		Name:        "delete_alert_rule",
+		Description: "Delete a monitoring alert rule by its ID.",
+		Parameters: jsonSchema(map[string]interface{}{
+			"type": "object",
+			"properties": map[string]interface{}{
+				"id": map[string]interface{}{
+					"type":        "number",
+					"description": "The alert rule ID to delete",
+				},
+			},
+			"required": []string{"id"},
+		}),
+		NeedsConfirmation: true,
+		AdminOnly:         true,
+		Handler: func(ctx context.Context, args json.RawMessage) (interface{}, error) {
+			var p struct {
+				ID uint `json:"id"`
+			}
+			if err := json.Unmarshal(args, &p); err != nil {
+				return nil, fmt.Errorf("parse args: %w", err)
+			}
+			if err := r.coreAPI.DeleteAlertRule(p.ID); err != nil {
+				return nil, err
+			}
+			return map[string]interface{}{"message": fmt.Sprintf("Alert rule %d deleted", p.ID)}, nil
+		},
+	})
+
+	// ── System information ──
+
+	r.Register(&Tool{
+		Name:        "get_system_info",
+		Description: "Get detailed system information including hostname, OS, kernel version, uptime, CPU cores, and architecture.",
+		Parameters: jsonSchema(map[string]interface{}{
+			"type":       "object",
+			"properties": map[string]interface{}{},
+		}),
+		ReadOnly: true,
+		Handler: func(ctx context.Context, args json.RawMessage) (interface{}, error) {
+			return r.coreAPI.GetSystemInfo()
+		},
+	})
+
+	// ── One-sentence deployment ──
+
+	r.Register(&Tool{
+		Name:        "auto_deploy",
+		Description: "One-command deployment: given a Git URL and optional domain, automatically create a project, detect framework, trigger build, and set up reverse proxy with HTTPS. The build runs asynchronously — use get_project to check status afterward.",
+		Parameters: jsonSchema(map[string]interface{}{
+			"type": "object",
+			"properties": map[string]interface{}{
+				"git_url": map[string]interface{}{
+					"type":        "string",
+					"description": "Git repository URL (e.g. https://github.com/user/repo)",
+				},
+				"domain": map[string]interface{}{
+					"type":        "string",
+					"description": "Domain to deploy to (e.g. app.example.com). If empty, no reverse proxy is created.",
+				},
+				"branch": map[string]interface{}{
+					"type":        "string",
+					"description": "Git branch (default: main)",
+				},
+				"deploy_mode": map[string]interface{}{
+					"type":        "string",
+					"description": "Deployment mode: bare or docker (default: docker)",
+					"enum":        []string{"bare", "docker"},
+				},
+				"name": map[string]interface{}{
+					"type":        "string",
+					"description": "Project name. If empty, derived from the repository name.",
+				},
+			},
+			"required": []string{"git_url"},
+		}),
+		NeedsConfirmation: true,
+		AdminOnly:         true,
+		Handler: func(ctx context.Context, args json.RawMessage) (interface{}, error) {
+			var p struct {
+				GitURL     string `json:"git_url"`
+				Domain     string `json:"domain"`
+				Branch     string `json:"branch"`
+				DeployMode string `json:"deploy_mode"`
+				Name       string `json:"name"`
+			}
+			if err := json.Unmarshal(args, &p); err != nil {
+				return nil, fmt.Errorf("parse args: %w", err)
+			}
+
+			// Defaults
+			if p.Branch == "" {
+				p.Branch = "main"
+			}
+			if p.DeployMode == "" {
+				p.DeployMode = "docker"
+			}
+			if p.Name == "" {
+				// Derive name from git URL: https://github.com/user/repo.git → repo
+				parts := strings.Split(strings.TrimSuffix(p.GitURL, ".git"), "/")
+				if len(parts) > 0 {
+					p.Name = parts[len(parts)-1]
+				}
+				if p.Name == "" {
+					p.Name = "auto-project"
+				}
+			}
+
+			// Step 1: Create project
+			projectID, err := r.coreAPI.CreateProject(pluginpkg.CreateProjectRequest{
+				Name:       p.Name,
+				GitURL:     p.GitURL,
+				GitBranch:  p.Branch,
+				Domain:     p.Domain,
+				DeployMode: p.DeployMode,
+				AutoDeploy: true,
+			})
+			if err != nil {
+				return nil, fmt.Errorf("create project: %w", err)
+			}
+
+			// Step 2: Trigger build
+			if err := r.coreAPI.TriggerBuild(projectID); err != nil {
+				return map[string]interface{}{
+					"project_id": projectID,
+					"status":     "created_but_build_failed_to_start",
+					"error":      err.Error(),
+					"message":    fmt.Sprintf("Project created (ID: %d) but build trigger failed: %v. Try trigger_build manually.", projectID, err),
+				}, nil
+			}
+
+			return map[string]interface{}{
+				"project_id":  projectID,
+				"name":        p.Name,
+				"domain":      p.Domain,
+				"deploy_mode": p.DeployMode,
+				"status":      "building",
+				"message":     fmt.Sprintf("Project '%s' created (ID: %d) and build started. Use get_project to check build status.", p.Name, projectID),
+			}, nil
+		},
+	})
+
+	// ── Inspection (placeholder — connected in Phase 3) ──
+
+	r.Register(&Tool{
+		Name:        "run_inspection",
+		Description: "Run a system health inspection that checks disk, memory, containers, SSL certificates, and generates an AI-powered summary report.",
+		Parameters: jsonSchema(map[string]interface{}{
+			"type":       "object",
+			"properties": map[string]interface{}{},
+		}),
+		ReadOnly:  true,
+		AdminOnly: true,
+		Handler: func(ctx context.Context, args json.RawMessage) (interface{}, error) {
+			if r.inspection == nil {
+				return nil, fmt.Errorf("inspection service not configured — enable daily inspection in AI settings")
+			}
+			return r.inspection.RunInspection()
 		},
 	})
 }
