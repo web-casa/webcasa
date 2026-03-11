@@ -492,4 +492,16 @@ export const phpAPI = {
     removeExtensionStreamUrl: (id, name) => `${api.defaults.baseURL}/plugins/php/runtimes/${id}/extensions/${name}`,
 }
 
+// ── Cron Jobs ──
+export const cronjobAPI = {
+    listTasks: (tag) => api.get('/plugins/cronjob/tasks', { params: { tag } }),
+    getTask: (id) => api.get(`/plugins/cronjob/tasks/${id}`),
+    createTask: (data) => api.post('/plugins/cronjob/tasks', data),
+    updateTask: (id, data) => api.put(`/plugins/cronjob/tasks/${id}`, data),
+    deleteTask: (id) => api.delete(`/plugins/cronjob/tasks/${id}`),
+    triggerTask: (id) => api.post(`/plugins/cronjob/tasks/${id}/trigger`),
+    taskLogs: (id, limit) => api.get(`/plugins/cronjob/tasks/${id}/logs`, { params: { limit } }),
+    allLogs: (limit) => api.get('/plugins/cronjob/logs', { params: { limit } }),
+}
+
 export default api

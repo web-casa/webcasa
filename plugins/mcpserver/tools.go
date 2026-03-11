@@ -362,6 +362,38 @@ func (ts *ToolService) RegisterTools(srv *mcp.Server) {
 		Title:       "Run System Inspection",
 		Description: "Run a system health inspection with AI-powered analysis.",
 	}, ts.handleRunInspection)
+
+	// ── Cron Jobs ──
+	mcp.AddTool(srv, &mcp.Tool{
+		Name:        "list_cron_jobs",
+		Title:       "List Cron Jobs",
+		Description: "List all scheduled cron jobs, optionally filtered by tag.",
+	}, ts.handleListCronJobs)
+	mcp.AddTool(srv, &mcp.Tool{
+		Name:        "get_cron_job_logs",
+		Title:       "Get Cron Job Logs",
+		Description: "Get execution logs for a cron job (or all recent logs if task_id is 0).",
+	}, ts.handleGetCronJobLogs)
+	mcp.AddTool(srv, &mcp.Tool{
+		Name:        "create_cron_job",
+		Title:       "Create Cron Job",
+		Description: "Create a new scheduled cron job with name, 5-field cron expression, and shell command.",
+	}, ts.handleCreateCronJob)
+	mcp.AddTool(srv, &mcp.Tool{
+		Name:        "update_cron_job",
+		Title:       "Update Cron Job",
+		Description: "Update an existing cron job's settings.",
+	}, ts.handleUpdateCronJob)
+	mcp.AddTool(srv, &mcp.Tool{
+		Name:        "delete_cron_job",
+		Title:       "Delete Cron Job",
+		Description: "Delete a cron job and all its execution logs.",
+	}, ts.handleDeleteCronJob)
+	mcp.AddTool(srv, &mcp.Tool{
+		Name:        "trigger_cron_job",
+		Title:       "Trigger Cron Job",
+		Description: "Manually trigger a cron job to run immediately.",
+	}, ts.handleTriggerCronJob)
 }
 
 // ──────────────────────────── Host Tools ────────────────────────────
@@ -1288,4 +1320,124 @@ func (ts *ToolService) handleRunInspection(ctx context.Context, req *mcp.CallToo
 	return &mcp.CallToolResult{
 		Content: []mcp.Content{&mcp.TextContent{Text: string(data)}},
 	}, nil, nil
+}
+
+// ──────────────────────────── Cron Jobs ────────────────────────────
+
+type listCronJobsInput struct {
+	Tag string `json:"tag" jsonschema:"description=Optional tag to filter jobs"`
+}
+
+type getCronJobLogsInput struct {
+	TaskID uint `json:"task_id" jsonschema:"description=Cron job ID (0 for all jobs)"`
+	Limit  int  `json:"limit" jsonschema:"description=Max number of log entries (default 50)"`
+}
+
+type createCronJobInput struct {
+	Name       string   `json:"name" jsonschema:"required,description=Human-readable name"`
+	Expression string   `json:"expression" jsonschema:"required,description=Standard 5-field cron expression"`
+	Command    string   `json:"command" jsonschema:"required,description=Shell command to execute"`
+	WorkingDir string   `json:"working_dir" jsonschema:"description=Working directory for the command"`
+	Tags       []string `json:"tags" jsonschema:"description=Tags for categorisation"`
+	TimeoutSec int      `json:"timeout_sec" jsonschema:"description=Execution timeout in seconds (default 300)"`
+}
+
+type updateCronJobInput struct {
+	ID         uint    `json:"id" jsonschema:"required,description=Cron job ID"`
+	Name       *string `json:"name" jsonschema:"description=New name"`
+	Expression *string `json:"expression" jsonschema:"description=New cron expression"`
+	Command    *string `json:"command" jsonschema:"description=New command"`
+	Enabled    *bool   `json:"enabled" jsonschema:"description=Enable or disable"`
+}
+
+type cronJobIDInput struct {
+	ID uint `json:"id" jsonschema:"required,description=Cron job ID"`
+}
+
+func (ts *ToolService) handleListCronJobs(ctx context.Context, req *mcp.CallToolRequest, input listCronJobsInput) (*mcp.CallToolResult, any, error) {
+	if r, denied := requirePerm(ctx, "cronjob:read"); denied {
+		return r, nil, nil
+	}
+	jobs, err := ts.coreAPI.CronJobList(input.Tag)
+	if err != nil {
+		r, _ := errorResult("failed to list cron jobs: " + err.Error())
+		return r, nil, nil
+	}
+	r, e := jsonText(jobs)
+	return r, nil, e
+}
+
+func (ts *ToolService) handleGetCronJobLogs(ctx context.Context, req *mcp.CallToolRequest, input getCronJobLogsInput) (*mcp.CallToolResult, any, error) {
+	if r, denied := requirePerm(ctx, "cronjob:read"); denied {
+		return r, nil, nil
+	}
+	logs, err := ts.coreAPI.CronJobLogs(input.TaskID, input.Limit)
+	if err != nil {
+		r, _ := errorResult("failed to get cron job logs: " + err.Error())
+		return r, nil, nil
+	}
+	r, e := jsonText(logs)
+	return r, nil, e
+}
+
+func (ts *ToolService) handleCreateCronJob(ctx context.Context, req *mcp.CallToolRequest, input createCronJobInput) (*mcp.CallToolResult, any, error) {
+	if r, denied := requirePerm(ctx, "cronjob:write"); denied {
+		return r, nil, nil
+	}
+	id, err := ts.coreAPI.CronJobCreate(input.Name, input.Expression, input.Command, input.WorkingDir, input.Tags, input.TimeoutSec)
+	if err != nil {
+		r, _ := errorResult("failed to create cron job: " + err.Error())
+		return r, nil, nil
+	}
+	r, e := jsonText(map[string]interface{}{"id": id, "message": "cron job created"})
+	return r, nil, e
+}
+
+func (ts *ToolService) handleUpdateCronJob(ctx context.Context, req *mcp.CallToolRequest, input updateCronJobInput) (*mcp.CallToolResult, any, error) {
+	if r, denied := requirePerm(ctx, "cronjob:write"); denied {
+		return r, nil, nil
+	}
+	updates := make(map[string]interface{})
+	if input.Name != nil {
+		updates["name"] = *input.Name
+	}
+	if input.Expression != nil {
+		updates["expression"] = *input.Expression
+	}
+	if input.Command != nil {
+		updates["command"] = *input.Command
+	}
+	if input.Enabled != nil {
+		updates["enabled"] = *input.Enabled
+	}
+	if err := ts.coreAPI.CronJobUpdate(input.ID, updates); err != nil {
+		r, _ := errorResult("failed to update cron job: " + err.Error())
+		return r, nil, nil
+	}
+	r, e := jsonText(map[string]interface{}{"message": "cron job updated"})
+	return r, nil, e
+}
+
+func (ts *ToolService) handleDeleteCronJob(ctx context.Context, req *mcp.CallToolRequest, input cronJobIDInput) (*mcp.CallToolResult, any, error) {
+	if r, denied := requirePerm(ctx, "cronjob:write"); denied {
+		return r, nil, nil
+	}
+	if err := ts.coreAPI.CronJobDelete(input.ID); err != nil {
+		r, _ := errorResult("failed to delete cron job: " + err.Error())
+		return r, nil, nil
+	}
+	r, e := jsonText(map[string]interface{}{"message": "cron job deleted"})
+	return r, nil, e
+}
+
+func (ts *ToolService) handleTriggerCronJob(ctx context.Context, req *mcp.CallToolRequest, input cronJobIDInput) (*mcp.CallToolResult, any, error) {
+	if r, denied := requirePerm(ctx, "cronjob:write"); denied {
+		return r, nil, nil
+	}
+	if err := ts.coreAPI.CronJobTrigger(input.ID); err != nil {
+		r, _ := errorResult("failed to trigger cron job: " + err.Error())
+		return r, nil, nil
+	}
+	r, e := jsonText(map[string]interface{}{"message": "cron job triggered"})
+	return r, nil, e
 }

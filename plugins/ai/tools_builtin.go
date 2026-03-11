@@ -1791,6 +1791,9 @@ func registerMemoryTools(r *ToolRegistry) {
 
 	// ── NLOps tools (AI direct operations) ──
 	registerNLOpsTools(r)
+
+	// ── Cron job tools ──
+	registerCronJobTools(r)
 }
 
 // registerPHPTools adds PHP management AI tools.
@@ -2405,6 +2408,240 @@ func registerNLOpsTools(r *ToolRegistry) {
 				return nil, fmt.Errorf("inspection service not configured — enable daily inspection in AI settings")
 			}
 			return r.inspection.RunInspection()
+		},
+	})
+}
+
+// registerCronJobTools adds AI tools for cron job management.
+func registerCronJobTools(r *ToolRegistry) {
+	r.Register(&Tool{
+		Name:        "list_cron_jobs",
+		Description: "List all scheduled cron jobs. Optionally filter by tag (e.g. 'backup', 'cleanup', 'deploy').",
+		Parameters: jsonSchema(map[string]interface{}{
+			"type": "object",
+			"properties": map[string]interface{}{
+				"tag": map[string]interface{}{
+					"type":        "string",
+					"description": "Optional tag to filter jobs (e.g. 'backup')",
+				},
+			},
+		}),
+		ReadOnly: true,
+		Handler: func(ctx context.Context, args json.RawMessage) (interface{}, error) {
+			var p struct {
+				Tag string `json:"tag"`
+			}
+			_ = json.Unmarshal(args, &p)
+			return r.coreAPI.CronJobList(p.Tag)
+		},
+	})
+
+	r.Register(&Tool{
+		Name:        "get_cron_job_logs",
+		Description: "Get execution logs for a cron job. If task_id is 0, returns recent logs across all jobs.",
+		Parameters: jsonSchema(map[string]interface{}{
+			"type": "object",
+			"properties": map[string]interface{}{
+				"task_id": map[string]interface{}{
+					"type":        "integer",
+					"description": "Cron job ID (0 for all jobs)",
+				},
+				"limit": map[string]interface{}{
+					"type":        "integer",
+					"description": "Max number of log entries to return (default 20)",
+				},
+			},
+		}),
+		ReadOnly: true,
+		Handler: func(ctx context.Context, args json.RawMessage) (interface{}, error) {
+			var p struct {
+				TaskID uint `json:"task_id"`
+				Limit  int  `json:"limit"`
+			}
+			_ = json.Unmarshal(args, &p)
+			if p.Limit <= 0 {
+				p.Limit = 20
+			}
+			return r.coreAPI.CronJobLogs(p.TaskID, p.Limit)
+		},
+	})
+
+	r.Register(&Tool{
+		Name:        "create_cron_job",
+		Description: "Create a new scheduled cron job. Expression uses standard 5-field cron format (minute hour day month weekday). Examples: '*/5 * * * *' (every 5 min), '0 3 * * *' (daily at 3am), '0 0 * * 0' (weekly).",
+		Parameters: jsonSchema(map[string]interface{}{
+			"type": "object",
+			"properties": map[string]interface{}{
+				"name": map[string]interface{}{
+					"type":        "string",
+					"description": "Human-readable name for the job",
+				},
+				"expression": map[string]interface{}{
+					"type":        "string",
+					"description": "Standard 5-field cron expression (minute hour day month weekday)",
+				},
+				"command": map[string]interface{}{
+					"type":        "string",
+					"description": "Shell command to execute",
+				},
+				"working_dir": map[string]interface{}{
+					"type":        "string",
+					"description": "Working directory for the command (optional)",
+				},
+				"tags": map[string]interface{}{
+					"type":        "array",
+					"items":       map[string]interface{}{"type": "string"},
+					"description": "Tags for categorisation (e.g. ['backup', 'cleanup'])",
+				},
+				"timeout_sec": map[string]interface{}{
+					"type":        "integer",
+					"description": "Execution timeout in seconds (default 300)",
+				},
+			},
+			"required": []string{"name", "expression", "command"},
+		}),
+		NeedsConfirmation: true,
+		AdminOnly:         true,
+		Handler: func(ctx context.Context, args json.RawMessage) (interface{}, error) {
+			var p struct {
+				Name       string   `json:"name"`
+				Expression string   `json:"expression"`
+				Command    string   `json:"command"`
+				WorkingDir string   `json:"working_dir"`
+				Tags       []string `json:"tags"`
+				TimeoutSec int      `json:"timeout_sec"`
+			}
+			if err := json.Unmarshal(args, &p); err != nil {
+				return nil, fmt.Errorf("parse args: %w", err)
+			}
+			id, err := r.coreAPI.CronJobCreate(p.Name, p.Expression, p.Command, p.WorkingDir, p.Tags, p.TimeoutSec)
+			if err != nil {
+				return nil, err
+			}
+			return map[string]interface{}{
+				"id":      id,
+				"message": fmt.Sprintf("Cron job '%s' created (ID: %d)", p.Name, id),
+			}, nil
+		},
+	})
+
+	r.Register(&Tool{
+		Name:        "update_cron_job",
+		Description: "Update an existing cron job's settings (name, expression, command, enabled status, etc.).",
+		Parameters: jsonSchema(map[string]interface{}{
+			"type": "object",
+			"properties": map[string]interface{}{
+				"id": map[string]interface{}{
+					"type":        "integer",
+					"description": "Cron job ID to update",
+				},
+				"name": map[string]interface{}{
+					"type":        "string",
+					"description": "New name (optional)",
+				},
+				"expression": map[string]interface{}{
+					"type":        "string",
+					"description": "New cron expression (optional)",
+				},
+				"command": map[string]interface{}{
+					"type":        "string",
+					"description": "New command (optional)",
+				},
+				"enabled": map[string]interface{}{
+					"type":        "boolean",
+					"description": "Enable or disable the job (optional)",
+				},
+			},
+			"required": []string{"id"},
+		}),
+		NeedsConfirmation: true,
+		AdminOnly:         true,
+		Handler: func(ctx context.Context, args json.RawMessage) (interface{}, error) {
+			var p struct {
+				ID         uint    `json:"id"`
+				Name       *string `json:"name"`
+				Expression *string `json:"expression"`
+				Command    *string `json:"command"`
+				Enabled    *bool   `json:"enabled"`
+			}
+			if err := json.Unmarshal(args, &p); err != nil {
+				return nil, fmt.Errorf("parse args: %w", err)
+			}
+			updates := make(map[string]interface{})
+			if p.Name != nil {
+				updates["name"] = *p.Name
+			}
+			if p.Expression != nil {
+				updates["expression"] = *p.Expression
+			}
+			if p.Command != nil {
+				updates["command"] = *p.Command
+			}
+			if p.Enabled != nil {
+				updates["enabled"] = *p.Enabled
+			}
+			if err := r.coreAPI.CronJobUpdate(p.ID, updates); err != nil {
+				return nil, err
+			}
+			return map[string]interface{}{"message": fmt.Sprintf("Cron job %d updated", p.ID)}, nil
+		},
+	})
+
+	r.Register(&Tool{
+		Name:        "delete_cron_job",
+		Description: "Delete a cron job and all its execution logs.",
+		Parameters: jsonSchema(map[string]interface{}{
+			"type": "object",
+			"properties": map[string]interface{}{
+				"id": map[string]interface{}{
+					"type":        "integer",
+					"description": "Cron job ID to delete",
+				},
+			},
+			"required": []string{"id"},
+		}),
+		NeedsConfirmation: true,
+		AdminOnly:         true,
+		Handler: func(ctx context.Context, args json.RawMessage) (interface{}, error) {
+			var p struct {
+				ID uint `json:"id"`
+			}
+			if err := json.Unmarshal(args, &p); err != nil {
+				return nil, fmt.Errorf("parse args: %w", err)
+			}
+			if err := r.coreAPI.CronJobDelete(p.ID); err != nil {
+				return nil, err
+			}
+			return map[string]interface{}{"message": fmt.Sprintf("Cron job %d deleted", p.ID)}, nil
+		},
+	})
+
+	r.Register(&Tool{
+		Name:        "trigger_cron_job",
+		Description: "Manually trigger a cron job to run immediately, regardless of its schedule.",
+		Parameters: jsonSchema(map[string]interface{}{
+			"type": "object",
+			"properties": map[string]interface{}{
+				"id": map[string]interface{}{
+					"type":        "integer",
+					"description": "Cron job ID to trigger",
+				},
+			},
+			"required": []string{"id"},
+		}),
+		NeedsConfirmation: true,
+		AdminOnly:         true,
+		Handler: func(ctx context.Context, args json.RawMessage) (interface{}, error) {
+			var p struct {
+				ID uint `json:"id"`
+			}
+			if err := json.Unmarshal(args, &p); err != nil {
+				return nil, fmt.Errorf("parse args: %w", err)
+			}
+			if err := r.coreAPI.CronJobTrigger(p.ID); err != nil {
+				return nil, err
+			}
+			return map[string]interface{}{"message": fmt.Sprintf("Cron job %d triggered", p.ID)}, nil
 		},
 	})
 }

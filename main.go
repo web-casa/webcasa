@@ -32,6 +32,7 @@ import (
 	monitoringplugin "github.com/web-casa/webcasa/plugins/monitoring"
 	firewallplugin "github.com/web-casa/webcasa/plugins/firewall"
 	phpplugin "github.com/web-casa/webcasa/plugins/php"
+	cronjobplugin "github.com/web-casa/webcasa/plugins/cronjob"
 	"github.com/gin-contrib/cors"
 	"github.com/gin-gonic/gin"
 	"golang.org/x/crypto/bcrypt"
@@ -319,6 +320,12 @@ func main() {
 			Type: e.Type, Title: title, Message: formatEventMessage(e), Data: e.Payload, Time: e.Time,
 		})
 	})
+	eventBus.Subscribe("cronjob.task.failed", func(e plugin.Event) {
+		title := formatEventTitle(e)
+		notifier.Send(notify.NotifyEvent{
+			Type: e.Type, Title: title, Message: formatEventMessage(e), Data: e.Payload, Time: e.Time,
+		})
+	})
 
 	// ============ Version Checker ============
 	versionChecker := versioncheck.NewChecker(
@@ -393,7 +400,9 @@ func initPlugins(db *gorm.DB, protectedRouter *gin.RouterGroup, adminRouter *gin
 	if err := pluginMgr.Register(phpplugin.New()); err != nil {
 		log.Printf("⚠️  Register php plugin: %v", err)
 	}
-	// Future:
+	if err := pluginMgr.Register(cronjobplugin.New()); err != nil {
+		log.Printf("⚠️  Register cronjob plugin: %v", err)
+	}
 
 	// Initialise and start all enabled plugins.
 	if err := pluginMgr.InitAll(); err != nil {
@@ -466,6 +475,9 @@ func formatEventTitle(e plugin.Event) string {
 		return fmt.Sprintf("Build Success: %s", projectName)
 	case "deploy.trigger_build":
 		return fmt.Sprintf("Build Triggered: %s", projectName)
+	case "cronjob.task.failed":
+		taskName, _ := e.Payload["task_name"].(string)
+		return fmt.Sprintf("Cron Job Failed: %s", taskName)
 	default:
 		return e.Type
 	}

@@ -28,6 +28,7 @@ import TemplateMarket from './pages/TemplateMarket.jsx'
 import PluginsPage from './pages/PluginsPage.jsx'
 import FirewallManager from './pages/FirewallManager.jsx'
 import PHPManager from './pages/PHPManager.jsx'
+import CronJobManager from './pages/CronJobManager.jsx'
 
 function ProtectedRoute({ children }) {
     const token = useAuthStore((s) => s.token)
@@ -79,6 +80,7 @@ export default function App() {
                     <Route path="store/templates" element={<TemplateMarket />} />
                     <Route path="firewall" element={<FirewallManager />} />
                     <Route path="php" element={<PHPManager />} />
+                    <Route path="cronjob" element={<CronJobManager />} />
                     <Route path="plugins" element={<PluginsPage />} />
 
                     {/* Redirects: old standalone pages → Settings */}

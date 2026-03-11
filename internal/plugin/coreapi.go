@@ -14,6 +14,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/robfig/cron/v3"
 	"github.com/web-casa/webcasa/internal/caddy"
 	"github.com/web-casa/webcasa/internal/model"
 	"github.com/web-casa/webcasa/internal/service"
@@ -1501,6 +1502,154 @@ func (a *CoreAPIImpl) GetSystemInfo() (map[string]interface{}, error) {
 	result["arch"] = runtime.GOARCH
 
 	return result, nil
+}
+
+// ──────────────────────────────────────────────────
+// Cron job management
+// ──────────────────────────────────────────────────
+
+// CronJobList returns all cron jobs, optionally filtered by tag.
+func (a *CoreAPIImpl) CronJobList(tag string) ([]map[string]interface{}, error) {
+	var results []map[string]interface{}
+	q := a.db.Table("plugin_cronjob_tasks").Order("id ASC")
+	if tag != "" {
+		q = q.Where("tags LIKE ?", fmt.Sprintf(`%%"%s"%%`, tag))
+	}
+	if err := q.Find(&results).Error; err != nil {
+		return []map[string]interface{}{}, nil
+	}
+	return results, nil
+}
+
+// cronParser is used to validate 5-field cron expressions (with descriptors like @every).
+var cronParser = cron.NewParser(cron.Minute | cron.Hour | cron.Dom | cron.Month | cron.Dow | cron.Descriptor)
+
+// CronJobCreate creates a new cron job.
+func (a *CoreAPIImpl) CronJobCreate(name, expression, command, workingDir string, tags []string, timeoutSec int) (uint, error) {
+	if _, err := cronParser.Parse(expression); err != nil {
+		return 0, fmt.Errorf("invalid cron expression %q: %w", expression, err)
+	}
+	if timeoutSec <= 0 {
+		timeoutSec = 300
+	}
+	tagsJSON := "[]"
+	if len(tags) > 0 {
+		b, _ := json.Marshal(tags)
+		tagsJSON = string(b)
+	}
+	type cronTaskRow struct {
+		ID         uint      `gorm:"primaryKey"`
+		Name       string    `gorm:"size:128"`
+		Expression string    `gorm:"size:128"`
+		Command    string    `gorm:"type:text"`
+		WorkingDir string    `gorm:"size:512"`
+		Enabled    bool
+		Tags       string    `gorm:"type:text"`
+		TimeoutSec int
+		CreatedAt  time.Time
+		UpdatedAt  time.Time
+	}
+	row := cronTaskRow{
+		Name: name, Expression: expression, Command: command,
+		WorkingDir: workingDir, Enabled: true, Tags: tagsJSON,
+		TimeoutSec: timeoutSec,
+		CreatedAt:  time.Now(), UpdatedAt: time.Now(),
+	}
+	result := a.db.Table("plugin_cronjob_tasks").Create(&row)
+	if result.Error != nil {
+		return 0, fmt.Errorf("create cron job: %w", result.Error)
+	}
+	// Notify scheduler to register the new task.
+	if a.eventBus != nil {
+		a.eventBus.Publish(Event{
+			Type:    "cronjob.reload",
+			Source:  "core",
+			Payload: map[string]interface{}{"task_id": float64(row.ID), "action": "create"},
+		})
+	}
+	return row.ID, nil
+}
+
+// CronJobUpdate updates fields on an existing cron job.
+func (a *CoreAPIImpl) CronJobUpdate(id uint, updates map[string]interface{}) error {
+	// Validate expression if it's being updated.
+	if expr, ok := updates["expression"].(string); ok && expr != "" {
+		if _, err := cronParser.Parse(expr); err != nil {
+			return fmt.Errorf("invalid cron expression %q: %w", expr, err)
+		}
+	}
+	updates["updated_at"] = time.Now()
+	result := a.db.Table("plugin_cronjob_tasks").Where("id = ?", id).Updates(updates)
+	if result.Error != nil {
+		return fmt.Errorf("update cron job: %w", result.Error)
+	}
+	if result.RowsAffected == 0 {
+		return fmt.Errorf("cron job not found: %d", id)
+	}
+	// Notify scheduler to re-register the task.
+	if a.eventBus != nil {
+		a.eventBus.Publish(Event{
+			Type:    "cronjob.reload",
+			Source:  "core",
+			Payload: map[string]interface{}{"task_id": float64(id), "action": "update"},
+		})
+	}
+	return nil
+}
+
+// CronJobDelete deletes a cron job and its logs.
+func (a *CoreAPIImpl) CronJobDelete(id uint) error {
+	// Notify scheduler to remove the task before deleting from DB.
+	if a.eventBus != nil {
+		a.eventBus.Publish(Event{
+			Type:    "cronjob.reload",
+			Source:  "core",
+			Payload: map[string]interface{}{"task_id": float64(id), "action": "delete"},
+		})
+	}
+	a.db.Table("plugin_cronjob_logs").Where("task_id = ?", id).Delete(nil)
+	result := a.db.Table("plugin_cronjob_tasks").Where("id = ?", id).Delete(nil)
+	if result.Error != nil {
+		return fmt.Errorf("delete cron job: %w", result.Error)
+	}
+	if result.RowsAffected == 0 {
+		return fmt.Errorf("cron job not found: %d", id)
+	}
+	return nil
+}
+
+// CronJobLogs returns execution logs. If taskID is 0, returns all recent logs.
+func (a *CoreAPIImpl) CronJobLogs(taskID uint, limit int) ([]map[string]interface{}, error) {
+	if limit <= 0 {
+		limit = 50
+	}
+	var results []map[string]interface{}
+	q := a.db.Table("plugin_cronjob_logs").Order("id DESC").Limit(limit)
+	if taskID > 0 {
+		q = q.Where("task_id = ?", taskID)
+	}
+	if err := q.Find(&results).Error; err != nil {
+		return []map[string]interface{}{}, nil
+	}
+	return results, nil
+}
+
+// CronJobTrigger triggers a cron job to run immediately via EventBus.
+func (a *CoreAPIImpl) CronJobTrigger(id uint) error {
+	// Verify the task exists.
+	var count int64
+	a.db.Table("plugin_cronjob_tasks").Where("id = ?", id).Count(&count)
+	if count == 0 {
+		return fmt.Errorf("cron job not found: %d", id)
+	}
+	if a.eventBus != nil {
+		a.eventBus.Publish(Event{
+			Type:    "cronjob.trigger",
+			Source:  "core",
+			Payload: map[string]interface{}{"task_id": float64(id)},
+		})
+	}
+	return nil
 }
 
 // ──────────────────────────────────────────────────

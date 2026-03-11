@@ -149,6 +149,14 @@ type CoreAPI interface {
 
 	// ── NLOps: System information ──
 	GetSystemInfo() (map[string]interface{}, error)
+
+	// ── Cron job management ──
+	CronJobList(tag string) ([]map[string]interface{}, error)
+	CronJobCreate(name, expression, command, workingDir string, tags []string, timeoutSec int) (uint, error)
+	CronJobUpdate(id uint, updates map[string]interface{}) error
+	CronJobDelete(id uint) error
+	CronJobLogs(taskID uint, limit int) ([]map[string]interface{}, error)
+	CronJobTrigger(id uint) error
 }
 
 // UpdateHostRequest describes fields that can be changed on an existing host via AI.

@@ -132,6 +132,14 @@ func (s *stubCoreAPI) CreateAlertRule(name, metric, operator string, threshold f
 }
 func (s *stubCoreAPI) DeleteAlertRule(id uint) error                                     { return nil }
 func (s *stubCoreAPI) GetSystemInfo() (map[string]interface{}, error)                    { return nil, nil }
+func (s *stubCoreAPI) CronJobList(tag string) ([]map[string]interface{}, error)         { return nil, nil }
+func (s *stubCoreAPI) CronJobCreate(name, expression, command, workingDir string, tags []string, timeoutSec int) (uint, error) {
+	return 0, nil
+}
+func (s *stubCoreAPI) CronJobUpdate(id uint, updates map[string]interface{}) error       { return nil }
+func (s *stubCoreAPI) CronJobDelete(id uint) error                                       { return nil }
+func (s *stubCoreAPI) CronJobLogs(taskID uint, limit int) ([]map[string]interface{}, error) { return nil, nil }
+func (s *stubCoreAPI) CronJobTrigger(id uint) error                                      { return nil }
 
 // ── stub plugin ──
 
