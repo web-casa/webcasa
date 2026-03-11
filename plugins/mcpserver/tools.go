@@ -1325,33 +1325,33 @@ func (ts *ToolService) handleRunInspection(ctx context.Context, req *mcp.CallToo
 // ──────────────────────────── Cron Jobs ────────────────────────────
 
 type listCronJobsInput struct {
-	Tag string `json:"tag" jsonschema:"description=Optional tag to filter jobs"`
+	Tag string `json:"tag"`
 }
 
 type getCronJobLogsInput struct {
-	TaskID uint `json:"task_id" jsonschema:"description=Cron job ID (0 for all jobs)"`
-	Limit  int  `json:"limit" jsonschema:"description=Max number of log entries (default 50)"`
+	TaskID uint `json:"task_id"`
+	Limit  int  `json:"limit"`
 }
 
 type createCronJobInput struct {
-	Name       string   `json:"name" jsonschema:"required,description=Human-readable name"`
-	Expression string   `json:"expression" jsonschema:"required,description=Standard 5-field cron expression"`
-	Command    string   `json:"command" jsonschema:"required,description=Shell command to execute"`
-	WorkingDir string   `json:"working_dir" jsonschema:"description=Working directory for the command"`
-	Tags       []string `json:"tags" jsonschema:"description=Tags for categorisation"`
-	TimeoutSec int      `json:"timeout_sec" jsonschema:"description=Execution timeout in seconds (default 300)"`
+	Name       string   `json:"name" jsonschema:"required"`
+	Expression string   `json:"expression" jsonschema:"required"`
+	Command    string   `json:"command" jsonschema:"required"`
+	WorkingDir string   `json:"working_dir"`
+	Tags       []string `json:"tags"`
+	TimeoutSec int      `json:"timeout_sec"`
 }
 
 type updateCronJobInput struct {
-	ID         uint    `json:"id" jsonschema:"required,description=Cron job ID"`
-	Name       *string `json:"name" jsonschema:"description=New name"`
-	Expression *string `json:"expression" jsonschema:"description=New cron expression"`
-	Command    *string `json:"command" jsonschema:"description=New command"`
-	Enabled    *bool   `json:"enabled" jsonschema:"description=Enable or disable"`
+	ID         uint    `json:"id" jsonschema:"required"`
+	Name       *string `json:"name"`
+	Expression *string `json:"expression"`
+	Command    *string `json:"command"`
+	Enabled    *bool   `json:"enabled"`
 }
 
 type cronJobIDInput struct {
-	ID uint `json:"id" jsonschema:"required,description=Cron job ID"`
+	ID uint `json:"id" jsonschema:"required"`
 }
 
 func (ts *ToolService) handleListCronJobs(ctx context.Context, req *mcp.CallToolRequest, input listCronJobsInput) (*mcp.CallToolResult, any, error) {
