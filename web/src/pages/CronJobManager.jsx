@@ -153,7 +153,7 @@ export default function CronJobManager() {
     const viewTaskLogs = (taskId) => {
         setLogTaskId(taskId)
         setActiveTab('logs')
-        fetchLogs(taskId)
+        // fetchAll will be triggered by logTaskId change via useEffect
     }
 
     return (
@@ -305,7 +305,7 @@ export default function CronJobManager() {
 
             {/* Create / Edit Dialog */}
             <Dialog.Root open={dialogOpen} onOpenChange={setDialogOpen}>
-                <Dialog.Content style={{ maxWidth: 520 }}>
+                <Dialog.Content style={{ maxWidth: 520 }} aria-describedby={undefined}>
                     <Dialog.Title>{editId ? t('cronjob.edit_task') : t('cronjob.new_task')}</Dialog.Title>
 
                     <Flex direction="column" gap="3" mt="3">
@@ -373,7 +373,7 @@ export default function CronJobManager() {
 
             {/* Trigger Confirm Dialog */}
             <Dialog.Root open={triggerConfirm != null} onOpenChange={() => setTriggerConfirm(null)}>
-                <Dialog.Content style={{ maxWidth: 400 }}>
+                <Dialog.Content style={{ maxWidth: 400 }} aria-describedby={undefined}>
                     <Dialog.Title>{t('cronjob.trigger')}</Dialog.Title>
                     <Text>{t('cronjob.trigger_confirm')}</Text>
                     <Flex gap="3" mt="4" justify="end">
@@ -387,7 +387,7 @@ export default function CronJobManager() {
 
             {/* Delete Confirm Dialog */}
             <Dialog.Root open={deleteConfirm != null} onOpenChange={() => setDeleteConfirm(null)}>
-                <Dialog.Content style={{ maxWidth: 400 }}>
+                <Dialog.Content style={{ maxWidth: 400 }} aria-describedby={undefined}>
                     <Dialog.Title>{t('common.delete')}</Dialog.Title>
                     <Text>{t('cronjob.delete_confirm')}</Text>
                     <Flex gap="3" mt="4" justify="end">
