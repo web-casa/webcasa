@@ -97,13 +97,31 @@ func (h *Handler) ListSnapshots(c *gin.Context) {
 }
 
 // CreateSnapshot triggers a manual backup.
+// The backup runs asynchronously — the response contains the snapshot record
+// with status "running". The frontend should poll GET /status to track progress.
 func (h *Handler) CreateSnapshot(c *gin.Context) {
-	snap, err := h.svc.RunBackup("manual")
-	if err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+	// Pre-flight checks synchronously so errors are returned immediately.
+	if status := h.svc.CheckDependency(); !status.Available {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Kopia is not installed"})
 		return
 	}
-	c.JSON(http.StatusCreated, snap)
+	h.svc.mu.Lock()
+	if h.svc.running {
+		h.svc.mu.Unlock()
+		c.JSON(http.StatusConflict, gin.H{"error": "a backup is already running"})
+		return
+	}
+	h.svc.mu.Unlock()
+
+	// Start backup in the background.
+	go func() {
+		if _, err := h.svc.RunBackup("manual"); err != nil {
+			h.svc.logger.Error("manual backup failed", "err", err)
+		}
+	}()
+
+	// Return early with 202 Accepted.
+	c.JSON(http.StatusAccepted, gin.H{"message": "backup started"})
 }
 
 // RestoreSnapshot restores from a snapshot.

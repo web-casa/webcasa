@@ -268,7 +268,7 @@ func (k *KopiaClient) CreateSnapshot(ctx context.Context, sourcePath string) (st
 		}
 	}
 
-	return "unknown", 0, nil
+	return "", 0, fmt.Errorf("failed to parse snapshot ID from kopia output")
 }
 
 // ListSnapshots returns a list of snapshot IDs.
@@ -278,14 +278,37 @@ func (k *KopiaClient) ListSnapshots(ctx context.Context) (string, error) {
 
 // RestoreSnapshot restores a snapshot to the given target directory.
 func (k *KopiaClient) RestoreSnapshot(ctx context.Context, snapshotID, targetDir string) error {
+	if err := validateSnapshotID(snapshotID); err != nil {
+		return err
+	}
 	_, err := k.run(ctx, "snapshot", "restore", snapshotID, targetDir)
 	return err
 }
 
 // DeleteSnapshot removes a snapshot by ID.
 func (k *KopiaClient) DeleteSnapshot(ctx context.Context, snapshotID string) error {
+	if err := validateSnapshotID(snapshotID); err != nil {
+		return err
+	}
 	_, err := k.run(ctx, "snapshot", "delete", snapshotID, "--delete")
 	return err
+}
+
+// validateSnapshotID ensures the snapshot ID looks like a hex hash
+// and cannot be mistaken for a CLI flag (defense-in-depth).
+func validateSnapshotID(id string) error {
+	if id == "" {
+		return fmt.Errorf("empty snapshot ID")
+	}
+	if strings.HasPrefix(id, "-") {
+		return fmt.Errorf("invalid snapshot ID: %s", id)
+	}
+	for _, c := range id {
+		if !((c >= '0' && c <= '9') || (c >= 'a' && c <= 'f') || (c >= 'A' && c <= 'F')) {
+			return fmt.Errorf("invalid snapshot ID (non-hex character): %s", id)
+		}
+	}
+	return nil
 }
 
 // ── Retention Policy ──
@@ -323,10 +346,17 @@ func (k *KopiaClient) targetArgs(cfg *BackupConfig) []string {
 		return args
 
 	case "webdav":
-		return []string{
+		args := []string{
 			"webdav",
 			"--url=" + cfg.WebdavURL,
 		}
+		if cfg.WebdavUser != "" {
+			args = append(args, "--webdav-username="+cfg.WebdavUser)
+		}
+		if cfg.WebdavPassword != "" {
+			args = append(args, "--webdav-password="+cfg.WebdavPassword)
+		}
+		return args
 
 	case "sftp":
 		args := []string{
@@ -338,6 +368,9 @@ func (k *KopiaClient) targetArgs(cfg *BackupConfig) []string {
 		}
 		if cfg.SftpKeyPath != "" {
 			args = append(args, "--keyfile="+cfg.SftpKeyPath)
+		}
+		if cfg.SftpPassword != "" && cfg.SftpKeyPath == "" {
+			args = append(args, "--sftp-password="+cfg.SftpPassword)
 		}
 		return args
 
@@ -371,7 +404,7 @@ func (k *KopiaClient) secretEnv(cfg *BackupConfig) []string {
 		// Kopia doesn't support env vars for webdav credentials natively,
 		// so we still pass them as args but only for webdav.
 	case "sftp":
-		// SFTP password handled via sshpass or key file
+		// SFTP password is passed via --sftp-password in targetArgs, not env var.
 	}
 
 	return env

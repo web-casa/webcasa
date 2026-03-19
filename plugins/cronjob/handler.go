@@ -98,6 +98,8 @@ func (h *Handler) DeleteTask(c *gin.Context) {
 }
 
 // TriggerTask manually triggers a cron task.
+// The task runs asynchronously — the response returns immediately with 202 Accepted.
+// The frontend should poll the task logs to see the result.
 func (h *Handler) TriggerTask(c *gin.Context) {
 	id, err := strconv.ParseUint(c.Param("id"), 10, 32)
 	if err != nil {
@@ -105,12 +107,21 @@ func (h *Handler) TriggerTask(c *gin.Context) {
 		return
 	}
 
-	logEntry, err := h.svc.TriggerTask(uint(id))
-	if err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+	taskID := uint(id)
+
+	// Verify task exists before launching goroutine.
+	if _, err := h.svc.GetTask(taskID); err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": err.Error()})
 		return
 	}
-	c.JSON(http.StatusOK, logEntry)
+
+	go func() {
+		if _, err := h.svc.TriggerTask(taskID); err != nil {
+			h.svc.logger.Error("manual trigger failed", "task_id", taskID, "err", err)
+		}
+	}()
+
+	c.JSON(http.StatusAccepted, gin.H{"message": "task triggered"})
 }
 
 // ListTaskLogs returns execution logs for a specific task.

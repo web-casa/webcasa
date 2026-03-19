@@ -247,7 +247,7 @@ export default function CronJobManager() {
                                 {logTaskId ? t('cronjob.task_logs') : t('cronjob.all_logs')}
                             </Text>
                             {logTaskId && (
-                                <Button size="1" variant="soft" onClick={() => { setLogTaskId(null); fetchLogs(null) }}>
+                                <Button size="1" variant="soft" onClick={() => { setLogTaskId(null) }}>
                                     {t('cronjob.all_logs')}
                                 </Button>
                             )}

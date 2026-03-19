@@ -11,6 +11,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/robfig/cron/v3"
 	"gorm.io/gorm"
 )
 
@@ -37,7 +38,9 @@ func NewService(db *gorm.DB, dataDir string, logger *slog.Logger) *Service {
 
 	// Wire scheduler callback.
 	svc.scheduler.SetCallback(func() {
-		svc.RunBackup("scheduled")
+		if _, err := svc.RunBackup("scheduled"); err != nil {
+			svc.logger.Error("scheduled backup failed", "err", err)
+		}
 	})
 
 	return svc
@@ -50,6 +53,9 @@ func (s *Service) CheckDependency() KopiaStatus {
 
 // Start starts the scheduler and loads the current schedule from config.
 func (s *Service) Start() error {
+	// Clean up leftover restore/staging directories from previous runs.
+	s.cleanupTempDirs()
+
 	s.scheduler.Start()
 
 	cfg, err := s.GetConfig()
@@ -105,10 +111,18 @@ func (s *Service) UpdateConfig(req *UpdateConfigRequest) (*BackupConfig, error) 
 	updates := map[string]interface{}{}
 
 	if req.TargetType != "" {
-		updates["target_type"] = req.TargetType
+		switch req.TargetType {
+		case "local", "s3", "webdav", "sftp":
+			updates["target_type"] = req.TargetType
+		default:
+			return nil, fmt.Errorf("invalid target_type: %s (must be local, s3, webdav, or sftp)", req.TargetType)
+		}
 	}
 	if req.LocalPath != "" {
-		updates["local_path"] = req.LocalPath
+		if !filepath.IsAbs(req.LocalPath) {
+			return nil, fmt.Errorf("local_path must be an absolute path")
+		}
+		updates["local_path"] = filepath.Clean(req.LocalPath)
 	}
 	if req.S3Endpoint != "" {
 		updates["s3_endpoint"] = req.S3Endpoint
@@ -156,6 +170,10 @@ func (s *Service) UpdateConfig(req *UpdateConfigRequest) (*BackupConfig, error) 
 		updates["schedule_enabled"] = *req.ScheduleEnabled
 	}
 	if req.CronExpr != "" {
+		parser := cron.NewParser(cron.Minute | cron.Hour | cron.Dom | cron.Month | cron.Dow | cron.Descriptor)
+		if _, err := parser.Parse(req.CronExpr); err != nil {
+			return nil, fmt.Errorf("invalid cron expression: %w", err)
+		}
 		updates["cron_expr"] = req.CronExpr
 	}
 	if req.RetainCount > 0 {
@@ -165,6 +183,12 @@ func (s *Service) UpdateConfig(req *UpdateConfigRequest) (*BackupConfig, error) 
 		updates["retain_days"] = req.RetainDays
 	}
 	if len(req.Scopes) > 0 {
+		validScopes := map[string]bool{"panel": true, "docker": true, "database": true}
+		for _, sc := range req.Scopes {
+			if !validScopes[sc] {
+				return nil, fmt.Errorf("invalid scope: %s (must be panel, docker, or database)", sc)
+			}
+		}
 		data, _ := JSONArray(req.Scopes).Value()
 		updates["scopes"] = data
 	}
@@ -224,6 +248,10 @@ func (s *Service) TestConnection() error {
 
 // RunBackup executes a backup operation.
 func (s *Service) RunBackup(trigger string) (*BackupSnapshot, error) {
+	if status := s.kopia.CheckKopia(); !status.Available {
+		return nil, fmt.Errorf("Kopia is not installed — cannot run backup")
+	}
+
 	s.mu.Lock()
 	if s.running {
 		s.mu.Unlock()
@@ -281,11 +309,11 @@ func (s *Service) RunBackup(trigger string) (*BackupSnapshot, error) {
 	for _, scope := range cfg.Scopes {
 		switch scope {
 		case "panel":
-			s.backupPanel(sourceDir, snapshot.ID)
+			s.backupPanel(ctx, sourceDir, snapshot.ID)
 		case "docker":
-			s.backupDocker(sourceDir, snapshot.ID)
+			s.backupDocker(ctx, sourceDir, snapshot.ID)
 		case "database":
-			s.backupDatabases(sourceDir, snapshot.ID)
+			s.backupDatabases(ctx, sourceDir, snapshot.ID)
 		}
 	}
 
@@ -341,10 +369,18 @@ func (s *Service) RestoreSnapshot(snapshotDBID uint) error {
 	os.MkdirAll(restoreDir, 0755)
 
 	if err := s.kopia.RestoreSnapshot(ctx, snap.SnapshotID, restoreDir); err != nil {
+		os.RemoveAll(restoreDir) // clean up on failure
 		return fmt.Errorf("restore failed: %w", err)
 	}
 
 	s.addLog(snap.ID, "info", "Snapshot restored to: "+restoreDir)
+
+	// Schedule cleanup of the restore directory after 1 hour.
+	go func() {
+		time.Sleep(1 * time.Hour)
+		os.RemoveAll(restoreDir)
+	}()
+
 	return nil
 }
 
@@ -372,10 +408,10 @@ func (s *Service) DeleteSnapshot(snapshotDBID uint) error {
 
 // ── Query Methods ──
 
-// ListSnapshots returns all backup snapshots.
+// ListSnapshots returns recent backup snapshots (max 200).
 func (s *Service) ListSnapshots() ([]BackupSnapshot, error) {
 	var snapshots []BackupSnapshot
-	if err := s.db.Order("created_at DESC").Find(&snapshots).Error; err != nil {
+	if err := s.db.Order("created_at DESC").Limit(200).Find(&snapshots).Error; err != nil {
 		return nil, err
 	}
 	return snapshots, nil
@@ -407,6 +443,9 @@ func (s *Service) ListLogs(snapshotID uint, limit int) ([]BackupLog, error) {
 	if limit <= 0 {
 		limit = 100
 	}
+	if limit > 500 {
+		limit = 500
+	}
 	q := s.db.Order("created_at DESC").Limit(limit)
 	if snapshotID > 0 {
 		q = q.Where("snapshot_id = ?", snapshotID)
@@ -421,7 +460,7 @@ func (s *Service) ListLogs(snapshotID uint, limit int) ([]BackupLog, error) {
 // ── Backup Scope Helpers ──
 
 // backupPanel backs up the panel database and Caddyfile.
-func (s *Service) backupPanel(destDir string, snapID uint) {
+func (s *Service) backupPanel(parentCtx context.Context, destDir string, snapID uint) {
 	panelDir := filepath.Join(destDir, "panel")
 	os.MkdirAll(panelDir, 0755)
 
@@ -432,9 +471,10 @@ func (s *Service) backupPanel(destDir string, snapID uint) {
 	}
 	if _, err := os.Stat(dbPath); err == nil {
 		vacuumDest := filepath.Join(panelDir, "webcasa.db")
-		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		ctx, cancel := context.WithTimeout(parentCtx, 30*time.Second)
 		defer cancel()
-		cmd := exec.CommandContext(ctx, "sqlite3", dbPath, fmt.Sprintf("VACUUM INTO '%s';", vacuumDest))
+		escapedDest := strings.ReplaceAll(vacuumDest, "'", "''")
+		cmd := exec.CommandContext(ctx, "sqlite3", dbPath, fmt.Sprintf("VACUUM INTO '%s';", escapedDest))
 		if output, err := cmd.CombinedOutput(); err != nil {
 			s.addLog(snapID, "warn", "Panel DB backup failed: "+string(output))
 		} else {
@@ -454,12 +494,12 @@ func (s *Service) backupPanel(destDir string, snapID uint) {
 }
 
 // backupDocker backs up Docker volume data.
-func (s *Service) backupDocker(destDir string, snapID uint) {
+func (s *Service) backupDocker(parentCtx context.Context, destDir string, snapID uint) {
 	dockerDir := filepath.Join(destDir, "docker")
 	os.MkdirAll(dockerDir, 0755)
 
 	// List Docker volumes.
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	ctx, cancel := context.WithTimeout(parentCtx, 30*time.Second)
 	defer cancel()
 	cmd := exec.CommandContext(ctx, "docker", "volume", "ls", "--format", "{{.Name}}")
 	output, err := cmd.Output()
@@ -477,7 +517,7 @@ func (s *Service) backupDocker(destDir string, snapID uint) {
 		os.MkdirAll(volDir, 0755)
 
 		// Use docker run to copy volume contents.
-		cpCtx, cpCancel := context.WithTimeout(context.Background(), 5*time.Minute)
+		cpCtx, cpCancel := context.WithTimeout(parentCtx, 5*time.Minute)
 		cpCmd := exec.CommandContext(cpCtx, "docker", "run", "--rm",
 			"-v", name+":/source:ro",
 			"-v", volDir+":/dest",
@@ -494,12 +534,12 @@ func (s *Service) backupDocker(destDir string, snapID uint) {
 }
 
 // backupDatabases performs database dumps for running database instances.
-func (s *Service) backupDatabases(destDir string, snapID uint) {
+func (s *Service) backupDatabases(parentCtx context.Context, destDir string, snapID uint) {
 	dbDir := filepath.Join(destDir, "databases")
 	os.MkdirAll(dbDir, 0755)
 
 	// Get running database containers (matching webcasa-db-* naming).
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	ctx, cancel := context.WithTimeout(parentCtx, 30*time.Second)
 	defer cancel()
 	cmd := exec.CommandContext(ctx, "docker", "ps", "--filter", "name=webcasa-db-",
 		"--format", "{{.Names}}")
@@ -518,13 +558,14 @@ func (s *Service) backupDatabases(destDir string, snapID uint) {
 		dumpFile := filepath.Join(dbDir, name+".sql")
 		var dumpCmd *exec.Cmd
 
-		dumpCtx, dumpCancel := context.WithTimeout(context.Background(), 10*time.Minute)
+		dumpCtx, dumpCancel := context.WithTimeout(parentCtx, 10*time.Minute)
 
 		// Detect engine by container name or environment.
 		if containsAny(name, "mysql", "mariadb") {
-			dumpCmd = exec.CommandContext(dumpCtx, "docker", "exec", name,
-				"mysqldump", "--all-databases", "-u", "root",
-				"--password="+os.Getenv("WEBCASA_DB_ROOT_PASS"))
+			// Pass password via environment variable to avoid /proc exposure.
+			dumpCmd = exec.CommandContext(dumpCtx, "docker", "exec",
+				"-e", "MYSQL_PWD="+os.Getenv("WEBCASA_DB_ROOT_PASS"),
+				name, "mysqldump", "--all-databases", "-u", "root")
 		} else if containsAny(name, "postgres") {
 			dumpCmd = exec.CommandContext(dumpCtx, "docker", "exec", name,
 				"pg_dumpall", "-U", "postgres")
@@ -533,11 +574,26 @@ func (s *Service) backupDatabases(destDir string, snapID uint) {
 			continue
 		}
 
-		dumpOutput, err := dumpCmd.Output()
+		// Stream dump directly to file to avoid holding multi-GB dumps in memory.
+		outFile, fileErr := os.Create(dumpFile)
+		if fileErr != nil {
+			s.addLog(snapID, "warn", fmt.Sprintf("Create dump file %s failed: %v", dumpFile, fileErr))
+			dumpCancel()
+			continue
+		}
+		dumpCmd.Stdout = outFile
+		var stderrBuf strings.Builder
+		dumpCmd.Stderr = &stderrBuf
+		err := dumpCmd.Run()
+		outFile.Close()
 		if err != nil {
-			s.addLog(snapID, "warn", fmt.Sprintf("Database dump %s failed: %v", name, err))
+			errDetail := stderrBuf.String()
+			if len(errDetail) > 512 {
+				errDetail = errDetail[:512]
+			}
+			s.addLog(snapID, "warn", fmt.Sprintf("Database dump %s failed: %v — %s", name, err, strings.TrimSpace(errDetail)))
+			os.Remove(dumpFile) // clean up partial dump
 		} else {
-			os.WriteFile(dumpFile, dumpOutput, 0600)
 			count++
 		}
 		dumpCancel()
@@ -565,13 +621,28 @@ func (s *Service) addLog(snapshotID uint, level, message string) {
 	})
 }
 
-func splitLines(s string) []string {
-	var lines []string
-	for _, line := range filepath.SplitList(s) {
-		lines = append(lines, line)
+// cleanupTempDirs removes leftover restore-* and staging directories
+// that may remain from previous runs (e.g., process crash/restart).
+func (s *Service) cleanupTempDirs() {
+	entries, err := os.ReadDir(s.dataDir)
+	if err != nil {
+		return
 	}
-	// filepath.SplitList doesn't work well for newlines; use simple split.
-	result := []string{}
+	for _, e := range entries {
+		if !e.IsDir() {
+			continue
+		}
+		name := e.Name()
+		if strings.HasPrefix(name, "restore-") || name == "staging" {
+			target := filepath.Join(s.dataDir, name)
+			s.logger.Info("cleaning up leftover temp directory", "path", target)
+			os.RemoveAll(target)
+		}
+	}
+}
+
+func splitLines(s string) []string {
+	var result []string
 	for _, l := range strings.Split(strings.TrimSpace(s), "\n") {
 		l = strings.TrimSpace(l)
 		if l != "" {

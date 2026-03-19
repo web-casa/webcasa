@@ -27,7 +27,9 @@ type Service struct {
 	running    map[uint]bool         // prevent concurrent execution per task
 	runMu      sync.Mutex
 	stopCh     chan struct{}
-	subscribed bool // guard: EventBus handlers registered only once
+	cancelFunc context.CancelFunc // cancels all running task contexts on Stop()
+	taskCtx    context.Context    // parent context for all task executions
+	subscribed bool               // guard: EventBus handlers registered only once
 }
 
 // NewService creates a new cron job service.
@@ -50,6 +52,7 @@ func (s *Service) Start() {
 	s.runner = cron.New()
 	s.entries = make(map[uint]cron.EntryID)
 	s.stopCh = make(chan struct{})
+	s.taskCtx, s.cancelFunc = context.WithCancel(context.Background())
 	s.mu.Unlock()
 
 	// Reset concurrent-execution guard so tasks aren't permanently "skipped" after restart.
@@ -134,11 +137,15 @@ func (s *Service) Start() {
 	}()
 }
 
-// Stop stops the scheduler and cleanup goroutine.
+// Stop stops the scheduler, cancels running task processes, and stops cleanup goroutine.
 func (s *Service) Stop() {
 	s.runner.Stop()
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	// Cancel all running task contexts (kills bash processes).
+	if s.cancelFunc != nil {
+		s.cancelFunc()
+	}
 	select {
 	case <-s.stopCh:
 		// Already closed — nothing to do.
@@ -453,7 +460,7 @@ func (s *Service) runCommand(task CronTask) (*CronLog, error) {
 			time.Sleep(retryDelay)
 		}
 
-		ctx, cancel := context.WithTimeout(context.Background(), timeout)
+		ctx, cancel := context.WithTimeout(s.taskCtx, timeout)
 		cmd := exec.CommandContext(ctx, "bash", "-c", task.Command)
 		if task.WorkingDir != "" {
 			cmd.Dir = task.WorkingDir

@@ -1578,8 +1578,21 @@ func (a *CoreAPIImpl) CronJobUpdate(id uint, updates map[string]interface{}) err
 			return fmt.Errorf("invalid cron expression %q: %w", expr, err)
 		}
 	}
-	updates["updated_at"] = time.Now()
-	result := a.db.Table("plugin_cronjob_tasks").Where("id = ?", id).Updates(updates)
+
+	// Whitelist allowed fields to prevent primary key/timestamp manipulation.
+	allowed := map[string]bool{
+		"name": true, "expression": true, "command": true, "working_dir": true,
+		"enabled": true, "tags": true, "timeout_sec": true, "max_retries": true,
+		"notify_on_failure": true,
+	}
+	safe := map[string]interface{}{"updated_at": time.Now()}
+	for k, v := range updates {
+		if allowed[k] {
+			safe[k] = v
+		}
+	}
+
+	result := a.db.Table("plugin_cronjob_tasks").Where("id = ?", id).Updates(safe)
 	if result.Error != nil {
 		return fmt.Errorf("update cron job: %w", result.Error)
 	}
@@ -1622,6 +1635,9 @@ func (a *CoreAPIImpl) CronJobDelete(id uint) error {
 func (a *CoreAPIImpl) CronJobLogs(taskID uint, limit int) ([]map[string]interface{}, error) {
 	if limit <= 0 {
 		limit = 50
+	}
+	if limit > 500 {
+		limit = 500
 	}
 	var results []map[string]interface{}
 	q := a.db.Table("plugin_cronjob_logs").Order("id DESC").Limit(limit)
