@@ -292,8 +292,6 @@ export default function FirewallManager() {
         )
     }
 
-    const currentZone = zones.find((z) => z.name === activeTab) || zones[0]
-
     return (
         <Box p="6" style={{ maxWidth: 1100, margin: '0 auto' }}>
             {/* Header */}
@@ -487,7 +485,7 @@ export default function FirewallManager() {
 
             {/* Add Rule Dialog */}
             <Dialog.Root open={addOpen} onOpenChange={setAddOpen}>
-                <Dialog.Content maxWidth="480px">
+                <Dialog.Content maxWidth="480px" aria-describedby={undefined}>
                     <Dialog.Title>{t('firewall.add_rule')}</Dialog.Title>
                     <Flex direction="column" gap="3" mt="3">
                         <Box>
@@ -574,7 +572,7 @@ export default function FirewallManager() {
 
             {/* Confirm Remove Dialog */}
             <Dialog.Root open={removeOpen} onOpenChange={setRemoveOpen}>
-                <Dialog.Content maxWidth="420px">
+                <Dialog.Content maxWidth="420px" aria-describedby={undefined}>
                     <Dialog.Title>{t('firewall.remove')}</Dialog.Title>
                     <Text size="2" color="gray" mt="2">
                         {removeTarget?.type === 'port' && t('firewall.confirm_remove_port', { port: removeTarget?.value })}

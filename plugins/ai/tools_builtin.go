@@ -1734,6 +1734,7 @@ func registerMemoryTools(r *ToolRegistry) {
 			"required": []string{"action", "type", "value"},
 		}),
 		ReadOnly:          false,
+		AdminOnly:         true,
 		NeedsConfirmation: true,
 		Handler: func(ctx context.Context, args json.RawMessage) (interface{}, error) {
 			var p struct {

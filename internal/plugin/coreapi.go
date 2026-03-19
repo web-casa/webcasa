@@ -10,7 +10,9 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"runtime"
+	"strconv"
 	"strings"
 	"time"
 
@@ -1106,6 +1108,9 @@ func (a *CoreAPIImpl) FirewallListRules(zone string) (map[string]interface{}, er
 	if zone == "" {
 		zone = a.firewallDefaultZone()
 	}
+	if !fwZoneRe.MatchString(zone) {
+		return nil, fmt.Errorf("invalid zone name: %s", zone)
+	}
 	out, err := a.firewallCmd("--zone="+zone, "--list-all")
 	if err != nil {
 		return nil, fmt.Errorf("list rules for zone %s: %w", zone, err)
@@ -1136,9 +1141,45 @@ func (a *CoreAPIImpl) FirewallListRules(zone string) (map[string]interface{}, er
 	return result, nil
 }
 
+var (
+	fwPortRe     = regexp.MustCompile(`^\d+(-\d+)?$`)
+	fwProtocolRe = regexp.MustCompile(`^(tcp|udp)$`)
+	fwZoneRe     = regexp.MustCompile(`^[a-zA-Z0-9_-]+$`)
+	fwServiceRe  = regexp.MustCompile(`^[a-zA-Z0-9_-]+$`)
+)
+
+func (a *CoreAPIImpl) firewallValidatePort(port, protocol string) error {
+	if !fwPortRe.MatchString(port) {
+		return fmt.Errorf("invalid port: %s", port)
+	}
+	if !fwProtocolRe.MatchString(protocol) {
+		return fmt.Errorf("invalid protocol: %s", protocol)
+	}
+	for _, p := range strings.SplitN(port, "-", 2) {
+		n, err := strconv.Atoi(p)
+		if err != nil || n < 1 || n > 65535 {
+			return fmt.Errorf("port %s out of range (1-65535)", p)
+		}
+	}
+	return nil
+}
+
+func (a *CoreAPIImpl) firewallPanelPort() string {
+	if v, err := a.GetSetting("port"); err == nil && v != "" {
+		return v
+	}
+	return "39921"
+}
+
 func (a *CoreAPIImpl) FirewallAddPort(zone, port, protocol string) error {
+	if err := a.firewallValidatePort(port, protocol); err != nil {
+		return err
+	}
 	if zone == "" {
 		zone = a.firewallDefaultZone()
+	}
+	if !fwZoneRe.MatchString(zone) {
+		return fmt.Errorf("invalid zone name: %s", zone)
 	}
 	if _, err := a.firewallCmd("--permanent", "--zone="+zone, "--add-port="+port+"/"+protocol); err != nil {
 		return fmt.Errorf("add port: %w", err)
@@ -1148,8 +1189,30 @@ func (a *CoreAPIImpl) FirewallAddPort(zone, port, protocol string) error {
 }
 
 func (a *CoreAPIImpl) FirewallRemovePort(zone, port, protocol string) error {
+	if err := a.firewallValidatePort(port, protocol); err != nil {
+		return err
+	}
+	// Protect panel port from removal.
+	panelPort := a.firewallPanelPort()
+	if protocol == "tcp" && port == panelPort {
+		return fmt.Errorf("cannot remove panel port %s/tcp — this would lock you out", panelPort)
+	}
+	if protocol == "tcp" && strings.Contains(port, "-") {
+		parts := strings.SplitN(port, "-", 2)
+		if len(parts) == 2 {
+			lo, _ := strconv.Atoi(parts[0])
+			hi, _ := strconv.Atoi(parts[1])
+			pp, _ := strconv.Atoi(panelPort)
+			if pp >= lo && pp <= hi {
+				return fmt.Errorf("cannot remove port range %s/tcp — it contains panel port %s", port, panelPort)
+			}
+		}
+	}
 	if zone == "" {
 		zone = a.firewallDefaultZone()
+	}
+	if !fwZoneRe.MatchString(zone) {
+		return fmt.Errorf("invalid zone name: %s", zone)
 	}
 	if _, err := a.firewallCmd("--permanent", "--zone="+zone, "--remove-port="+port+"/"+protocol); err != nil {
 		return fmt.Errorf("remove port: %w", err)
@@ -1159,8 +1222,14 @@ func (a *CoreAPIImpl) FirewallRemovePort(zone, port, protocol string) error {
 }
 
 func (a *CoreAPIImpl) FirewallAddService(zone, service string) error {
+	if !fwServiceRe.MatchString(service) {
+		return fmt.Errorf("invalid service name: %s", service)
+	}
 	if zone == "" {
 		zone = a.firewallDefaultZone()
+	}
+	if !fwZoneRe.MatchString(zone) {
+		return fmt.Errorf("invalid zone name: %s", zone)
 	}
 	if _, err := a.firewallCmd("--permanent", "--zone="+zone, "--add-service="+service); err != nil {
 		return fmt.Errorf("add service: %w", err)
@@ -1170,8 +1239,18 @@ func (a *CoreAPIImpl) FirewallAddService(zone, service string) error {
 }
 
 func (a *CoreAPIImpl) FirewallRemoveService(zone, service string) error {
+	if !fwServiceRe.MatchString(service) {
+		return fmt.Errorf("invalid service name: %s", service)
+	}
+	// Protect SSH from removal.
+	if service == "ssh" {
+		return fmt.Errorf("cannot remove SSH service — this would lock you out of remote access")
+	}
 	if zone == "" {
 		zone = a.firewallDefaultZone()
+	}
+	if !fwZoneRe.MatchString(zone) {
+		return fmt.Errorf("invalid zone name: %s", zone)
 	}
 	if _, err := a.firewallCmd("--permanent", "--zone="+zone, "--remove-service="+service); err != nil {
 		return fmt.Errorf("remove service: %w", err)
