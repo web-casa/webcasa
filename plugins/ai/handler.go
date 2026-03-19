@@ -111,6 +111,15 @@ func (h *Handler) TestConnection(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"status": "ok"})
 }
 
+// TestEmbeddingConnection tests the embedding API connectivity.
+func (h *Handler) TestEmbeddingConnection(c *gin.Context) {
+	if err := h.svc.TestEmbeddingConnection(); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"status": "ok"})
+}
+
 // Chat handles a chat message with SSE streaming response and tool use support.
 // SSE events:
 //   - event: delta       → data: "text chunk"

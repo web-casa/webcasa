@@ -324,6 +324,7 @@ func (c *LLMClient) chatToolsAnthropic(ctx context.Context, messages []ToolUseMe
 	}
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("x-api-key", c.apiKey)
+	req.Header.Set("Authorization", "Bearer "+c.apiKey)
 	req.Header.Set("anthropic-version", "2023-06-01")
 	req.Header.Set("Accept", "text/event-stream")
 
@@ -336,6 +337,13 @@ func (c *LLMClient) chatToolsAnthropic(ctx context.Context, messages []ToolUseMe
 	if resp.StatusCode != http.StatusOK {
 		respBody, _ := io.ReadAll(resp.Body)
 		return fmt.Errorf("API error %d: %s", resp.StatusCode, string(respBody))
+	}
+
+	// Check Content-Type: if the response is not SSE, read as JSON error.
+	ct := resp.Header.Get("Content-Type")
+	if ct != "" && !strings.Contains(ct, "text/event-stream") && !strings.Contains(ct, "text/plain") {
+		respBody, _ := io.ReadAll(resp.Body)
+		return fmt.Errorf("API error (unexpected content-type %s): %s", ct, string(respBody))
 	}
 
 	return c.parseAnthropicToolStream(resp.Body, cb)
@@ -406,10 +414,17 @@ func (c *LLMClient) parseAnthropicToolStream(r io.Reader, cb StreamEventCallback
 	}
 
 	blocks := make(map[int]*blockState)
+	eventsReceived := 0
+	var rawLines strings.Builder
 
 	for scanner.Scan() {
 		line := scanner.Text()
 		if !strings.HasPrefix(line, "data: ") {
+			// Collect non-SSE lines for error reporting if no events are received.
+			if eventsReceived == 0 && line != "" && rawLines.Len() < 2048 {
+				rawLines.WriteString(line)
+				rawLines.WriteByte('\n')
+			}
 			continue
 		}
 		data := strings.TrimPrefix(line, "data: ")
@@ -418,6 +433,8 @@ func (c *LLMClient) parseAnthropicToolStream(r io.Reader, cb StreamEventCallback
 		if err := json.Unmarshal([]byte(data), &event); err != nil {
 			continue
 		}
+
+		eventsReceived++
 
 		switch event.Type {
 		case "content_block_start":
@@ -474,5 +491,16 @@ func (c *LLMClient) parseAnthropicToolStream(r io.Reader, cb StreamEventCallback
 	if err := scanner.Err(); err != nil {
 		return err
 	}
+
+	// If no SSE events were parsed, the response was likely not SSE format.
+	// Return the raw response body as an error for debugging.
+	if eventsReceived == 0 {
+		raw := strings.TrimSpace(rawLines.String())
+		if raw != "" {
+			return fmt.Errorf("provider returned non-SSE response: %s", raw)
+		}
+		return fmt.Errorf("provider returned empty response (no SSE events received)")
+	}
+
 	return cb(StreamEvent{Type: "done"})
 }

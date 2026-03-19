@@ -489,7 +489,7 @@ export default function PHPManager() {
 
             {/* ── Install Runtime Dialog ── */}
             <Dialog.Root open={installOpen} onOpenChange={setInstallOpen}>
-                <Dialog.Content maxWidth="480px">
+                <Dialog.Content maxWidth="480px" aria-describedby={undefined}>
                     <Dialog.Title>{t('php.install_runtime')}</Dialog.Title>
                     <Flex direction="column" gap="3" mt="3">
                         <Box>
@@ -550,7 +550,7 @@ export default function PHPManager() {
 
             {/* ── Create Site Dialog ── */}
             <Dialog.Root open={siteDialogOpen} onOpenChange={setSiteDialogOpen}>
-                <Dialog.Content maxWidth="520px">
+                <Dialog.Content maxWidth="520px" aria-describedby={undefined}>
                     <Dialog.Title>{t('php.create_site')}</Dialog.Title>
                     <Flex direction="column" gap="3" mt="3">
                         <Box>
@@ -643,7 +643,7 @@ export default function PHPManager() {
 
             {/* ── Extension Management Dialog ── */}
             <Dialog.Root open={extDialogOpen} onOpenChange={setExtDialogOpen}>
-                <Dialog.Content maxWidth="560px">
+                <Dialog.Content maxWidth="560px" aria-describedby={undefined}>
                     <Dialog.Title>{t('php.manage_extensions')}</Dialog.Title>
                     {installedExts.length > 0 && (
                         <Box mb="3">
@@ -677,7 +677,7 @@ export default function PHPManager() {
 
             {/* ── Progress Dialog ── */}
             <Dialog.Root open={progressOpen} onOpenChange={(open) => { if (progressDone) setProgressOpen(open) }}>
-                <Dialog.Content maxWidth="600px">
+                <Dialog.Content maxWidth="600px" aria-describedby={undefined}>
                     <Dialog.Title>{progressDone ? (progressError ? t('php.progress_error') : t('php.progress_complete')) : t('php.installing')}</Dialog.Title>
                     <Box ref={progressRef} style={{ maxHeight: '300px', overflow: 'auto', background: 'var(--gray-2)', borderRadius: '8px', padding: '12px', fontFamily: 'monospace', fontSize: '12px' }}>
                         {progressLogs.map((line, i) => <Text key={i} as="div" size="1" style={{ whiteSpace: 'pre-wrap' }}>{line}</Text>)}

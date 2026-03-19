@@ -132,6 +132,35 @@ func (s *Service) TestConnection(ctx context.Context) error {
 	return client.TestConnection(ctx)
 }
 
+// TestEmbeddingConnection tests the embedding API connectivity.
+func (s *Service) TestEmbeddingConnection() error {
+	embModel := s.configStore.Get("embedding_model")
+	if embModel == "" {
+		return fmt.Errorf("embedding model not configured")
+	}
+
+	baseURL := s.configStore.Get("embedding_base_url")
+	encKey := s.configStore.Get("embedding_api_key")
+	if baseURL == "" {
+		baseURL = s.configStore.Get("base_url")
+	}
+	if encKey == "" {
+		encKey = s.configStore.Get("api_key")
+	}
+	if baseURL == "" || encKey == "" {
+		return fmt.Errorf("embedding API credentials not configured")
+	}
+
+	apiKey, err := Decrypt(encKey, s.jwtSecret)
+	if err != nil {
+		return fmt.Errorf("decrypt embedding api key: %w", err)
+	}
+
+	client := NewEmbeddingClient(baseURL, apiKey, embModel)
+	_, err = client.Embed("test")
+	return err
+}
+
 // ── Conversations ──
 
 // ListConversations returns conversations for a specific user ordered by most recent.

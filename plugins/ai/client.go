@@ -236,6 +236,7 @@ func (c *LLMClient) buildAnthropicRequest(ctx context.Context, messages []chatMe
 	}
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("x-api-key", c.apiKey)
+	req.Header.Set("Authorization", "Bearer "+c.apiKey)
 	req.Header.Set("anthropic-version", "2023-06-01")
 	if stream {
 		req.Header.Set("Accept", "text/event-stream")

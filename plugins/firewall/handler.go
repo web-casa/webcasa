@@ -151,6 +151,15 @@ func (h *Handler) ReloadFirewall(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"message": "firewalld reloaded"})
 }
 
+// StartFirewalld starts the firewalld service.
+func (h *Handler) StartFirewalld(c *gin.Context) {
+	if err := h.svc.StartFirewalld(); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"message": "firewalld started"})
+}
+
 // InstallFirewalld streams the firewalld installation progress via SSE.
 func (h *Handler) InstallFirewalld(c *gin.Context) {
 	c.Header("Content-Type", "text/event-stream")

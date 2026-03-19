@@ -7,7 +7,7 @@ import {
 import {
     Plus, Pencil, Trash2, Globe, AlertCircle, X, ChevronRight,
     ArrowRightLeft, Shield, Lock, Copy, CheckCircle, AlertTriangle, Circle,
-    FolderOpen, Tags, Layers,
+    FolderOpen, Tags, Layers, ExternalLink,
 } from 'lucide-react'
 import { hostAPI, dnsProviderAPI, settingAPI, certificateAPI, dnsCheckAPI, groupAPI, tagAPI, templateAPI } from '../api/index.js'
 import { useTranslation } from 'react-i18next'
@@ -261,7 +261,7 @@ function HostFormDialog({ open, onClose, onSaved, host }) {
                     )}
 
                     {/* Host Type + Domain */}
-                    <Flex gap="3" align="end">
+                    <Flex gap="3" align="start">
                         <Flex direction="column" gap="1" style={{ width: 140 }}>
                             <Text size="2" weight="medium">{t('host.type')}</Text>
                             <Select.Root
@@ -1400,6 +1400,20 @@ export default function HostList() {
                                                 <Globe size={14} color="#10b981" />
                                             )}
                                             <Text weight="medium">{host.domain}</Text>
+                                            <Tooltip content={t('host.visit_site')}>
+                                                <IconButton
+                                                    size="1"
+                                                    variant="ghost"
+                                                    color="gray"
+                                                    style={{ cursor: 'pointer' }}
+                                                    onClick={(e) => {
+                                                        e.stopPropagation()
+                                                        window.open(`${host.tls_enabled ? 'https' : 'http'}://${host.domain}`, '_blank')
+                                                    }}
+                                                >
+                                                    <ExternalLink size={12} />
+                                                </IconButton>
+                                            </Tooltip>
                                             {dnsStatuses[host.domain] && (
                                                 <DnsStatusIcon
                                                     status={dnsStatuses[host.domain].status}

@@ -86,6 +86,7 @@ func (p *Plugin) Init(ctx *pluginpkg.Context) error {
 	r.GET("/presets", p.handler.GetPresets)
 	a.PUT("/config", p.handler.UpdateConfig)
 	a.POST("/config/test", p.handler.TestConnection)
+	a.POST("/config/test-embedding", p.handler.TestEmbeddingConnection)
 
 	// Chat (SSE) — any logged-in user can chat
 	r.POST("/chat", p.handler.Chat)

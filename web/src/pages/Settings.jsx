@@ -1265,6 +1265,7 @@ function SystemLogsPanel() {
 function AITab({ showMessage }) {
     const { t } = useTranslation()
     const [config, setConfig] = useState({ base_url: '', api_key: '', model: '', api_format: 'openai-chat', embedding_model: '', embedding_base_url: '', embedding_api_key: '' })
+    const [activeTab, setActiveTab] = useState('chat')
     const [presets, setPresets] = useState({})
     const [loading, setLoading] = useState(true)
     const [saving, setSaving] = useState(false)
@@ -1289,8 +1290,13 @@ function AITab({ showMessage }) {
         setTesting(true); setTestResult(null)
         try {
             await aiAPI.updateConfig(config)
-            await aiAPI.testConnection()
-            setTestResult({ ok: true, msg: t('ai.connection_ok') })
+            if (activeTab === 'embedding') {
+                await aiAPI.testEmbeddingConnection()
+                setTestResult({ ok: true, msg: t('ai.embedding_connection_ok') })
+            } else {
+                await aiAPI.testConnection()
+                setTestResult({ ok: true, msg: t('ai.connection_ok') })
+            }
         }
         catch (e) { setTestResult({ ok: false, msg: e.response?.data?.error || e.message }) }
         finally { setTesting(false) }
@@ -1316,7 +1322,7 @@ function AITab({ showMessage }) {
 
     return (
         <Card mt="4" style={{ maxWidth: 680, background: 'var(--cp-card)', border: '1px solid var(--cp-border)' }}>
-            <Tabs.Root defaultValue="chat">
+            <Tabs.Root defaultValue="chat" onValueChange={setActiveTab}>
                 <Tabs.List mb="4">
                     <Tabs.Trigger value="chat">{t('ai.tab_chat_model')}</Tabs.Trigger>
                     <Tabs.Trigger value="embedding">{t('ai.tab_embedding')}</Tabs.Trigger>

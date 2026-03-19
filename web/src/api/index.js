@@ -262,6 +262,7 @@ export const aiAPI = {
     getConfig: () => api.get('/plugins/ai/config'),
     updateConfig: (data) => api.put('/plugins/ai/config', data),
     testConnection: () => api.post('/plugins/ai/config/test'),
+    testEmbeddingConnection: () => api.post('/plugins/ai/config/test-embedding'),
     getPresets: () => api.get('/plugins/ai/presets'),
 
     // Conversations
@@ -443,6 +444,7 @@ export const firewallAPI = {
     removeRichRule: (data) => api.delete('/plugins/firewall/rich-rules', { data }),
     availableServices: () => api.get('/plugins/firewall/available-services'),
     reload: () => api.post('/plugins/firewall/reload'),
+    start: () => api.post('/plugins/firewall/start'),
 }
 
 export const notifyAPI = {

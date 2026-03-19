@@ -45,9 +45,9 @@ SCRIPT_SELF="${BASH_SOURCE[0]:-}"
 if [[ -n "$SCRIPT_SELF" && -f "$(dirname "$SCRIPT_SELF")/VERSION" ]]; then
     WEBCASA_VERSION="$(cat "$(dirname "$SCRIPT_SELF")/VERSION" | tr -d '[:space:]')"
 elif command -v curl &>/dev/null; then
-    WEBCASA_VERSION="$(curl -fsSL https://api.github.com/repos/web-casa/webcasa/releases/latest 2>/dev/null | grep -oP '"tag_name":\s*"v?\K[^"]+' || echo "0.9.1")"
+    WEBCASA_VERSION="$(curl -fsSL https://api.github.com/repos/web-casa/webcasa/releases/latest 2>/dev/null | grep -oP '"tag_name":\s*"v?\K[^"]+' || echo "0.9.3")"
 else
-    WEBCASA_VERSION="0.9.1"
+    WEBCASA_VERSION="0.9.3"
 fi
 GITHUB_REPO="web-casa/webcasa"
 INSTALL_DIR="/usr/local/bin"

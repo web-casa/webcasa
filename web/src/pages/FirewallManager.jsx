@@ -28,6 +28,7 @@ export default function FirewallManager() {
     const [ruleService, setRuleService] = useState('')
     const [ruleRichRule, setRuleRichRule] = useState('')
     const [submitting, setSubmitting] = useState(false)
+    const [starting, setStarting] = useState(false)
 
     // Confirm remove dialog
     const [removeOpen, setRemoveOpen] = useState(false)
@@ -101,10 +102,12 @@ export default function FirewallManager() {
                 if (zonesRes.status === 'fulfilled') {
                     const z = zonesRes.value.data?.zones || []
                     setZones(z)
-                    if (!activeTab && z.length > 0) {
-                        // Default to first active zone or first zone
-                        const active = z.find((zone) => zone.active)
-                        setActiveTab(active ? active.name : z[0].name)
+                    if (z.length > 0) {
+                        setActiveTab(prev => {
+                            if (prev) return prev
+                            const active = z.find((zone) => zone.active)
+                            return active ? active.name : z[0].name
+                        })
                     }
                 }
                 if (servicesRes.status === 'fulfilled') {
@@ -116,7 +119,7 @@ export default function FirewallManager() {
         } finally {
             setLoading(false)
         }
-    }, [activeTab])
+    }, [])
 
     useEffect(() => { fetchData() }, [])
 
@@ -256,6 +259,18 @@ export default function FirewallManager() {
     }
 
     // Not running
+    const handleStartFirewalld = async () => {
+        setStarting(true)
+        try {
+            await firewallAPI.start()
+            await fetchData()
+        } catch (e) {
+            alert(e.response?.data?.error || e.message)
+        } finally {
+            setStarting(false)
+        }
+    }
+
     if (status && !status.running) {
         return (
             <Box p="6" style={{ maxWidth: 800, margin: '0 auto' }}>
@@ -268,6 +283,11 @@ export default function FirewallManager() {
                         {t('firewall.not_running_hint')}
                     </Callout.Text>
                 </Callout.Root>
+                <Flex mt="3" gap="2">
+                    <Button onClick={handleStartFirewalld} disabled={starting}>
+                        <Shield size={14} /> {starting ? t('common.loading') : t('firewall.start_firewalld')}
+                    </Button>
+                </Flex>
             </Box>
         )
     }

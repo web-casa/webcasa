@@ -30,9 +30,9 @@ func NewUpdater(db *gorm.DB, sources *SourceManager, logger *slog.Logger) *Updat
 // Start begins the background sync loop.
 func (u *Updater) Start() {
 	go func() {
-		// Delay initial sync to not block startup
+		// Brief delay to let routes finish registering, then sync immediately
 		select {
-		case <-time.After(60 * time.Second):
+		case <-time.After(5 * time.Second):
 		case <-u.stopCh:
 			return
 		}
