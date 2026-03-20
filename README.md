@@ -74,7 +74,7 @@
 
 ### 一键安装（推荐）
 
-支持 Ubuntu 20+、Debian 11+、CentOS Stream 8+、AlmaLinux、Rocky Linux、Fedora、openAnolis、Alibaba Cloud Linux、openEuler、openCloudOS、银河麒麟 等主流 Linux 发行版。
+支持 RHEL 9/10 系列发行版：CentOS Stream 9/10、AlmaLinux 9/10、Rocky Linux 9/10、Fedora、openAnolis 23、Alibaba Cloud Linux 3、openEuler 22.03+、银河麒麟 V10 等。
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/web-casa/webcasa/main/install.sh | sudo bash
