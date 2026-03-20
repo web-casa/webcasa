@@ -216,20 +216,20 @@ export default function Dashboard() {
     const totalApps = installedApps ? installedApps.length : null
     const updatableApps = appUpdates ? appUpdates.length : null
 
-    // Monitoring data
+    // Monitoring data — backend returns flat fields (mem_percent, disk_percent, etc.)
     const mon = monitoring
     const cpuPct = mon?.cpu_percent ?? null
-    const memPct = mon?.memory?.used_percent ?? null
-    const memUsed = mon?.memory?.used
-    const memTotal = mon?.memory?.total
-    const diskPct = mon?.disk?.used_percent ?? null
-    const diskUsed = mon?.disk?.used
-    const diskTotal = mon?.disk?.total
-    const swapPct = mon?.swap?.used_percent ?? null
-    const swapUsed = mon?.swap?.used
-    const swapTotal = mon?.swap?.total
-    const netSent = mon?.network?.bytes_sent
-    const netRecv = mon?.network?.bytes_recv
+    const memPct = mon?.mem_percent ?? null
+    const memUsed = mon?.mem_used
+    const memTotal = mon?.mem_total
+    const diskPct = mon?.disk_percent ?? null
+    const diskUsed = mon?.disk_used
+    const diskTotal = mon?.disk_total
+    const swapPct = mon?.swap_total > 0 ? (mon?.swap_used / mon?.swap_total * 100) : null
+    const swapUsed = mon?.swap_used
+    const swapTotal = mon?.swap_total
+    const netSent = mon?.net_sent_bytes
+    const netRecv = mon?.net_recv_bytes
 
     const showAppsRow = enabled('appstore') || enabled('docker')
     const showApps = enabled('appstore')
@@ -315,18 +315,18 @@ export default function Dashboard() {
                                 <ProgressBar
                                     label={t('dashboard.memory_usage')}
                                     percent={memPct}
-                                    detail={`${memPct?.toFixed(1)}% — ${formatBytes(memUsed)} / ${formatBytes(memTotal)}`}
+                                    detail={memPct != null ? `${memPct.toFixed(1)}% — ${formatBytes(memUsed)} / ${formatBytes(memTotal)}` : '-'}
                                 />
                                 <ProgressBar
                                     label={t('dashboard.disk_usage')}
                                     percent={diskPct}
-                                    detail={`${diskPct?.toFixed(1)}% — ${formatBytes(diskUsed)} / ${formatBytes(diskTotal)}`}
+                                    detail={diskPct != null ? `${diskPct.toFixed(1)}% — ${formatBytes(diskUsed)} / ${formatBytes(diskTotal)}` : '-'}
                                 />
                                 {swapTotal > 0 && (
                                     <ProgressBar
                                         label={t('dashboard.swap_usage')}
                                         percent={swapPct}
-                                        detail={`${swapPct?.toFixed(1)}% — ${formatBytes(swapUsed)} / ${formatBytes(swapTotal)}`}
+                                        detail={swapPct != null ? `${swapPct.toFixed(1)}% — ${formatBytes(swapUsed)} / ${formatBytes(swapTotal)}` : '-'}
                                     />
                                 )}
                                 <Flex gap="5" mt="2">
