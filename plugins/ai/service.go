@@ -15,6 +15,17 @@ import (
 	"gorm.io/gorm"
 )
 
+// ctxKeyUserID is used to pass the current user ID through tool execution context.
+type ctxKeyUserID struct{}
+
+// userIDFromContext extracts the user ID from the context set during tool execution.
+func userIDFromContext(ctx context.Context) uint {
+	if id, ok := ctx.Value(ctxKeyUserID{}).(uint); ok {
+		return id
+	}
+	return 0
+}
+
 // Service implements the AI assistant business logic.
 type Service struct {
 	db          *gorm.DB
@@ -225,7 +236,7 @@ func (s *Service) Chat(ctx context.Context, req ChatRequest, userID uint, cb Str
 	var history []Message
 	s.db.Where("conversation_id = ?", conv.ID).Order("created_at ASC").Find(&history)
 
-	apiMessages := s.buildMessages(history, req.Context)
+	apiMessages := s.buildMessages(userID, history, req.Context)
 
 	// Stream the response, collecting full content.
 	var fullContent strings.Builder
@@ -299,7 +310,7 @@ func (s *Service) ChatWithTools(ctx context.Context, req ChatRequest, userID uin
 	// Build tool-use messages from conversation history.
 	var history []Message
 	s.db.Where("conversation_id = ?", conv.ID).Order("created_at ASC").Find(&history)
-	apiMessages := s.buildToolMessages(history, req.Context)
+	apiMessages := s.buildToolMessages(userID, history, req.Context)
 
 	// Get tool schemas for the provider.
 	var toolSchemas []map[string]interface{}
@@ -433,7 +444,8 @@ func (s *Service) ChatWithTools(ctx context.Context, req ChatRequest, userID uin
 				}
 			}
 
-			result, execErr := s.tools.Execute(ctx, tc.Name, json.RawMessage(tc.Arguments))
+			toolCtx := context.WithValue(ctx, ctxKeyUserID{}, userID)
+			result, execErr := s.tools.Execute(toolCtx, tc.Name, json.RawMessage(tc.Arguments))
 
 			var resultContent string
 			if execErr != nil {
@@ -479,14 +491,14 @@ func (s *Service) ChatWithTools(ctx context.Context, req ChatRequest, userID uin
 		convID := conv.ID
 		userMessage := req.Message
 		assistantResponse := fullContent.String()
-		go s.extractMemories(convID, userMessage, assistantResponse)
+		go s.extractMemories(userID, convID, userMessage, assistantResponse)
 	}
 
 	return conv.ID, nil
 }
 
 // buildToolMessages constructs the ToolUseMessage slice from conversation history.
-func (s *Service) buildToolMessages(history []Message, pageContext string) []ToolUseMessage {
+func (s *Service) buildToolMessages(userID uint, history []Message, pageContext string) []ToolUseMessage {
 	systemPrompt := systemPromptToolUse
 
 	// Inject relevant memories from previous interactions.
@@ -499,7 +511,7 @@ func (s *Service) buildToolMessages(history []Message, pageContext string) []Too
 			}
 		}
 		if query != "" {
-			if memCtx, err := s.memory.BuildMemoryContext(query, 8); err == nil && memCtx != "" {
+			if memCtx, err := s.memory.BuildMemoryContext(userID, query, 8); err == nil && memCtx != "" {
 				systemPrompt += "\n\n" + memCtx
 			}
 		}
@@ -868,7 +880,7 @@ func (s *Service) getClient() (*LLMClient, error) {
 	return NewLLMClient(baseURL, apiKey, model, apiFormat), nil
 }
 
-func (s *Service) buildMessages(history []Message, pageContext string) []chatMessage {
+func (s *Service) buildMessages(userID uint, history []Message, pageContext string) []chatMessage {
 	systemPrompt := systemPromptBasic
 
 	// Inject relevant memories from previous interactions.
@@ -881,7 +893,7 @@ func (s *Service) buildMessages(history []Message, pageContext string) []chatMes
 			}
 		}
 		if query != "" {
-			if memCtx, err := s.memory.BuildMemoryContext(query, 8); err == nil && memCtx != "" {
+			if memCtx, err := s.memory.BuildMemoryContext(userID, query, 8); err == nil && memCtx != "" {
 				systemPrompt += "\n\n" + memCtx
 			}
 		}
@@ -941,7 +953,7 @@ func (s *Service) initEmbeddingClient() {
 }
 
 // extractMemories uses the LLM to extract key facts from a conversation turn.
-func (s *Service) extractMemories(convID uint, userMessage, assistantResponse string) {
+func (s *Service) extractMemories(userID, convID uint, userMessage, assistantResponse string) {
 	if userMessage == "" && assistantResponse == "" {
 		return
 	}
@@ -1012,7 +1024,7 @@ Assistant: %s`, userMessage, assistantResponse)
 			}
 		}
 
-		if _, err := s.memory.SaveMemory(fact, category, importance, &convID); err != nil {
+		if _, err := s.memory.SaveMemory(userID, fact, category, importance, &convID); err != nil {
 			s.logger.Warn("failed to save extracted memory", "err", err, "fact", fact)
 		}
 	}

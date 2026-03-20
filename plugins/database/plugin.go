@@ -42,7 +42,7 @@ func (p *Plugin) Init(ctx *pluginpkg.Context) error {
 
 	// Create service and handler.
 	p.svc = NewService(ctx.DB, ctx.DataDir, ctx.Logger)
-	p.sqlite = NewSQLiteBrowser(ctx.Logger)
+	p.sqlite = NewSQLiteBrowser(ctx.Logger, ctx.DataDir)
 	p.handler = NewHandler(p.svc, p.sqlite)
 
 	// Register API routes under /api/plugins/database/
@@ -80,9 +80,9 @@ func (p *Plugin) Init(ctx *pluginpkg.Context) error {
 	// Query execution (admin)
 	a.POST("/instances/:id/query", p.handler.ExecuteQuery)
 
-	// SQLite Browser (read + admin query)
-	r.GET("/sqlite/tables", p.handler.SQLiteTables)
-	r.GET("/sqlite/schema", p.handler.SQLiteSchema)
+	// SQLite Browser (admin only — accesses files on disk)
+	a.GET("/sqlite/tables", p.handler.SQLiteTables)
+	a.GET("/sqlite/schema", p.handler.SQLiteSchema)
 	a.POST("/sqlite/query", p.handler.SQLiteQuery)
 
 	ctx.Logger.Info("Database plugin routes registered")

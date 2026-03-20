@@ -195,12 +195,17 @@ func (s *Service) CreateRuntimeStream(req *CreateRuntimeRequest, progressCb func
 		if len(req.Extensions) > 0 {
 			progressCb("Building custom image with extensions...")
 			if err := s.runComposeStream(rtDir, progressCb, "build", "--no-cache"); err != nil {
-				progressCb("Warning: build failed: " + err.Error())
+				// Rollback: remove DB record and data dir.
+				s.db.Delete(&PHPRuntime{}, rt.ID)
+				os.RemoveAll(rtDir)
+				return nil, fmt.Errorf("build failed: %w", err)
 			}
 		}
 		if err := s.runComposeStream(rtDir, progressCb, "up", "-d", "--remove-orphans"); err != nil {
-			s.logger.Error("auto-start failed", "runtime", rt.ContainerName, "err", err)
-			progressCb("Warning: auto-start failed: " + err.Error())
+			// Rollback: remove DB record and data dir.
+			s.db.Delete(&PHPRuntime{}, rt.ID)
+			os.RemoveAll(rtDir)
+			return nil, fmt.Errorf("auto-start failed: %w", err)
 		}
 	}
 
@@ -223,7 +228,10 @@ func (s *Service) DeleteRuntime(id uint) error {
 		return fmt.Errorf("cannot delete: %d site(s) still use this runtime", siteCount)
 	}
 
-	_ = s.runCompose(rt.DataDir, "down", "--volumes", "--remove-orphans")
+	if err := s.runCompose(rt.DataDir, "down", "--volumes", "--remove-orphans"); err != nil {
+		s.logger.Error("compose down failed for runtime", "runtime", rt.ContainerName, "err", err)
+		return fmt.Errorf("failed to stop runtime: %w (runtime kept for manual cleanup)", err)
+	}
 	os.RemoveAll(rt.DataDir)
 	return s.db.Delete(&PHPRuntime{}, id).Error
 }
@@ -313,27 +321,36 @@ func (s *Service) UpdateConfig(id uint, req *UpdateConfigRequest) error {
 		return err
 	}
 
+	// Save old config for rollback.
+	oldPHPConfig := rt.PHPConfig
+	oldFPMConfig := rt.FPMConfig
+
+	// Back up old config files.
+	var oldIniContent, oldFpmContent []byte
+	iniPath := filepath.Join(rt.DataDir, "conf.d", "99-webcasa.ini")
+	confPath := filepath.Join(rt.DataDir, "php-fpm.d", "zz-webcasa.conf")
+
 	if req.PHPConfig != nil {
+		oldIniContent, _ = os.ReadFile(iniPath)
 		iniContent, err := GeneratePHPIni(*req.PHPConfig)
 		if err != nil {
 			return fmt.Errorf("validate php.ini: %w", err)
 		}
 		data, _ := json.Marshal(req.PHPConfig)
 		rt.PHPConfig = string(data)
-		iniPath := filepath.Join(rt.DataDir, "conf.d", "99-webcasa.ini")
 		if err := os.WriteFile(iniPath, []byte(iniContent), 0644); err != nil {
 			return fmt.Errorf("write php.ini: %w", err)
 		}
 	}
 
 	if req.FPMConfig != nil {
+		oldFpmContent, _ = os.ReadFile(confPath)
 		confContent, err := GenerateFPMPoolConf(*req.FPMConfig)
 		if err != nil {
 			return fmt.Errorf("validate fpm.conf: %w", err)
 		}
 		data, _ := json.Marshal(req.FPMConfig)
 		rt.FPMConfig = string(data)
-		confPath := filepath.Join(rt.DataDir, "php-fpm.d", "zz-webcasa.conf")
 		if err := os.WriteFile(confPath, []byte(confContent), 0644); err != nil {
 			return fmt.Errorf("write fpm.conf: %w", err)
 		}
@@ -343,8 +360,23 @@ func (s *Service) UpdateConfig(id uint, req *UpdateConfigRequest) error {
 		return fmt.Errorf("save config: %w", err)
 	}
 
-	// Restart to apply.
-	return s.runCompose(rt.DataDir, "restart")
+	// Restart to apply. If restart fails, rollback DB and config files.
+	if err := s.runCompose(rt.DataDir, "restart"); err != nil {
+		s.logger.Error("restart failed after config update, rolling back", "runtime", rt.ContainerName, "err", err)
+		rt.PHPConfig = oldPHPConfig
+		rt.FPMConfig = oldFPMConfig
+		s.db.Save(rt)
+		if oldIniContent != nil {
+			os.WriteFile(iniPath, oldIniContent, 0644)
+		}
+		if oldFpmContent != nil {
+			os.WriteFile(confPath, oldFpmContent, 0644)
+		}
+		// Try restarting with old config.
+		_ = s.runCompose(rt.DataDir, "restart")
+		return fmt.Errorf("restart failed with new config (rolled back): %w", err)
+	}
+	return nil
 }
 
 // Optimize auto-calculates optimal FPM settings.
@@ -400,12 +432,23 @@ func (s *Service) InstallExtensions(id uint, extensions []string, progressCb fun
 	customImage := fmt.Sprintf("webcasa-php-%s-%s:custom", rt.Type, strings.ReplaceAll(rt.Version, ".", ""))
 	rt.CustomImage = customImage
 
+	// Save old state for rollback.
+	oldExtensions := rt.Extensions
+	oldCustomImage := rt.CustomImage
+
 	// Save to DB first (before rebuild).
 	if err := s.db.Save(rt).Error; err != nil {
 		return fmt.Errorf("save extensions: %w", err)
 	}
 
-	return s.rebuildRuntimeImage(rt, merged, progressCb)
+	if err := s.rebuildRuntimeImage(rt, merged, progressCb); err != nil {
+		// Rollback DB to old extensions.
+		rt.Extensions = oldExtensions
+		rt.CustomImage = oldCustomImage
+		s.db.Save(rt)
+		return err
+	}
+	return nil
 }
 
 // RemoveExtension removes an extension, rebuilds the image, and restarts.
@@ -429,12 +472,22 @@ func (s *Service) RemoveExtension(id uint, extName string, progressCb func(strin
 		return fmt.Errorf("extension %q is not installed", extName)
 	}
 
+	// Save old state for rollback.
+	oldExtensions := rt.Extensions
+	oldCustomImage := rt.CustomImage
+
 	extJSON, _ := json.Marshal(filtered)
 	rt.Extensions = string(extJSON)
 
 	// Save to DB first (before rebuild).
 	if err := s.db.Save(rt).Error; err != nil {
 		return fmt.Errorf("save extensions: %w", err)
+	}
+
+	rollback := func() {
+		rt.Extensions = oldExtensions
+		rt.CustomImage = oldCustomImage
+		s.db.Save(rt)
 	}
 
 	if len(filtered) == 0 {
@@ -451,10 +504,18 @@ func (s *Service) RemoveExtension(id uint, extName string, progressCb func(strin
 			return fmt.Errorf("write compose: %w", err)
 		}
 		progressCb("Recreating container with base image...")
-		return s.runComposeStream(rt.DataDir, progressCb, "up", "-d", "--force-recreate")
+		if err := s.runComposeStream(rt.DataDir, progressCb, "up", "-d", "--force-recreate"); err != nil {
+			rollback()
+			return fmt.Errorf("recreate container failed (rolled back): %w", err)
+		}
+		return nil
 	}
 
-	return s.rebuildRuntimeImage(rt, filtered, progressCb)
+	if err := s.rebuildRuntimeImage(rt, filtered, progressCb); err != nil {
+		rollback()
+		return err
+	}
+	return nil
 }
 
 // rebuildRuntimeImage rebuilds the Docker image with the given extensions and restarts.
@@ -542,6 +603,11 @@ func (s *Service) CreateSite(req *CreateSiteRequest, progressCb func(string)) (*
 		return nil, err
 	}
 
+	// Validate site name format (alphanumeric, hyphens, underscores).
+	if !regexp.MustCompile(`^[a-zA-Z0-9][a-zA-Z0-9_-]{0,126}$`).MatchString(req.Name) {
+		return nil, fmt.Errorf("invalid site name: only letters, numbers, hyphens and underscores allowed (1-127 chars)")
+	}
+
 	// Validate uniqueness.
 	var count int64
 	if err := s.db.Model(&PHPSite{}).Where("name = ?", req.Name).Count(&count).Error; err != nil {
@@ -588,6 +654,9 @@ func (s *Service) createFPMSite(site *PHPSite, req *CreateSiteRequest, progressC
 	}
 	if rt.Type != RuntimeFPM {
 		return nil, fmt.Errorf("runtime %d is not a FPM runtime", req.RuntimeID)
+	}
+	if rt.Status != "running" {
+		return nil, fmt.Errorf("FPM runtime %q is not running (status: %s) — start it first", rt.ContainerName, rt.Status)
 	}
 
 	site.RuntimeID = rt.ID
@@ -711,12 +780,14 @@ func (s *Service) createFrankenSite(site *PHPSite, req *CreateSiteRequest, progr
 	if customImage != "" {
 		progressCb("Building FrankenPHP image with extensions...")
 		if err := s.runComposeStream(site.DataDir, progressCb, "build", "--no-cache"); err != nil {
-			progressCb("Warning: build failed: " + err.Error())
+			os.RemoveAll(site.DataDir)
+			return nil, fmt.Errorf("build failed: %w", err)
 		}
 	}
 	progressCb("Starting FrankenPHP container...")
 	if err := s.runComposeStream(site.DataDir, progressCb, "up", "-d", "--remove-orphans"); err != nil {
-		progressCb("Warning: start failed: " + err.Error())
+		os.RemoveAll(site.DataDir)
+		return nil, fmt.Errorf("start failed: %w", err)
 	}
 
 	// Create Caddy reverse proxy host.
@@ -754,15 +825,20 @@ func (s *Service) DeleteSite(id uint, deleteFiles bool) error {
 		return err
 	}
 
-	// Delete Caddy host.
-	if site.HostID > 0 {
-		_ = s.coreAPI.DeleteHost(site.HostID)
+	// FrankenPHP: stop and remove container first — if this fails, keep the site.
+	if site.RuntimeType == string(RuntimeFranken) && site.DataDir != "" {
+		if err := s.runCompose(site.DataDir, "down", "--volumes", "--remove-orphans"); err != nil {
+			s.logger.Error("compose down failed for site", "site", site.Name, "err", err)
+			return fmt.Errorf("failed to stop site container: %w (site kept for manual cleanup)", err)
+		}
+		os.RemoveAll(site.DataDir)
 	}
 
-	// FrankenPHP: stop and remove container.
-	if site.RuntimeType == string(RuntimeFranken) && site.DataDir != "" {
-		_ = s.runCompose(site.DataDir, "down", "--volumes", "--remove-orphans")
-		os.RemoveAll(site.DataDir)
+	// Delete Caddy host.
+	if site.HostID > 0 {
+		if err := s.coreAPI.DeleteHost(site.HostID); err != nil {
+			s.logger.Warn("failed to delete Caddy host", "host_id", site.HostID, "err", err)
+		}
 	}
 
 	// Optionally delete site files.
@@ -813,8 +889,10 @@ func (s *Service) UpdateSite(id uint, req *UpdateSiteRequest) error {
 
 	// Sync domain change to Caddy host.
 	if domainChanged && site.HostID > 0 {
-		if err := s.coreAPI.UpdateHost(site.HostID, plugin.UpdateHostRequest{}); err != nil {
-			s.logger.Warn("failed to update Caddy host after domain change", "err", err)
+		if err := s.coreAPI.UpdateHost(site.HostID, plugin.UpdateHostRequest{
+			Domain: site.Domain,
+		}); err != nil {
+			return fmt.Errorf("update Caddy host domain: %w", err)
 		}
 	}
 

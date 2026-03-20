@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"io"
 	"strings"
-	"time"
 
 	"github.com/docker/docker/api/types"
 	"github.com/docker/docker/api/types/container"
@@ -217,6 +216,7 @@ type RunPortMapping struct {
 	HostPort      string `json:"host_port"`
 	ContainerPort string `json:"container_port"`
 	Protocol      string `json:"protocol"` // tcp|udp
+	HostIP        string `json:"host_ip"`  // default: 127.0.0.1 (loopback)
 }
 
 // RunVolumeMapping describes a single volume mount for RunContainer.
@@ -241,8 +241,12 @@ func (c *Client) RunContainer(ctx context.Context, req *RunContainerRequest) (st
 			return "", fmt.Errorf("invalid container port %s/%s: %w", p.ContainerPort, proto, err)
 		}
 		exposedPorts[containerPort] = struct{}{}
+		hostIP := p.HostIP
+		if hostIP == "" {
+			hostIP = "127.0.0.1" // Default to loopback — use reverse proxy for public access.
+		}
 		portBindings[containerPort] = []nat.PortBinding{
-			{HostIP: "0.0.0.0", HostPort: p.HostPort},
+			{HostIP: hostIP, HostPort: p.HostPort},
 		}
 	}
 
@@ -524,10 +528,6 @@ func portStr(port uint16) string {
 		return ""
 	}
 	return fmt.Sprintf("%d", port)
-}
-
-func defaultTimeout() (context.Context, context.CancelFunc) {
-	return context.WithTimeout(context.Background(), 30*time.Second)
 }
 
 func decodeJSON(r io.Reader, v interface{}) error {

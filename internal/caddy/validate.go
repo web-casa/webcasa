@@ -98,6 +98,19 @@ func ValidateIPRange(ipRange string) error {
 	return nil
 }
 
+// ValidateCaddyValue checks that a string is safe for embedding in a Caddyfile.
+// It rejects newlines, braces, quotes, and backslashes that could alter structure
+// or break quoted directives (e.g. header values rendered as "...").
+func ValidateCaddyValue(label, value string) error {
+	if value == "" {
+		return nil
+	}
+	if strings.ContainsAny(value, "\n\r{}\"\\") {
+		return fmt.Errorf("%s contains characters that could break Caddyfile syntax", label)
+	}
+	return nil
+}
+
 // SanitizeCustomDirectives validates custom directives to prevent Caddyfile injection.
 // It rejects lines that could close/open blocks unexpectedly.
 func SanitizeCustomDirectives(directives string) error {
@@ -115,19 +128,19 @@ func SanitizeCustomDirectives(directives string) error {
 			continue
 		}
 
-		// Count braces to detect block manipulation
+		// Count braces to detect block manipulation.
+		// Check after EACH closing brace so that "} {" on the same line
+		// (which nets to zero) is still caught.
 		for _, ch := range trimmed {
 			switch ch {
 			case '{':
 				braceDepth++
 			case '}':
 				braceDepth--
+				if braceDepth < 0 {
+					return fmt.Errorf("line %d: unbalanced closing brace — cannot close parent block", i+1)
+				}
 			}
-		}
-
-		// If braces go negative, someone is trying to close the parent block
-		if braceDepth < 0 {
-			return fmt.Errorf("line %d: unbalanced closing brace — cannot close parent block", i+1)
 		}
 	}
 

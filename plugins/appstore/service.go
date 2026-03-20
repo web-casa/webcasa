@@ -178,6 +178,15 @@ func (s *Service) InstallApp(req *InstallAppRequest) (*InstalledApp, error) {
 
 	// 5. Create InstalledApp record first to get ID
 	stackName := sanitizeStackName(req.Name)
+
+	// Check stack name collision: different app names can sanitize to the same
+	// compose project name, causing cross-interference.
+	var stackCount int64
+	s.db.Model(&InstalledApp{}).Where("stack_name = ?", stackName).Count(&stackCount)
+	if stackCount > 0 {
+		return nil, fmt.Errorf("stack name %q conflicts with an existing installation — choose a different name", req.Name)
+	}
+
 	// Extract url_suffix from config.json
 	var appConfig AppConfig
 	if app.ConfigJSON != "" {
@@ -259,11 +268,11 @@ func (s *Service) InstallApp(req *InstallAppRequest) (*InstalledApp, error) {
 	envContent := RenderEnvFile(req.FormValues, builtins)
 
 	// Write files
-	if err := os.WriteFile(filepath.Join(composeDir, "docker-compose.yml"), []byte(rendered), 0644); err != nil {
+	if err := os.WriteFile(filepath.Join(composeDir, "docker-compose.yml"), []byte(rendered), 0600); err != nil {
 		s.setStatus(installed.ID, "error")
 		return nil, fmt.Errorf("write compose: %w", err)
 	}
-	if err := os.WriteFile(filepath.Join(composeDir, ".env"), []byte(envContent), 0644); err != nil {
+	if err := os.WriteFile(filepath.Join(composeDir, ".env"), []byte(envContent), 0600); err != nil {
 		s.setStatus(installed.ID, "error")
 		return nil, fmt.Errorf("write env: %w", err)
 	}
@@ -272,7 +281,9 @@ func (s *Service) InstallApp(req *InstallAppRequest) (*InstalledApp, error) {
 	os.MkdirAll(filepath.Join(composeDir, "data"), 0755)
 
 	// 9. Also create a record in plugin_docker_stacks so Docker Overview shows it
-	s.createDockerStackRecord(stackName, rendered, envContent, composeDir)
+	if err := s.createDockerStackRecord(stackName, rendered, envContent, composeDir); err != nil {
+		s.logger.Warn("failed to create docker stack record", "err", err)
+	}
 
 	// 10. docker compose up
 	if err := s.runCompose(composeDir, stackName, "up", "-d", "--remove-orphans"); err != nil {
@@ -452,7 +463,7 @@ func (s *Service) UpdateDomain(id uint, domain string) error {
 					out = append(out, line)
 				}
 			}
-			os.WriteFile(envPath, []byte(strings.Join(out, "\n")), 0644)
+			os.WriteFile(envPath, []byte(strings.Join(out, "\n")), 0600)
 		}
 
 		// Restart compose to pick up new .env
@@ -589,8 +600,12 @@ func (s *Service) UpdateApp(id uint) error {
 	envContent := RenderEnvFile(formValues, builtins)
 
 	// Write updated files
-	os.WriteFile(filepath.Join(installed.ComposeDir, "docker-compose.yml"), []byte(rendered), 0644)
-	os.WriteFile(filepath.Join(installed.ComposeDir, ".env"), []byte(envContent), 0644)
+	if err := os.WriteFile(filepath.Join(installed.ComposeDir, "docker-compose.yml"), []byte(rendered), 0600); err != nil {
+		return fmt.Errorf("write compose file: %w", err)
+	}
+	if err := os.WriteFile(filepath.Join(installed.ComposeDir, ".env"), []byte(envContent), 0600); err != nil {
+		return fmt.Errorf("write env file: %w", err)
+	}
 
 	// Pull new images and recreate
 	_ = s.runCompose(installed.ComposeDir, installed.StackName, "pull")
@@ -600,10 +615,12 @@ func (s *Service) UpdateApp(id uint) error {
 	}
 
 	// Update version
-	s.db.Model(&installed).Updates(map[string]interface{}{
+	if err := s.db.Model(&installed).Updates(map[string]interface{}{
 		"version": app.Version,
 		"status":  "running",
-	})
+	}).Error; err != nil {
+		return fmt.Errorf("update app status: %w", err)
+	}
 
 	return nil
 }
@@ -653,18 +670,9 @@ func (s *Service) resolveAppStatus(dir, projectName string) string {
 
 // createDockerStackRecord inserts a record into plugin_docker_stacks
 // so the Docker Overview page shows this stack.
-func (s *Service) createDockerStackRecord(name, composeFile, envFile, dataDir string) {
-	type DockerStack struct {
-		Name        string `gorm:"uniqueIndex;not null;size:128"`
-		Description string `gorm:"size:512"`
-		ComposeFile string `gorm:"type:text;not null"`
-		EnvFile     string `gorm:"type:text"`
-		Status      string `gorm:"size:16;default:stopped"`
-		DataDir     string `gorm:"size:512"`
-	}
-
+func (s *Service) createDockerStackRecord(name, composeFile, envFile, dataDir string) error {
 	// Use raw table name to avoid importing docker package
-	s.db.Table("plugin_docker_stacks").Create(map[string]interface{}{
+	if err := s.db.Table("plugin_docker_stacks").Create(map[string]interface{}{
 		"name":         name,
 		"description":  "[App Store] Managed by App Store plugin",
 		"compose_file": composeFile,
@@ -672,7 +680,10 @@ func (s *Service) createDockerStackRecord(name, composeFile, envFile, dataDir st
 		"status":       "running",
 		"data_dir":     dataDir,
 		"managed_by":   "appstore",
-	})
+	}).Error; err != nil {
+		return fmt.Errorf("create docker stack record: %w", err)
+	}
+	return nil
 }
 
 // deleteDockerStackRecord removes the Docker Stack record.

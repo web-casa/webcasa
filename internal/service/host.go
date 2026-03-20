@@ -92,6 +92,30 @@ func (s *HostService) Create(req *model.HostCreateRequest) (*model.Host, error) 
 		return nil, fmt.Errorf("invalid custom directives: %w", err)
 	}
 
+	// Validate all string fields that get embedded in Caddyfile
+	for label, val := range map[string]string{
+		"redirect_url":   req.RedirectURL,
+		"root_path":      req.RootPath,
+		"error_page_path": req.ErrorPagePath,
+		"php_fastcgi":    req.PHPFastCGI,
+		"index_files":    req.IndexFiles,
+		"cors_origins":   req.CorsOrigins,
+		"cors_methods":   req.CorsMethods,
+		"cors_headers":   req.CorsHeaders,
+	} {
+		if err := caddy.ValidateCaddyValue(label, val); err != nil {
+			return nil, err
+		}
+	}
+	for _, h := range req.CustomHeaders {
+		if err := caddy.ValidateCaddyValue("header name", h.Name); err != nil {
+			return nil, err
+		}
+		if err := caddy.ValidateCaddyValue("header value", h.Value); err != nil {
+			return nil, err
+		}
+	}
+
 	var count int64
 	s.db.Model(&model.Host{}).Where("domain = ?", req.Domain).Count(&count)
 	if count > 0 {
@@ -205,7 +229,7 @@ func (s *HostService) Create(req *model.HostCreateRequest) (*model.Host, error) 
 	}
 
 	if err := s.ApplyConfig(); err != nil {
-		log.Printf("Warning: failed to apply config after create: %v", err)
+		return nil, fmt.Errorf("host created but Caddy config failed: %w", err)
 	}
 
 	return s.Get(host.ID)
@@ -242,6 +266,30 @@ func (s *HostService) Update(id uint, req *model.HostCreateRequest) (*model.Host
 		return nil, fmt.Errorf("invalid custom directives: %w", err)
 	}
 
+	// Validate all string fields that get embedded in Caddyfile
+	for label, val := range map[string]string{
+		"redirect_url":   req.RedirectURL,
+		"root_path":      req.RootPath,
+		"error_page_path": req.ErrorPagePath,
+		"php_fastcgi":    req.PHPFastCGI,
+		"index_files":    req.IndexFiles,
+		"cors_origins":   req.CorsOrigins,
+		"cors_methods":   req.CorsMethods,
+		"cors_headers":   req.CorsHeaders,
+	} {
+		if err := caddy.ValidateCaddyValue(label, val); err != nil {
+			return nil, err
+		}
+	}
+	for _, h := range req.CustomHeaders {
+		if err := caddy.ValidateCaddyValue("header name", h.Name); err != nil {
+			return nil, err
+		}
+		if err := caddy.ValidateCaddyValue("header value", h.Value); err != nil {
+			return nil, err
+		}
+	}
+
 	var count int64
 	s.db.Model(&model.Host{}).Where("domain = ? AND id != ?", req.Domain, id).Count(&count)
 	if count > 0 {
@@ -249,8 +297,36 @@ func (s *HostService) Update(id uint, req *model.HostCreateRequest) (*model.Host
 	}
 
 	hostType := stringOrDefault(req.HostType, host.HostType)
-	if hostType == "redirect" && req.RedirectURL == "" && host.RedirectURL == "" {
-		return nil, fmt.Errorf("redirect_url is required for redirect hosts")
+	if hostType != "proxy" && hostType != "redirect" && hostType != "static" && hostType != "php" {
+		return nil, fmt.Errorf("invalid host_type: %s (must be 'proxy', 'redirect', 'static', or 'php')", hostType)
+	}
+
+	// Validate required fields based on host type (same rules as Create).
+	switch hostType {
+	case "redirect":
+		if req.RedirectURL == "" && host.RedirectURL == "" {
+			return nil, fmt.Errorf("redirect_url is required for redirect hosts")
+		}
+	case "proxy":
+		if len(req.Upstreams) == 0 {
+			return nil, fmt.Errorf("at least one upstream is required for proxy hosts")
+		}
+	case "static":
+		effectiveRoot := req.RootPath
+		if effectiveRoot == "" {
+			effectiveRoot = host.RootPath
+		}
+		if effectiveRoot == "" {
+			return nil, fmt.Errorf("root_path is required for static hosts")
+		}
+	case "php":
+		effectiveRoot := req.RootPath
+		if effectiveRoot == "" {
+			effectiveRoot = host.RootPath
+		}
+		if effectiveRoot == "" {
+			return nil, fmt.Errorf("root_path is required for PHP hosts")
+		}
 	}
 
 	host.Domain = req.Domain
@@ -286,6 +362,10 @@ func (s *HostService) Update(id uint, req *model.HostCreateRequest) (*model.Host
 	}
 	host.DnsProviderID = uintPtrOrNil(req.DnsProviderID)
 	host.GroupID = uintPtrOrNil(req.GroupID)
+
+	// Save old upstream IDs before deletion (for route remapping).
+	var oldUpstreams []model.Upstream
+	s.db.Where("host_id = ?", id).Order("sort_order ASC").Find(&oldUpstreams)
 
 	// Replace associations
 	s.db.Where("host_id = ?", id).Delete(&model.Upstream{})
@@ -356,6 +436,25 @@ func (s *HostService) Update(id uint, req *model.HostCreateRequest) (*model.Host
 	for i := range host.Upstreams {
 		s.db.Create(&host.Upstreams[i])
 	}
+
+	// Remap route UpstreamIDs: old upstream at sort_order N → new upstream at sort_order N.
+	if len(oldUpstreams) > 0 && len(host.Upstreams) > 0 {
+		oldIDMap := make(map[uint]int) // old upstream ID → sort_order index
+		for i, u := range oldUpstreams {
+			oldIDMap[u.ID] = i
+		}
+		var routes []model.Route
+		s.db.Where("host_id = ?", id).Find(&routes)
+		for _, r := range routes {
+			if r.UpstreamID != nil {
+				if idx, ok := oldIDMap[*r.UpstreamID]; ok && idx < len(host.Upstreams) {
+					newID := host.Upstreams[idx].ID
+					s.db.Model(&r).Update("upstream_id", newID)
+				}
+			}
+		}
+	}
+
 	for i := range host.CustomHeaders {
 		s.db.Create(&host.CustomHeaders[i])
 	}
@@ -373,7 +472,7 @@ func (s *HostService) Update(id uint, req *model.HostCreateRequest) (*model.Host
 	}
 
 	if err := s.ApplyConfig(); err != nil {
-		log.Printf("Warning: failed to apply config after update: %v", err)
+		return nil, fmt.Errorf("host updated but Caddy config failed: %w", err)
 	}
 
 	return s.Get(id)
@@ -390,7 +489,7 @@ func (s *HostService) Delete(id uint) error {
 	}
 
 	if err := s.ApplyConfig(); err != nil {
-		log.Printf("Warning: failed to apply config after delete: %v", err)
+		return fmt.Errorf("host deleted but Caddy config failed: %w", err)
 	}
 	return nil
 }
@@ -409,7 +508,7 @@ func (s *HostService) Toggle(id uint) (*model.Host, error) {
 	}
 
 	if err := s.ApplyConfig(); err != nil {
-		log.Printf("Warning: failed to apply config after toggle: %v", err)
+		return nil, fmt.Errorf("host toggled but Caddy config failed: %w", err)
 	}
 	return host, nil
 }
@@ -447,6 +546,9 @@ func (s *HostService) ApplyConfig() error {
 
 	content := caddy.RenderCaddyfile(hosts, s.cfg, dnsMap)
 
+	// Read old Caddyfile for rollback if reload fails.
+	oldContent, _ := s.caddyMgr.GetCaddyfileContent()
+
 	if err := s.caddyMgr.WriteCaddyfile(content); err != nil {
 		return fmt.Errorf("failed to write Caddyfile: %w", err)
 	}
@@ -461,7 +563,13 @@ func (s *HostService) ApplyConfig() error {
 	if autoReload {
 		if s.caddyMgr.IsRunning() {
 			if err := s.caddyMgr.Reload(); err != nil {
-				return fmt.Errorf("failed to reload Caddy: %w", err)
+				// Rollback: restore old Caddyfile so Caddy stays on the last known-good config.
+				if oldContent != "" {
+					if wErr := s.caddyMgr.WriteCaddyfile(oldContent); wErr != nil {
+						log.Printf("CRITICAL: failed to rollback Caddyfile: %v", wErr)
+					}
+				}
+				return fmt.Errorf("failed to reload Caddy (config rolled back): %w", err)
 			}
 			log.Println("Caddy reloaded after config change")
 		} else {
@@ -506,38 +614,136 @@ func (s *HostService) ExportAll() (*model.ExportData, error) {
 
 // ImportAll replaces all hosts with imported data
 func (s *HostService) ImportAll(data *model.ExportData) error {
-	s.db.Exec("DELETE FROM basic_auths")
-	s.db.Exec("DELETE FROM access_rules")
-	s.db.Exec("DELETE FROM custom_headers")
-	s.db.Exec("DELETE FROM routes")
-	s.db.Exec("DELETE FROM upstreams")
-	s.db.Exec("DELETE FROM hosts")
-
+	// Validate ALL imported hosts before deleting anything.
 	for _, host := range data.Hosts {
-		host.ID = 0
-		for i := range host.Upstreams {
-			host.Upstreams[i].ID = 0
-			host.Upstreams[i].HostID = 0
+		if err := caddy.ValidateDomain(host.Domain); err != nil {
+			return fmt.Errorf("import validation failed for '%s': %w", host.Domain, err)
 		}
-		for i := range host.CustomHeaders {
-			host.CustomHeaders[i].ID = 0
-			host.CustomHeaders[i].HostID = 0
+		for _, u := range host.Upstreams {
+			if err := caddy.ValidateUpstream(u.Address); err != nil {
+				return fmt.Errorf("import validation failed for upstream '%s' on '%s': %w", u.Address, host.Domain, err)
+			}
 		}
-		for i := range host.AccessRules {
-			host.AccessRules[i].ID = 0
-			host.AccessRules[i].HostID = 0
+		for _, r := range host.AccessRules {
+			if err := caddy.ValidateIPRange(r.IPRange); err != nil {
+				return fmt.Errorf("import validation failed for access rule on '%s': %w", host.Domain, err)
+			}
 		}
-		for i := range host.Routes {
-			host.Routes[i].ID = 0
-			host.Routes[i].HostID = 0
+		if err := caddy.SanitizeCustomDirectives(host.CustomDirectives); err != nil {
+			return fmt.Errorf("import validation failed for custom directives on '%s': %w", host.Domain, err)
 		}
-		for i := range host.BasicAuths {
-			host.BasicAuths[i].ID = 0
-			host.BasicAuths[i].HostID = 0
+		// Validate all Caddyfile-embedded string fields.
+		for label, val := range map[string]string{
+			"redirect_url": host.RedirectURL, "root_path": host.RootPath,
+			"error_page_path": host.ErrorPagePath, "php_fastcgi": host.PHPFastCGI,
+			"index_files": host.IndexFiles, "cors_origins": host.CorsOrigins,
+			"cors_methods": host.CorsMethods, "cors_headers": host.CorsHeaders,
+		} {
+			if err := caddy.ValidateCaddyValue(label, val); err != nil {
+				return fmt.Errorf("import validation failed for %s on '%s': %w", label, host.Domain, err)
+			}
 		}
-		if err := s.db.Create(&host).Error; err != nil {
-			return fmt.Errorf("failed to import host %s: %w", host.Domain, err)
+		for _, h := range host.CustomHeaders {
+			if err := caddy.ValidateCaddyValue("header name", h.Name); err != nil {
+				return fmt.Errorf("import validation failed for header on '%s': %w", host.Domain, err)
+			}
+			if err := caddy.ValidateCaddyValue("header value", h.Value); err != nil {
+				return fmt.Errorf("import validation failed for header value on '%s': %w", host.Domain, err)
+			}
 		}
+		for _, r := range host.Routes {
+			if err := caddy.ValidateCaddyValue("route path", r.Path); err != nil {
+				return fmt.Errorf("import validation failed for route on '%s': %w", host.Domain, err)
+			}
+		}
+	}
+
+	// Wrap the entire delete + insert in a transaction so a mid-import
+	// failure doesn't leave the system with no hosts at all.
+	if err := s.db.Transaction(func(tx *gorm.DB) error {
+		tx.Exec("DELETE FROM host_tags")
+		tx.Exec("DELETE FROM basic_auths")
+		tx.Exec("DELETE FROM access_rules")
+		tx.Exec("DELETE FROM custom_headers")
+		tx.Exec("DELETE FROM routes")
+		tx.Exec("DELETE FROM upstreams")
+		tx.Exec("DELETE FROM hosts")
+
+		for _, host := range data.Hosts {
+			// Save original upstream IDs for route remapping.
+			origUpstreams := make([]model.Upstream, len(host.Upstreams))
+			copy(origUpstreams, host.Upstreams)
+
+			// Detach routes and tags — we'll insert them separately.
+			routes := host.Routes
+			host.Routes = nil
+			tags := host.Tags
+			host.Tags = nil
+
+			host.ID = 0
+			for i := range host.Upstreams {
+				host.Upstreams[i].ID = 0
+				host.Upstreams[i].HostID = 0
+			}
+			for i := range host.CustomHeaders {
+				host.CustomHeaders[i].ID = 0
+				host.CustomHeaders[i].HostID = 0
+			}
+			for i := range host.AccessRules {
+				host.AccessRules[i].ID = 0
+				host.AccessRules[i].HostID = 0
+			}
+			for i := range host.BasicAuths {
+				host.BasicAuths[i].ID = 0
+				host.BasicAuths[i].HostID = 0
+			}
+
+			if err := tx.Create(&host).Error; err != nil {
+				return fmt.Errorf("failed to import host %s: %w", host.Domain, err)
+			}
+
+			// Rebuild tag associations: look up each tag by name, create if missing.
+			for _, tag := range tags {
+				var existing model.Tag
+				if err := tx.Where("name = ?", tag.Name).First(&existing).Error; err != nil {
+					// Tag doesn't exist — create it.
+					existing = model.Tag{Name: tag.Name, Color: tag.Color}
+					if err := tx.Create(&existing).Error; err != nil {
+						return fmt.Errorf("failed to create tag %s: %w", tag.Name, err)
+					}
+				}
+				if err := tx.Exec("INSERT INTO host_tags (host_id, tag_id) VALUES (?, ?)", host.ID, existing.ID).Error; err != nil {
+					return fmt.Errorf("failed to associate tag %s with host %s: %w", tag.Name, host.Domain, err)
+				}
+			}
+
+			// Build old→new upstream ID mapping.
+			upstreamIDMap := make(map[uint]uint)
+			for i, orig := range origUpstreams {
+				if i < len(host.Upstreams) {
+					upstreamIDMap[orig.ID] = host.Upstreams[i].ID
+				}
+			}
+
+			// Insert routes with remapped UpstreamIDs.
+			for _, r := range routes {
+				r.ID = 0
+				r.HostID = host.ID
+				if r.UpstreamID != nil {
+					if newID, ok := upstreamIDMap[*r.UpstreamID]; ok {
+						r.UpstreamID = &newID
+					} else {
+						r.UpstreamID = nil // orphan reference — clear it
+					}
+				}
+				if err := tx.Create(&r).Error; err != nil {
+					return fmt.Errorf("failed to import route for %s: %w", host.Domain, err)
+				}
+			}
+		}
+		return nil
+	}); err != nil {
+		return err
 	}
 
 	return s.ApplyConfig()
@@ -546,6 +752,11 @@ func (s *HostService) ImportAll(data *model.ExportData) error {
 // It copies all main table fields (except ID, Domain, CreatedAt, UpdatedAt)
 // and all sub-table records (upstreams, custom_headers, access_rules, basic_auths, routes).
 func (s *HostService) CloneHost(sourceID uint, newDomain string) (*model.Host, error) {
+	// Validate domain for Caddyfile safety.
+	if err := caddy.ValidateDomain(newDomain); err != nil {
+		return nil, fmt.Errorf("invalid domain: %w", err)
+	}
+
 	// Domain uniqueness check
 	var count int64
 	s.db.Model(&model.Host{}).Where("domain = ?", newDomain).Count(&count)
@@ -594,7 +805,7 @@ func (s *HostService) CloneHost(sourceID uint, newDomain string) (*model.Host, e
 			GroupID:          source.GroupID,
 		}
 
-		// Deep copy sub-tables with zeroed ID and HostID
+		// Deep copy upstreams first (routes reference them by ID).
 		for _, u := range source.Upstreams {
 			newHost.Upstreams = append(newHost.Upstreams, model.Upstream{
 				Address:   u.Address,
@@ -628,16 +839,42 @@ func (s *HostService) CloneHost(sourceID uint, newDomain string) (*model.Host, e
 			})
 		}
 
-		for _, r := range source.Routes {
-			newHost.Routes = append(newHost.Routes, model.Route{
-				Path:       r.Path,
-				UpstreamID: r.UpstreamID,
-				SortOrder:  r.SortOrder,
-			})
-		}
-
+		// Create host + upstreams first so upstreams get new IDs.
 		if err := tx.Create(newHost).Error; err != nil {
 			return fmt.Errorf("failed to create cloned host: %w", err)
+		}
+
+		// Build old→new upstream ID mapping for route remapping.
+		upstreamIDMap := make(map[uint]uint) // source upstream ID → cloned upstream ID
+		for i, srcUp := range source.Upstreams {
+			if i < len(newHost.Upstreams) {
+				upstreamIDMap[srcUp.ID] = newHost.Upstreams[i].ID
+			}
+		}
+
+		// Now create routes with remapped UpstreamIDs.
+		for _, r := range source.Routes {
+			newRoute := model.Route{
+				HostID:    newHost.ID,
+				Path:      r.Path,
+				SortOrder: r.SortOrder,
+			}
+			if r.UpstreamID != nil {
+				if newID, ok := upstreamIDMap[*r.UpstreamID]; ok {
+					newRoute.UpstreamID = &newID
+				}
+				// If old ID not found in map, leave UpstreamID nil (orphan route).
+			}
+			if err := tx.Create(&newRoute).Error; err != nil {
+				return fmt.Errorf("failed to create cloned route: %w", err)
+			}
+		}
+
+		// Copy tag associations.
+		for _, tag := range source.Tags {
+			if err := tx.Create(&model.HostTag{HostID: newHost.ID, TagID: tag.ID}).Error; err != nil {
+				return fmt.Errorf("failed to clone tag: %w", err)
+			}
 		}
 
 		return nil

@@ -6,6 +6,7 @@ import (
 	"log"
 	"time"
 
+	"github.com/web-casa/webcasa/internal/caddy"
 	"github.com/web-casa/webcasa/internal/model"
 	"gorm.io/gorm"
 )
@@ -264,6 +265,76 @@ func (s *TemplateService) CreateFromTemplate(templateID uint, domain string) (*m
 			Username:     ba.Username,
 			PasswordHash: ba.PasswordHash,
 		})
+	}
+
+	// ── Validate all fields the same way HostService.Create does ──
+
+	// Validate domain for Caddyfile safety.
+	if err := caddy.ValidateDomain(domain); err != nil {
+		return nil, fmt.Errorf("invalid domain: %w", err)
+	}
+
+	// Validate host type and required fields.
+	hostType := host.HostType
+	if hostType != "proxy" && hostType != "redirect" && hostType != "static" && hostType != "php" {
+		return nil, fmt.Errorf("invalid host_type in template: %s", hostType)
+	}
+	switch hostType {
+	case "redirect":
+		if host.RedirectURL == "" {
+			return nil, fmt.Errorf("redirect_url is required for redirect hosts")
+		}
+	case "proxy":
+		if len(host.Upstreams) == 0 {
+			return nil, fmt.Errorf("at least one upstream is required for proxy hosts")
+		}
+	case "static", "php":
+		if host.RootPath == "" {
+			return nil, fmt.Errorf("root_path is required for %s hosts", hostType)
+		}
+	}
+
+	// Validate upstreams.
+	for _, u := range host.Upstreams {
+		if err := caddy.ValidateUpstream(u.Address); err != nil {
+			return nil, fmt.Errorf("invalid upstream '%s' in template: %w", u.Address, err)
+		}
+	}
+
+	// Validate access rule IPs.
+	for _, r := range host.AccessRules {
+		if err := caddy.ValidateIPRange(r.IPRange); err != nil {
+			return nil, fmt.Errorf("invalid access rule IP in template: %w", err)
+		}
+	}
+
+	// Validate custom directives.
+	if err := caddy.SanitizeCustomDirectives(host.CustomDirectives); err != nil {
+		return nil, fmt.Errorf("invalid custom directives in template: %w", err)
+	}
+
+	// Validate all string fields that get embedded in Caddyfile.
+	for label, val := range map[string]string{
+		"redirect_url":    host.RedirectURL,
+		"root_path":       host.RootPath,
+		"error_page_path": host.ErrorPagePath,
+		"php_fastcgi":     host.PHPFastCGI,
+		"index_files":     host.IndexFiles,
+		"cors_origins":    host.CorsOrigins,
+		"cors_methods":    host.CorsMethods,
+		"cors_headers":    host.CorsHeaders,
+	} {
+		if err := caddy.ValidateCaddyValue(label, val); err != nil {
+			return nil, fmt.Errorf("template validation: %w", err)
+		}
+	}
+	for _, h := range host.CustomHeaders {
+		if err := caddy.ValidateCaddyValue("header name", h.Name); err != nil {
+			return nil, fmt.Errorf("template validation: %w", err)
+		}
+		if err := caddy.ValidateCaddyValue("header value", h.Value); err != nil {
+			return nil, fmt.Errorf("template validation: %w", err)
+		}
 	}
 
 	if err := s.db.Create(host).Error; err != nil {

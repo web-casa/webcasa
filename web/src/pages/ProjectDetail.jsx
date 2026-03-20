@@ -64,6 +64,7 @@ export default function ProjectDetail() {
     const [diagnosing, setDiagnosing] = useState(false)
     const [manualDiagnosis, setManualDiagnosis] = useState(null)
     const [expandedDeps, setExpandedDeps] = useState({})
+    const [webhookToken, setWebhookToken] = useState('')
     const [cronJobs, setCronJobs] = useState([])
     const [cronDialogOpen, setCronDialogOpen] = useState(false)
     const [cronForm, setCronForm] = useState({ name: '', schedule: '', command: '', enabled: true })
@@ -99,6 +100,11 @@ export default function ProjectDetail() {
             const res = await deployAPI.getProject(id)
             setProject(res.data)
             setEnvVars(res.data.env_vars || [])
+            // Fetch webhook token separately (it has json:"-" on the model).
+            try {
+                const tokenRes = await deployAPI.getWebhookToken(id)
+                setWebhookToken(tokenRes.data?.webhook_token || '')
+            } catch { /* non-critical */ }
         } catch (e) {
             console.error(e)
         } finally {
@@ -423,8 +429,8 @@ export default function ProjectDetail() {
     }
 
     const copyWebhookUrl = () => {
-        if (!project?.webhook_token) return
-        const url = `${window.location.origin}/api/plugins/deploy/webhook/${project.webhook_token}`
+        if (!webhookToken) return
+        const url = `${window.location.origin}/api/plugins/deploy/webhook/${webhookToken}`
         navigator.clipboard.writeText(url)
     }
 
@@ -968,7 +974,7 @@ export default function ProjectDetail() {
                             <Text size="2" color="gray">{t('deploy.webhook_hint')}</Text>
                             <Flex gap="2" align="center">
                                 <Code style={{ flex: 1, overflow: 'hidden', textOverflow: 'ellipsis' }}>
-                                    {`${window.location.origin}/api/plugins/deploy/webhook/${project.webhook_token}`}
+                                    {`${window.location.origin}/api/plugins/deploy/webhook/${webhookToken || '...'}`}
                                 </Code>
                                 <Tooltip content={t('common.copy')}>
                                     <IconButton variant="ghost" size="1" onClick={copyWebhookUrl}>

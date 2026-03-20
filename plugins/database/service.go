@@ -78,10 +78,36 @@ func (s *Service) CreateInstance(req *CreateInstanceRequest) (*Instance, error) 
 		return nil, fmt.Errorf("instance name %q already exists", req.Name)
 	}
 
+	// Validate that sanitized name is meaningful (not all special chars).
+	safeName := sanitizeName(req.Name)
+	if safeName == "unnamed" {
+		return nil, fmt.Errorf("instance name must contain at least one letter or digit")
+	}
+
+	// Check slug collision: different names like "Foo!" and "Foo?" map to the same
+	// container name and data directory, causing cross-interference.
+	var existingInstances []Instance
+	s.db.Select("name").Find(&existingInstances)
+	for _, ex := range existingInstances {
+		if sanitizeName(ex.Name) == safeName {
+			return nil, fmt.Errorf("instance name %q conflicts with existing instance %q (same container name)", req.Name, ex.Name)
+		}
+	}
+
 	// Allocate port — default to engine's standard port.
 	port := req.Port
 	if port == 0 {
 		port = engineInfo.Port
+	}
+	// Validate port range.
+	if port < 1024 || port > 65535 {
+		return nil, fmt.Errorf("port must be between 1024 and 65535, got %d", port)
+	}
+	// Check for port conflicts with existing instances.
+	var portConflict int64
+	s.db.Model(&Instance{}).Where("port = ?", port).Count(&portConflict)
+	if portConflict > 0 {
+		return nil, fmt.Errorf("port %d is already in use by another instance", port)
 	}
 
 	// Memory limit — default 0.5g.
@@ -90,7 +116,7 @@ func (s *Service) CreateInstance(req *CreateInstanceRequest) (*Instance, error) 
 		memLimit = "0.5g"
 	}
 
-	containerName := "webcasa-db-" + sanitizeName(req.Name)
+	containerName := "webcasa-db-" + safeName
 
 	// Serialize engine config to JSON.
 	var configJSON string
@@ -121,7 +147,7 @@ func (s *Service) CreateInstance(req *CreateInstanceRequest) (*Instance, error) 
 	// Generate and write compose file.
 	composeContent := GenerateComposeFile(inst)
 	composePath := filepath.Join(inst.DataDir, "docker-compose.yml")
-	if err := os.WriteFile(composePath, []byte(composeContent), 0644); err != nil {
+	if err := os.WriteFile(composePath, []byte(composeContent), 0600); err != nil {
 		return nil, fmt.Errorf("write compose file: %w", err)
 	}
 
@@ -140,7 +166,12 @@ func (s *Service) CreateInstance(req *CreateInstanceRequest) (*Instance, error) 
 	// Auto-start if requested.
 	if req.AutoStart {
 		if err := s.startInstance(inst); err != nil {
-			s.logger.Error("auto-start failed", "instance", req.Name, "err", err)
+			// Rollback: remove DB record and data dir.
+			s.db.Where("instance_id = ?", inst.ID).Delete(&Database{})
+			s.db.Where("instance_id = ?", inst.ID).Delete(&DatabaseUser{})
+			s.db.Delete(&Instance{}, inst.ID)
+			os.RemoveAll(inst.DataDir)
+			return nil, fmt.Errorf("auto-start failed: %w", err)
 		}
 	}
 
@@ -170,9 +201,33 @@ func (s *Service) CreateInstanceStream(req *CreateInstanceRequest, progressCb fu
 		return nil, fmt.Errorf("instance name %q already exists", req.Name)
 	}
 
+	safeName := sanitizeName(req.Name)
+	if safeName == "unnamed" {
+		return nil, fmt.Errorf("instance name must contain at least one letter or digit")
+	}
+
+	// Check slug collision: different names mapping to the same container/directory.
+	var existingInstances []Instance
+	s.db.Select("name").Find(&existingInstances)
+	for _, ex := range existingInstances {
+		if sanitizeName(ex.Name) == safeName {
+			return nil, fmt.Errorf("instance name %q conflicts with existing instance %q (same container name)", req.Name, ex.Name)
+		}
+	}
+
 	port := req.Port
 	if port == 0 {
 		port = engineInfo.Port
+	}
+	// Validate port range.
+	if port < 1024 || port > 65535 {
+		return nil, fmt.Errorf("port must be between 1024 and 65535, got %d", port)
+	}
+	// Check for port conflicts with existing instances.
+	var portConflict int64
+	s.db.Model(&Instance{}).Where("port = ?", port).Count(&portConflict)
+	if portConflict > 0 {
+		return nil, fmt.Errorf("port %d is already in use by another instance", port)
 	}
 
 	memLimit := req.MemoryLimit
@@ -180,7 +235,7 @@ func (s *Service) CreateInstanceStream(req *CreateInstanceRequest, progressCb fu
 		memLimit = "0.5g"
 	}
 
-	containerName := "webcasa-db-" + sanitizeName(req.Name)
+	containerName := "webcasa-db-" + safeName
 
 	var configJSON string
 	if req.Config != nil {
@@ -209,7 +264,7 @@ func (s *Service) CreateInstanceStream(req *CreateInstanceRequest, progressCb fu
 
 	composeContent := GenerateComposeFile(inst)
 	composePath := filepath.Join(inst.DataDir, "docker-compose.yml")
-	if err := os.WriteFile(composePath, []byte(composeContent), 0644); err != nil {
+	if err := os.WriteFile(composePath, []byte(composeContent), 0600); err != nil {
 		return nil, fmt.Errorf("write compose file: %w", err)
 	}
 
@@ -227,8 +282,12 @@ func (s *Service) CreateInstanceStream(req *CreateInstanceRequest, progressCb fu
 	if req.AutoStart {
 		progressCb("Starting instance (pulling image if needed)...")
 		if err := s.runComposeStream(inst.DataDir, progressCb, "up", "-d", "--remove-orphans"); err != nil {
-			s.logger.Error("auto-start failed", "instance", req.Name, "err", err)
-			progressCb("Warning: auto-start failed: " + err.Error())
+			// Rollback: remove DB record and data dir.
+			s.db.Where("instance_id = ?", inst.ID).Delete(&Database{})
+			s.db.Where("instance_id = ?", inst.ID).Delete(&DatabaseUser{})
+			s.db.Delete(&Instance{}, inst.ID)
+			os.RemoveAll(inst.DataDir)
+			return nil, fmt.Errorf("auto-start failed: %w", err)
 		}
 	}
 
@@ -271,8 +330,11 @@ func (s *Service) DeleteInstance(id uint) error {
 		return err
 	}
 
-	// Stop and remove containers + volumes.
-	_ = s.runCompose(inst.DataDir, "down", "--volumes", "--remove-orphans")
+	// Stop and remove containers + volumes — if this fails, keep the instance visible.
+	if err := s.runCompose(inst.DataDir, "down", "--volumes", "--remove-orphans"); err != nil {
+		s.logger.Error("compose down failed", "instance", inst.Name, "err", err)
+		return fmt.Errorf("failed to stop instance: %w (instance kept for manual cleanup)", err)
+	}
 
 	// Remove data directory.
 	os.RemoveAll(inst.DataDir)
@@ -402,7 +464,8 @@ func (s *Service) GetRootPassword(id uint) (string, error) {
 }
 
 // ExecuteQuery executes a read-only query against a running database instance.
-// Only SELECT, SHOW, DESCRIBE, and EXPLAIN statements are allowed.
+// SQL: only SELECT, SHOW, DESCRIBE, and EXPLAIN are allowed.
+// Redis: only read-only commands (GET, KEYS, INFO, etc.) are allowed.
 func (s *Service) ExecuteQuery(instanceID uint, database, query string, limit int) (*QueryResult, error) {
 	inst, err := s.GetInstance(instanceID)
 	if err != nil {
@@ -412,9 +475,16 @@ func (s *Service) ExecuteQuery(instanceID uint, database, query string, limit in
 		return nil, fmt.Errorf("instance is not running")
 	}
 
-	// Validate query is read-only
-	if !isReadOnlyQuery(query) {
-		return nil, fmt.Errorf("only SELECT, SHOW, DESCRIBE, and EXPLAIN statements are allowed")
+	if inst.Engine == EngineRedis {
+		// Redis: validate command is read-only.
+		if !isReadOnlyRedisCommand(query) {
+			return nil, fmt.Errorf("only read-only Redis commands are allowed (GET, MGET, KEYS, SCAN, INFO, TTL, TYPE, EXISTS, DBSIZE, LRANGE, SCARD, SMEMBERS, HGETALL, HGET, LLEN, ZRANGE, ZCARD)")
+		}
+	} else {
+		// SQL: validate query is read-only.
+		if !isReadOnlyQuery(query) {
+			return nil, fmt.Errorf("only SELECT, SHOW, DESCRIBE, and EXPLAIN statements are allowed")
+		}
 	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
@@ -424,7 +494,27 @@ func (s *Service) ExecuteQuery(instanceID uint, database, query string, limit in
 	return client.ExecuteQuery(ctx, inst, database, query, limit)
 }
 
-// isReadOnlyQuery checks if a SQL query is a read-only statement.
+// isReadOnlyRedisCommand checks if a Redis command is read-only.
+func isReadOnlyRedisCommand(cmd string) bool {
+	parts := strings.Fields(strings.TrimSpace(cmd))
+	if len(parts) == 0 {
+		return false
+	}
+	readOnly := map[string]bool{
+		"GET": true, "MGET": true, "KEYS": true, "SCAN": true,
+		"INFO": true, "TTL": true, "PTTL": true, "TYPE": true,
+		"EXISTS": true, "DBSIZE": true, "RANDOMKEY": true,
+		"LRANGE": true, "LLEN": true, "LINDEX": true,
+		"SCARD": true, "SMEMBERS": true, "SISMEMBER": true,
+		"HGET": true, "HGETALL": true, "HLEN": true, "HKEYS": true, "HVALS": true,
+		"ZRANGE": true, "ZCARD": true, "ZSCORE": true, "ZRANK": true,
+		"STRLEN": true, "PING": true, "ECHO": true, "TIME": true,
+		"SELECT": true,
+	}
+	return readOnly[strings.ToUpper(parts[0])]
+}
+
+// isReadOnlyQuery checks if a SQL query is a read-only, single statement.
 func isReadOnlyQuery(query string) bool {
 	// Normalize: trim whitespace and get the first keyword
 	normalized := strings.TrimSpace(query)
@@ -447,7 +537,18 @@ func isReadOnlyQuery(query string) bool {
 		break
 	}
 
+	// Reject stacked queries: look for semicolons outside quoted strings.
+	body := strings.TrimRight(normalized, "; \t\n\r")
+	if containsUnquotedSemicolon(body) {
+		return false
+	}
+
 	upper := strings.ToUpper(normalized)
+
+	// Reject SELECT INTO (write side-effects via single statement).
+	if strings.Contains(upper, " INTO ") && (strings.Contains(upper, "OUTFILE") || strings.Contains(upper, "DUMPFILE") || strings.Contains(upper, "TEMP ") || strings.Contains(upper, "TEMPORARY ")) {
+		return false
+	}
 	allowedPrefixes := []string{"SELECT ", "SELECT\t", "SELECT\n",
 		"SHOW ", "SHOW\t", "SHOW\n",
 		"DESCRIBE ", "DESCRIBE\t", "DESCRIBE\n",
@@ -455,6 +556,37 @@ func isReadOnlyQuery(query string) bool {
 		"EXPLAIN ", "EXPLAIN\t", "EXPLAIN\n"}
 	for _, prefix := range allowedPrefixes {
 		if strings.HasPrefix(upper, prefix) {
+			// EXPLAIN ANALYZE executes the underlying statement (DELETE/UPDATE/INSERT)
+			// on PostgreSQL and MySQL 8+, so it is NOT read-only.
+			if strings.HasPrefix(upper, "EXPLAIN") && strings.Contains(upper, "ANALYZE") {
+				return false
+			}
+			return true
+		}
+	}
+	return false
+}
+
+// containsUnquotedSemicolon checks whether s has a semicolon that is NOT
+// inside a single-quoted SQL string literal. This avoids false positives
+// for queries like SELECT ';' AS s while still blocking stacked statements.
+func containsUnquotedSemicolon(s string) bool {
+	inQuote := false
+	for i := 0; i < len(s); i++ {
+		ch := s[i]
+		if ch == '\'' {
+			if inQuote && i+1 < len(s) && s[i+1] == '\'' {
+				i++ // escaped quote '' — skip both
+				continue
+			}
+			inQuote = !inQuote
+			continue
+		}
+		if ch == '\\' && inQuote {
+			i++ // skip escaped character inside string
+			continue
+		}
+		if ch == ';' && !inQuote {
 			return true
 		}
 	}
@@ -492,6 +624,12 @@ func (s *Service) CreateDatabase(instanceID uint, req *CreateDatabaseRequest) (*
 		} else {
 			charset = "utf8mb4"
 		}
+	}
+
+	// Validate database name matches the same pattern used by the SQL query executor,
+	// so databases created here can always be queried later.
+	if !validDBNameRe.MatchString(req.Name) {
+		return nil, fmt.Errorf("invalid database name %q: must match [a-zA-Z_][a-zA-Z0-9_-]*", req.Name)
 	}
 
 	client := NewDBClient()
@@ -558,10 +696,16 @@ func (s *Service) CreateUser(instanceID uint, req *CreateUserRequest) (*Database
 	}
 
 	// Grant access to specified databases.
+	var grantErrors []string
 	for _, dbName := range req.Databases {
 		if err := client.GrantAll(inst, req.Username, dbName); err != nil {
-			s.logger.Error("grant failed", "user", req.Username, "db", dbName, "err", err)
+			grantErrors = append(grantErrors, fmt.Sprintf("%s: %v", dbName, err))
 		}
+	}
+	if len(grantErrors) > 0 {
+		// Rollback: drop the user we just created since grants failed.
+		_ = client.DropUser(inst, req.Username)
+		return nil, fmt.Errorf("grant failed for databases: %s", strings.Join(grantErrors, "; "))
 	}
 
 	user := &DatabaseUser{
@@ -715,5 +859,9 @@ func sanitizeName(name string) string {
 		}
 		return '-'
 	}, name)
-	return strings.Trim(name, "-")
+	name = strings.Trim(name, "-")
+	if name == "" {
+		name = "unnamed"
+	}
+	return name
 }

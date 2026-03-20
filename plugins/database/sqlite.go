@@ -11,12 +11,13 @@ import (
 
 // SQLiteBrowser provides read-only access to SQLite database files.
 type SQLiteBrowser struct {
-	logger *slog.Logger
+	logger   *slog.Logger
+	dataDir  string // panel data directory — used to restrict accessible paths
 }
 
 // NewSQLiteBrowser creates a new SQLiteBrowser.
-func NewSQLiteBrowser(logger *slog.Logger) *SQLiteBrowser {
-	return &SQLiteBrowser{logger: logger}
+func NewSQLiteBrowser(logger *slog.Logger, dataDir string) *SQLiteBrowser {
+	return &SQLiteBrowser{logger: logger, dataDir: dataDir}
 }
 
 // validExtensions lists allowed SQLite file extensions.
@@ -29,7 +30,7 @@ var validExtensions = map[string]bool{
 // unsafePattern matches SQL keywords that could modify data.
 var unsafePattern = regexp.MustCompile(`(?i)\b(INSERT|UPDATE|DELETE|DROP|ALTER|CREATE|ATTACH|DETACH|REPLACE|PRAGMA\s+\w+\s*=)\b`)
 
-// validatePath checks that the file path is safe.
+// validatePath checks that the file path is safe and within the panel data directory.
 func (b *SQLiteBrowser) validatePath(path string) error {
 	if !filepath.IsAbs(path) {
 		return fmt.Errorf("path must be absolute")
@@ -40,6 +41,12 @@ func (b *SQLiteBrowser) validatePath(path string) error {
 	ext := filepath.Ext(path)
 	if !validExtensions[ext] {
 		return fmt.Errorf("invalid file extension: %s (allowed: .db, .sqlite, .sqlite3)", ext)
+	}
+	// Restrict to the panel data directory to prevent reading arbitrary system files.
+	cleaned := filepath.Clean(path)
+	dataPrefix := filepath.Clean(b.dataDir)
+	if !strings.HasPrefix(cleaned, dataPrefix+"/") && cleaned != dataPrefix {
+		return fmt.Errorf("access denied: path must be within the panel data directory")
 	}
 	return nil
 }

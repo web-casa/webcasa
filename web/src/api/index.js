@@ -228,11 +228,11 @@ export const deployAPI = {
     getCacheInfo: (id) => api.get(`/plugins/deploy/projects/${id}/cache`),
     clearCache: (id) => api.delete(`/plugins/deploy/projects/${id}/cache`),
 
+    // Webhook token (admin only)
+    getWebhookToken: (id) => api.get(`/plugins/deploy/projects/${id}/webhook`),
+
     // Environment cloning
     cloneEnv: (targetId, sourceId) => api.post(`/plugins/deploy/projects/${targetId}/clone-env`, { source_id: sourceId }),
-
-    // Webhook info
-    getWebhook: (id) => api.get(`/plugins/deploy/projects/${id}/webhook`),
 
     // Cron jobs
     listCrons: (id) => api.get(`/plugins/deploy/projects/${id}/crons`),

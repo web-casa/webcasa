@@ -188,7 +188,7 @@ export default function TemplateMarket() {
 
             {/* Deploy Dialog */}
             <Dialog.Root open={deployOpen} onOpenChange={setDeployOpen}>
-                <Dialog.Content maxWidth="480px">
+                <Dialog.Content maxWidth="480px" aria-describedby={undefined}>
                     <Dialog.Title>{t('appstore.deploy_template')} — {selectedTemplate?.name}</Dialog.Title>
 
                     <Flex direction="column" gap="3" mt="3">

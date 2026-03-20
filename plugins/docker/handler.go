@@ -3,9 +3,11 @@ package docker
 import (
 	"bufio"
 	"context"
+	"fmt"
 	"io"
 	"net/http"
 	"net/url"
+	"os"
 	"strconv"
 	"time"
 
@@ -78,6 +80,11 @@ func (h *Handler) CreateStack(c *gin.Context) {
 	}
 	stack, err := h.svc.CreateStack(&req)
 	if err != nil {
+		// If the stack was created but auto-start failed, return 201 with a warning.
+		if stack != nil {
+			c.JSON(http.StatusCreated, gin.H{"data": stack, "warning": err.Error()})
+			return
+		}
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
 	}
@@ -174,7 +181,7 @@ func (h *Handler) StackLogs(c *gin.Context) {
 	if err != nil {
 		return
 	}
-	tail := c.DefaultQuery("tail", "200")
+	tail := sanitizeTail(c.DefaultQuery("tail", "200"))
 	logs, err := h.svc.StackLogs(id, tail)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
@@ -246,7 +253,7 @@ func (h *Handler) RemoveContainer(c *gin.Context) {
 func (h *Handler) ContainerLogs(c *gin.Context) {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
-	tail := c.DefaultQuery("tail", "200")
+	tail := sanitizeTail(c.DefaultQuery("tail", "200"))
 	reader, err := h.client.ContainerLogs(ctx, c.Param("id"), tail, false)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
@@ -297,15 +304,28 @@ func (h *Handler) UpdateDaemonConfig(c *gin.Context) {
 		return
 	}
 
+	// Back up the current config as raw bytes so we can restore on restart failure.
+	oldConfig, _ := os.ReadFile("/etc/docker/daemon.json")
+
 	// Write merged config.
 	if err := WriteDaemonConfig(&cfg, raw); err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to write config: " + err.Error()})
 		return
 	}
 
-	// Restart Docker daemon.
+	// Restart Docker daemon. If it fails, the new config is likely invalid —
+	// restore the previous config so Docker can start again.
 	if err := RestartDockerDaemon(); err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "config saved but failed to restart Docker: " + err.Error()})
+		// Attempt to rollback.
+		if rollbackErr := WriteDaemonConfigRaw(oldConfig); rollbackErr != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{
+				"error": fmt.Sprintf("restart failed: %v; rollback also failed: %v — manual intervention required", err, rollbackErr),
+			})
+			return
+		}
+		// Try restarting with the old config.
+		_ = RestartDockerDaemon()
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid config: Docker failed to restart, previous config restored"})
 		return
 	}
 
@@ -522,6 +542,18 @@ func (h *Handler) RemoveVolume(c *gin.Context) {
 
 // ── Helpers ──
 
+// sanitizeTail validates the tail parameter as a positive integer with a max cap.
+func sanitizeTail(s string) string {
+	n, err := strconv.Atoi(s)
+	if err != nil || n <= 0 {
+		return "200"
+	}
+	if n > 5000 {
+		n = 5000
+	}
+	return strconv.Itoa(n)
+}
+
 func parseID(c *gin.Context) (uint, error) {
 	id, err := strconv.ParseUint(c.Param("id"), 10, 32)
 	if err != nil {
@@ -574,7 +606,7 @@ func (h *Handler) ContainerLogsWS(c *gin.Context) {
 	defer conn.Close()
 
 	containerID := c.Param("id")
-	tail := c.DefaultQuery("tail", "100")
+	tail := sanitizeTail(c.DefaultQuery("tail", "100"))
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -623,7 +655,7 @@ func (h *Handler) StackLogsWS(c *gin.Context) {
 		conn.WriteMessage(websocket.TextMessage, []byte("Error: invalid id"))
 		return
 	}
-	tail := c.DefaultQuery("tail", "100")
+	tail := sanitizeTail(c.DefaultQuery("tail", "100"))
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()

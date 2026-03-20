@@ -195,10 +195,7 @@ func TestSanitizeCustomDirectives(t *testing.T) {
 		{name: "close parent then inject", directives: "}\nmalicious\n{", wantErr: true},
 		{name: "extra closing brace after block", directives: "route {\n    respond 200\n}\n}", wantErr: true},
 		{name: "deep nesting with unmatched open", directives: "a {\n  b {\n    c {\n  }\n}", wantErr: true},
-		// Note: "} {" on a single line is NOT caught because the implementation
-		// checks brace depth after processing all characters in a line.
-		// After "}" depth=-1, after "{" depth=0, so the per-line check sees 0.
-		// This is a known limitation of the line-level depth check.
+		{name: "close then open on same line", directives: "} {", wantErr: true},
 		{name: "close then open on separate lines", directives: "}\n{", wantErr: true},
 		{name: "multiple unbalanced opens", directives: "a {\nb {", wantErr: true},
 		{name: "single close brace in middle", directives: "header X-A value\n}\nheader X-B value", wantErr: true},

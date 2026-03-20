@@ -3,6 +3,7 @@ package notify
 import (
 	"encoding/json"
 	"log/slog"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -14,6 +15,21 @@ import (
 	"gorm.io/gorm"
 	"gorm.io/gorm/logger"
 )
+
+// newTestServer creates an httptest server that listens on IPv4 only,
+// avoiding failures in environments where IPv6 (::1) is not permitted.
+func newTestServer(handler http.Handler) *httptest.Server {
+	l, err := net.Listen("tcp4", "127.0.0.1:0")
+	if err != nil {
+		panic("failed to listen on IPv4: " + err.Error())
+	}
+	server := &httptest.Server{
+		Listener: l,
+		Config:   &http.Server{Handler: handler},
+	}
+	server.Start()
+	return server
+}
 
 func setupTestDB(t *testing.T) *gorm.DB {
 	t.Helper()
@@ -127,7 +143,7 @@ func TestNotifier_SendWebhook(t *testing.T) {
 	var receivedBody []byte
 	var receivedContentType string
 
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	server := newTestServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		receivedContentType = r.Header.Get("Content-Type")
 		buf := make([]byte, 4096)
 		n, _ := r.Body.Read(buf)
@@ -171,7 +187,7 @@ func TestNotifier_SendWebhook(t *testing.T) {
 func TestNotifier_SendWebhook_CustomHeaders(t *testing.T) {
 	var receivedAuth string
 
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	server := newTestServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		receivedAuth = r.Header.Get("Authorization")
 		w.WriteHeader(200)
 	}))
@@ -195,7 +211,7 @@ func TestNotifier_SendWebhook_CustomHeaders(t *testing.T) {
 }
 
 func TestNotifier_SendWebhook_ServerError(t *testing.T) {
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	server := newTestServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(500)
 	}))
 	defer server.Close()
@@ -225,7 +241,7 @@ func TestNotifier_SendWebhook_EmptyURL(t *testing.T) {
 
 func TestNotifier_TestChannel(t *testing.T) {
 	received := false
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	server := newTestServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		received = true
 		w.WriteHeader(200)
 	}))
@@ -247,7 +263,7 @@ func TestNotifier_TestChannel(t *testing.T) {
 
 func TestNotifier_Send_MatchesEvents(t *testing.T) {
 	callCount := 0
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	server := newTestServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		callCount++
 		w.WriteHeader(200)
 	}))
@@ -284,7 +300,7 @@ func TestNotifier_Send_MatchesEvents(t *testing.T) {
 
 func TestNotifier_Send_DisabledChannel(t *testing.T) {
 	callCount := 0
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	server := newTestServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		callCount++
 		w.WriteHeader(200)
 	}))

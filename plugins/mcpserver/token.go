@@ -42,8 +42,8 @@ func (s *TokenService) CreateToken(userID uint, name string, permissions string,
 	// Prefix for fast lookup: "wc_" + first 8 hex chars of the random part
 	prefix := plaintext[:11] // "wc_" + 8 chars
 
-	if permissions == "" {
-		permissions = "[]"
+	if permissions == "" || permissions == "[]" {
+		permissions = `["*"]`
 	}
 
 	token := &APIToken{

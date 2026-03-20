@@ -108,7 +108,7 @@ func WriteDaemonConfig(cfg *DaemonConfig, raw map[string]interface{}) error {
 
 	// Atomic write: write to .tmp then rename.
 	tmpPath := daemonConfigPath + ".tmp"
-	if err := os.WriteFile(tmpPath, data, 0644); err != nil {
+	if err := os.WriteFile(tmpPath, data, 0600); err != nil {
 		return fmt.Errorf("write daemon.json.tmp: %w", err)
 	}
 	if err := os.Rename(tmpPath, daemonConfigPath); err != nil {
@@ -116,6 +116,23 @@ func WriteDaemonConfig(cfg *DaemonConfig, raw map[string]interface{}) error {
 		return fmt.Errorf("rename daemon.json.tmp: %w", err)
 	}
 
+	return nil
+}
+
+// WriteDaemonConfigRaw writes raw bytes to the daemon.json file atomically.
+// Used for rollback when a restart with new config fails.
+func WriteDaemonConfigRaw(data []byte) error {
+	if err := os.MkdirAll(filepath.Dir(daemonConfigPath), 0755); err != nil {
+		return fmt.Errorf("create docker config dir: %w", err)
+	}
+	tmpPath := daemonConfigPath + ".tmp"
+	if err := os.WriteFile(tmpPath, data, 0600); err != nil {
+		return fmt.Errorf("write daemon.json.tmp: %w", err)
+	}
+	if err := os.Rename(tmpPath, daemonConfigPath); err != nil {
+		os.Remove(tmpPath)
+		return fmt.Errorf("rename daemon.json.tmp: %w", err)
+	}
 	return nil
 }
 

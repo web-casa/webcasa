@@ -176,10 +176,10 @@ func main() {
 	adminOnly.PATCH("/hosts/:id/toggle", hostH.Toggle)
 	adminOnly.POST("/hosts/:id/clone", hostH.Clone)
 
-	// SSL Certificate management
+	// SSL Certificate management (admin only — modifies TLS config)
 	certH := handler.NewCertHandler(hostSvc, cfg)
-	protected.POST("/hosts/:id/cert", certH.Upload)
-	protected.DELETE("/hosts/:id/cert", certH.Delete)
+	adminOnly.POST("/hosts/:id/cert", certH.Upload)
+	adminOnly.DELETE("/hosts/:id/cert", certH.Delete)
 
 	// Caddy process control (admin only)
 	caddyH := handler.NewCaddyHandler(caddyMgr, db)
@@ -189,7 +189,7 @@ func main() {
 	adminOnly.POST("/caddy/reload", caddyH.Reload)
 	adminOnly.GET("/caddy/check-upgrade", caddyH.CheckUpgrade)
 	adminOnly.POST("/caddy/upgrade", caddyH.Upgrade)
-	protected.GET("/caddy/caddyfile", caddyH.GetCaddyfile)
+	adminOnly.GET("/caddy/caddyfile", caddyH.GetCaddyfile)
 	adminOnly.POST("/caddy/caddyfile", caddyH.SaveCaddyfile)
 	adminOnly.POST("/caddy/fmt", caddyH.Format)
 	adminOnly.POST("/caddy/validate", caddyH.Validate)

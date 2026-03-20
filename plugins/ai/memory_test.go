@@ -128,15 +128,15 @@ func TestMemoryService_SaveAndSearch(t *testing.T) {
 	ms := NewMemoryService(db, testLogger())
 
 	// Save some memories.
-	_, err := ms.SaveMemory("This server runs Next.js on port 3000 with PM2", "server_config", 0.8, nil)
+	_, err := ms.SaveMemory(1,"This server runs Next.js on port 3000 with PM2", "server_config", 0.8, nil)
 	if err != nil {
 		t.Fatalf("save memory 1: %v", err)
 	}
-	_, err = ms.SaveMemory("MySQL OOM was fixed by setting innodb_buffer_pool_size=256M", "troubleshooting", 0.9, nil)
+	_, err = ms.SaveMemory(1,"MySQL OOM was fixed by setting innodb_buffer_pool_size=256M", "troubleshooting", 0.9, nil)
 	if err != nil {
 		t.Fatalf("save memory 2: %v", err)
 	}
-	_, err = ms.SaveMemory("User prefers Docker Compose for deployments", "user_preference", 0.7, nil)
+	_, err = ms.SaveMemory(1,"User prefers Docker Compose for deployments", "user_preference", 0.7, nil)
 	if err != nil {
 		t.Fatalf("save memory 3: %v", err)
 	}
@@ -151,7 +151,7 @@ func TestMemoryService_SaveAndSearch(t *testing.T) {
 	}
 
 	// Search by keyword.
-	results, err := ms.SearchMemories("MySQL OOM", 5)
+	results, err := ms.SearchMemories(1,"MySQL OOM", 5)
 	if err != nil {
 		t.Fatalf("search: %v", err)
 	}
@@ -174,10 +174,10 @@ func TestMemoryService_KeywordFallback(t *testing.T) {
 	ms := NewMemoryService(db, testLogger())
 	// No embedding client — should use keyword search.
 
-	ms.SaveMemory("Redis is running on port 6379", "server_config", 0.5, nil)
-	ms.SaveMemory("Nginx was removed, using Caddy now", "server_config", 0.6, nil)
+	ms.SaveMemory(1,"Redis is running on port 6379", "server_config", 0.5, nil)
+	ms.SaveMemory(1,"Nginx was removed, using Caddy now", "server_config", 0.6, nil)
 
-	results, err := ms.SearchMemories("Redis port", 5)
+	results, err := ms.SearchMemories(1,"Redis port", 5)
 	if err != nil {
 		t.Fatalf("search: %v", err)
 	}
@@ -191,11 +191,11 @@ func TestMemoryService_Deduplication(t *testing.T) {
 	ms := NewMemoryService(db, testLogger())
 
 	// Save identical content twice.
-	m1, err := ms.SaveMemory("Server has 4 CPU cores and 8GB RAM", "server_config", 0.5, nil)
+	m1, err := ms.SaveMemory(1,"Server has 4 CPU cores and 8GB RAM", "server_config", 0.5, nil)
 	if err != nil {
 		t.Fatalf("save 1: %v", err)
 	}
-	m2, err := ms.SaveMemory("Server has 4 CPU cores and 8GB RAM", "server_config", 0.8, nil)
+	m2, err := ms.SaveMemory(1,"Server has 4 CPU cores and 8GB RAM", "server_config", 0.8, nil)
 	if err != nil {
 		t.Fatalf("save 2: %v", err)
 	}
@@ -221,10 +221,10 @@ func TestMemoryService_BuildMemoryContext(t *testing.T) {
 	db := setupTestDB(t)
 	ms := NewMemoryService(db, testLogger())
 
-	ms.SaveMemory("Port 3000 is used by the Next.js app", "server_config", 0.8, nil)
-	ms.SaveMemory("The MySQL root password was changed last week", "troubleshooting", 0.6, nil)
+	ms.SaveMemory(1,"Port 3000 is used by the Next.js app", "server_config", 0.8, nil)
+	ms.SaveMemory(1,"The MySQL root password was changed last week", "troubleshooting", 0.6, nil)
 
-	ctx, err := ms.BuildMemoryContext("Next.js port", 5)
+	ctx, err := ms.BuildMemoryContext(1,"Next.js port", 5)
 	if err != nil {
 		t.Fatalf("build context: %v", err)
 	}
@@ -243,11 +243,11 @@ func TestMemoryService_DeleteAndClear(t *testing.T) {
 	db := setupTestDB(t)
 	ms := NewMemoryService(db, testLogger())
 
-	m1, _ := ms.SaveMemory("fact one", "general", 0.5, nil)
-	ms.SaveMemory("fact two", "general", 0.5, nil)
+	m1, _ := ms.SaveMemory(1,"fact one", "general", 0.5, nil)
+	ms.SaveMemory(1,"fact two", "general", 0.5, nil)
 
 	// Delete one.
-	if err := ms.DeleteMemory(m1.ID); err != nil {
+	if err := ms.DeleteMemory(1,m1.ID); err != nil {
 		t.Fatalf("delete: %v", err)
 	}
 	count, _ := ms.Count()
@@ -256,7 +256,7 @@ func TestMemoryService_DeleteAndClear(t *testing.T) {
 	}
 
 	// Clear all.
-	if err := ms.ClearAll(); err != nil {
+	if err := ms.ClearAll(1); err != nil {
 		t.Fatalf("clear: %v", err)
 	}
 	count, _ = ms.Count()
@@ -270,11 +270,11 @@ func TestMemoryService_ListPagination(t *testing.T) {
 	ms := NewMemoryService(db, testLogger())
 
 	for i := 0; i < 25; i++ {
-		ms.SaveMemory("memory "+string(rune('A'+i)), "general", 0.5, nil)
+		ms.SaveMemory(1,"memory "+string(rune('A'+i)), "general", 0.5, nil)
 	}
 
 	// Page 1.
-	memories, total, err := ms.ListMemories(1, 10, "")
+	memories, total, err := ms.ListMemories(1,1, 10, "")
 	if err != nil {
 		t.Fatalf("list: %v", err)
 	}
@@ -286,7 +286,7 @@ func TestMemoryService_ListPagination(t *testing.T) {
 	}
 
 	// Page 3 (should have 5).
-	memories, _, _ = ms.ListMemories(3, 10, "")
+	memories, _, _ = ms.ListMemories(1,3, 10, "")
 	if len(memories) != 5 {
 		t.Errorf("expected 5 on page 3, got %d", len(memories))
 	}
@@ -296,12 +296,12 @@ func TestMemoryService_EmptyContent(t *testing.T) {
 	db := setupTestDB(t)
 	ms := NewMemoryService(db, testLogger())
 
-	_, err := ms.SaveMemory("", "general", 0.5, nil)
+	_, err := ms.SaveMemory(1,"", "general", 0.5, nil)
 	if err == nil {
 		t.Error("expected error for empty content")
 	}
 
-	_, err = ms.SaveMemory("  \t\n  ", "general", 0.5, nil)
+	_, err = ms.SaveMemory(1,"  \t\n  ", "general", 0.5, nil)
 	if err == nil {
 		t.Error("expected error for whitespace-only content")
 	}

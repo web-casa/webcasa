@@ -49,11 +49,11 @@ func tokenFromContext(ctx context.Context) string {
 
 // checkPermission verifies the current token has the required permission scope.
 // Scope format: "hosts:read", "hosts:write", "deploy:write", "docker:write", etc.
-// An empty permissions list "[]" grants full access (backwards compatible).
+// ["*"] grants full access; empty or "[]" grants NO access.
 func checkPermission(ctx context.Context, scope string) error {
 	permsStr, _ := ctx.Value(permissionsContextKey).(string)
 	if permsStr == "" || permsStr == "[]" {
-		return nil // empty = full access (backwards compatible)
+		return fmt.Errorf("permission denied: token has no permissions configured (scope %q required)", scope)
 	}
 
 	var perms []string
@@ -61,7 +61,7 @@ func checkPermission(ctx context.Context, scope string) error {
 		return fmt.Errorf("permission denied: malformed permissions on token")
 	}
 	if len(perms) == 0 {
-		return nil // empty array = full access
+		return fmt.Errorf("permission denied: token has no permissions configured (scope %q required)", scope)
 	}
 
 	// Parse the requested scope: "hosts:write" → category="hosts", action="write"
@@ -577,7 +577,7 @@ func (ts *ToolService) handleDeployProject(ctx context.Context, req *mcp.CallToo
 		"git_url": input.GitURL,
 	}
 	if input.Branch != "" {
-		body["branch"] = input.Branch
+		body["git_branch"] = input.Branch
 	}
 	if input.Framework != "" {
 		body["framework"] = input.Framework
@@ -832,19 +832,16 @@ func (ts *ToolService) handleGenerateCompose(ctx context.Context, req *mcp.CallT
 		return r, nil, nil
 	}
 	token := tokenFromContext(ctx)
-	// The AI generate-compose endpoint uses SSE, but we need a synchronous result.
-	// We'll call it and collect the full response.
 	body := map[string]interface{}{
 		"description": input.Description,
 	}
-	data, err := ts.caller.Post("/api/plugins/ai/generate-compose", body, token)
+	text, err := ts.caller.PostSSE("/api/plugins/ai/generate-compose", body, token)
 	if err != nil {
-		// If SSE doesn't work with our caller, provide a helpful message
 		r, _ := errorResult("failed to generate compose: " + err.Error())
 		return r, nil, nil
 	}
 	return &mcp.CallToolResult{
-		Content: []mcp.Content{&mcp.TextContent{Text: string(data)}},
+		Content: []mcp.Content{&mcp.TextContent{Text: text}},
 	}, nil, nil
 }
 
@@ -862,13 +859,13 @@ func (ts *ToolService) handleDiagnoseError(ctx context.Context, req *mcp.CallToo
 		"logs":    input.Logs,
 		"context": input.Context,
 	}
-	data, err := ts.caller.Post("/api/plugins/ai/diagnose", body, token)
+	text, err := ts.caller.PostSSE("/api/plugins/ai/diagnose", body, token)
 	if err != nil {
 		r, _ := errorResult("failed to diagnose error: " + err.Error())
 		return r, nil, nil
 	}
 	return &mcp.CallToolResult{
-		Content: []mcp.Content{&mcp.TextContent{Text: string(data)}},
+		Content: []mcp.Content{&mcp.TextContent{Text: text}},
 	}, nil, nil
 }
 
@@ -1180,6 +1177,9 @@ func (ts *ToolService) handleDockerLogs(ctx context.Context, req *mcp.CallToolRe
 	if input.Tail > 0 {
 		tail = input.Tail
 	}
+	if tail > 5000 {
+		tail = 5000
+	}
 	logs, err := ts.coreAPI.DockerLogs(input.ContainerID, tail)
 	if err != nil {
 		r, _ := errorResult("failed to get container logs: " + err.Error())
@@ -1308,7 +1308,7 @@ func (ts *ToolService) handleListNotifyChannels(ctx context.Context, req *mcp.Ca
 // ──────────────────────────── Inspection ────────────────────────────
 
 func (ts *ToolService) handleRunInspection(ctx context.Context, req *mcp.CallToolRequest, _ emptyInput) (*mcp.CallToolResult, any, error) {
-	if r, denied := requirePerm(ctx, "ai:read"); denied {
+	if r, denied := requirePerm(ctx, "ai:write"); denied {
 		return r, nil, nil
 	}
 	token := tokenFromContext(ctx)

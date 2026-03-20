@@ -32,7 +32,9 @@ func TestIsReadOnlyQuery(t *testing.T) {
 		{"DESCRIBE", "DESCRIBE users", true},
 		{"DESC", "DESC users", true},
 		{"EXPLAIN", "EXPLAIN SELECT * FROM users", true},
-		{"explain analyze lowercase", "explain analyze select * from users", true},
+		// EXPLAIN ANALYZE actually executes the statement (dangerous for DML).
+		{"explain analyze select", "explain analyze select * from users", false},
+		{"EXPLAIN ANALYZE DELETE", "EXPLAIN ANALYZE DELETE FROM users", false},
 
 		// ── Allowed: comments followed by SELECT ──────────────────
 		{"single-line comment then SELECT", "-- comment\nSELECT * FROM users", true},
@@ -59,9 +61,10 @@ func TestIsReadOnlyQuery(t *testing.T) {
 		{"comment only (block)", "/* only a block comment */", false},
 
 		// ── SQL injection bypass attempts ─────────────────────────
-		// NOTE: multi-statement starting with SELECT passes the check.
-		// This is a known limitation; see the function-level comment above.
-		{"multi-statement SELECT then DROP (known limitation)", "SELECT 1; DROP TABLE users", true},
+		// Stacked queries are now rejected (semicolons in body are blocked).
+		{"multi-statement SELECT then DROP", "SELECT 1; DROP TABLE users", false},
+		{"semicolon inside string literal is allowed", "SELECT ';' AS s", true},
+		{"semicolon outside string is still blocked", "SELECT 'ok'; DROP TABLE users", false},
 		{"comment hiding DROP then real DROP", "-- DROP TABLE\nDROP TABLE users", false},
 		{"empty block comment before DROP", "/**/DROP TABLE users", false},
 		{"leading spaces before DROP", "   DROP TABLE users", false},

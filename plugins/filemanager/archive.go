@@ -162,6 +162,11 @@ func (f *FileOps) extractTarGz(src, dest string) error {
 	defer gr.Close()
 
 	var totalWritten int64
+	destResolved, _ := filepath.EvalSymlinks(dest)
+	if destResolved == "" {
+		destResolved = filepath.Clean(dest)
+	}
+
 	tr := tar.NewReader(gr)
 	for {
 		header, err := tr.Next()
@@ -173,19 +178,31 @@ func (f *FileOps) extractTarGz(src, dest string) error {
 		}
 
 		target := filepath.Join(dest, header.Name)
-		// Zip-slip protection.
+		// Zip-slip protection (path-level).
 		if !strings.HasPrefix(filepath.Clean(target)+"/", filepath.Clean(dest)+"/") {
 			return fmt.Errorf("illegal path in archive: %s", header.Name)
 		}
 
 		switch header.Typeflag {
 		case tar.TypeDir:
+			// Check symlink traversal: if any parent component is a symlink
+			// pointing outside dest, MkdirAll would follow it.
+			parentResolved, _ := filepath.EvalSymlinks(filepath.Dir(target))
+			if parentResolved != "" && !strings.HasPrefix(parentResolved+"/", destResolved+"/") && parentResolved != destResolved {
+				return fmt.Errorf("illegal path in archive (symlink traversal): %s", header.Name)
+			}
 			os.MkdirAll(target, 0755)
 		case tar.TypeReg:
 			if header.Size > maxExtractSize-totalWritten {
 				return fmt.Errorf("archive too large (exceeds %d bytes limit)", maxExtractSize)
 			}
 			os.MkdirAll(filepath.Dir(target), 0755)
+			// Resolve symlinks in the parent directory to detect traversal
+			// via pre-existing symlinks (e.g. dest/link → /etc, then writing dest/link/file).
+			parentResolved, _ := filepath.EvalSymlinks(filepath.Dir(target))
+			if parentResolved != "" && !strings.HasPrefix(parentResolved+"/", destResolved+"/") && parentResolved != destResolved {
+				return fmt.Errorf("illegal path in archive (symlink traversal): %s", header.Name)
+			}
 			out, err := os.Create(target)
 			if err != nil {
 				return err
@@ -218,15 +235,25 @@ func (f *FileOps) extractZip(src, dest string) error {
 	}
 	defer r.Close()
 
+	destResolved, _ := filepath.EvalSymlinks(dest)
+	if destResolved == "" {
+		destResolved = filepath.Clean(dest)
+	}
+
 	var totalWritten int64
 	for _, zf := range r.File {
 		target := filepath.Join(dest, zf.Name)
-		// Zip-slip protection.
+		// Zip-slip protection (path-level).
 		if !strings.HasPrefix(filepath.Clean(target)+"/", filepath.Clean(dest)+"/") {
 			return fmt.Errorf("illegal path in archive: %s", zf.Name)
 		}
 
 		if zf.FileInfo().IsDir() {
+			// Check symlink traversal before creating directory.
+			parentResolved, _ := filepath.EvalSymlinks(filepath.Dir(target))
+			if parentResolved != "" && !strings.HasPrefix(parentResolved+"/", destResolved+"/") && parentResolved != destResolved {
+				return fmt.Errorf("illegal path in archive (symlink traversal): %s", zf.Name)
+			}
 			os.MkdirAll(target, 0755)
 			continue
 		}
@@ -235,6 +262,11 @@ func (f *FileOps) extractZip(src, dest string) error {
 			return fmt.Errorf("archive too large (exceeds %d bytes limit)", maxExtractSize)
 		}
 		os.MkdirAll(filepath.Dir(target), 0755)
+		// Resolve symlinks in parent to detect traversal via pre-existing symlinks.
+		parentResolved, _ := filepath.EvalSymlinks(filepath.Dir(target))
+		if parentResolved != "" && !strings.HasPrefix(parentResolved+"/", destResolved+"/") && parentResolved != destResolved {
+			return fmt.Errorf("illegal path in archive (symlink traversal): %s", zf.Name)
+		}
 		out, err := os.Create(target)
 		if err != nil {
 			return err

@@ -16,6 +16,7 @@ import (
 // Memory represents a persistent fact extracted from AI conversations.
 type Memory struct {
 	ID             uint           `json:"id" gorm:"primaryKey"`
+	UserID         uint           `json:"user_id" gorm:"index;not null;default:0"`
 	Content        string         `json:"content" gorm:"type:text;not null"`
 	Category       string         `json:"category" gorm:"index;default:'general'"`
 	Importance     float32        `json:"importance" gorm:"default:0.5"`
@@ -58,8 +59,8 @@ func (ms *MemoryService) getEmbeddingClient() *EmbeddingClient {
 	return ms.embeddingClient
 }
 
-// SaveMemory stores a new memory with deduplication.
-func (ms *MemoryService) SaveMemory(content, category string, importance float32, sourceConvID *uint) (*Memory, error) {
+// SaveMemory stores a new memory with deduplication, scoped to the given user.
+func (ms *MemoryService) SaveMemory(userID uint, content, category string, importance float32, sourceConvID *uint) (*Memory, error) {
 	content = strings.TrimSpace(content)
 	if content == "" {
 		return nil, fmt.Errorf("empty memory content")
@@ -87,8 +88,8 @@ func (ms *MemoryService) SaveMemory(content, category string, importance float32
 		}
 	}
 
-	// Deduplicate: check if a very similar memory already exists.
-	if dup, err := ms.findDuplicate(content, embeddingBytes); err == nil && dup != nil {
+	// Deduplicate: check if a very similar memory already exists for this user.
+	if dup, err := ms.findDuplicate(userID, content, embeddingBytes); err == nil && dup != nil {
 		// Update the existing memory instead of creating a duplicate.
 		dup.UpdatedAt = time.Now()
 		dup.AccessCount++
@@ -99,10 +100,11 @@ func (ms *MemoryService) SaveMemory(content, category string, importance float32
 		return dup, nil
 	}
 
-	// Prune if over limit.
-	ms.pruneIfNeeded()
+	// Prune this user's memories if over per-user limit.
+	ms.pruneIfNeeded(userID)
 
 	mem := &Memory{
+		UserID:         userID,
 		Content:        content,
 		Category:       category,
 		Importance:     importance,
@@ -116,8 +118,8 @@ func (ms *MemoryService) SaveMemory(content, category string, importance float32
 	return mem, nil
 }
 
-// SearchMemories finds the most relevant memories for a query.
-func (ms *MemoryService) SearchMemories(query string, topK int) ([]Memory, error) {
+// SearchMemories finds the most relevant memories for a query, scoped to the given user.
+func (ms *MemoryService) SearchMemories(userID uint, query string, topK int) ([]Memory, error) {
 	if topK <= 0 {
 		topK = 8
 	}
@@ -126,18 +128,18 @@ func (ms *MemoryService) SearchMemories(query string, topK int) ([]Memory, error
 	if ec := ms.getEmbeddingClient(); ec != nil {
 		queryVec, err := ec.Embed(query)
 		if err == nil && queryVec != nil {
-			return ms.searchByVector(queryVec, topK)
+			return ms.searchByVector(userID, queryVec, topK)
 		}
 		ms.logger.Warn("embedding failed, falling back to keyword search", "err", err)
 	}
 
-	return ms.SearchByKeyword(query, topK)
+	return ms.SearchByKeyword(userID, query, topK)
 }
 
-// searchByVector performs cosine similarity search across all memories.
-func (ms *MemoryService) searchByVector(queryVec []float32, topK int) ([]Memory, error) {
+// searchByVector performs cosine similarity search scoped to a user.
+func (ms *MemoryService) searchByVector(userID uint, queryVec []float32, topK int) ([]Memory, error) {
 	var memories []Memory
-	if err := ms.db.Where("embedding IS NOT NULL AND length(embedding) > 0").Find(&memories).Error; err != nil {
+	if err := ms.db.Where("user_id = ? AND embedding IS NOT NULL AND length(embedding) > 0", userID).Find(&memories).Error; err != nil {
 		return nil, err
 	}
 
@@ -182,26 +184,32 @@ func (ms *MemoryService) searchByVector(queryVec []float32, topK int) ([]Memory,
 	return out, nil
 }
 
-// SearchByKeyword performs keyword-based search as fallback.
-func (ms *MemoryService) SearchByKeyword(query string, topK int) ([]Memory, error) {
+// SearchByKeyword performs keyword-based search as fallback, scoped to user.
+func (ms *MemoryService) SearchByKeyword(userID uint, query string, topK int) ([]Memory, error) {
 	if topK <= 0 {
 		topK = 8
 	}
 
 	keywords := tokenize(query)
 	if len(keywords) == 0 {
-		// Return most important recent memories.
+		// Return most important recent memories for this user.
 		var memories []Memory
-		ms.db.Order("importance DESC, updated_at DESC").Limit(topK).Find(&memories)
+		ms.db.Where("user_id = ?", userID).Order("importance DESC, updated_at DESC").Limit(topK).Find(&memories)
 		return memories, nil
 	}
 
-	// Search with OR conditions on keywords.
+	// Search with OR conditions on keywords, scoped to user.
 	var memories []Memory
-	tx := ms.db.Model(&Memory{})
-	for _, kw := range keywords {
-		tx = tx.Or("content LIKE ?", "%"+kw+"%")
+	tx := ms.db.Model(&Memory{}).Where("user_id = ?", userID)
+	orConditions := ms.db
+	for i, kw := range keywords {
+		if i == 0 {
+			orConditions = orConditions.Where("content LIKE ?", "%"+kw+"%")
+		} else {
+			orConditions = orConditions.Or("content LIKE ?", "%"+kw+"%")
+		}
 	}
+	tx = tx.Where(orConditions)
 	if err := tx.Order("importance DESC, updated_at DESC").Limit(topK * 2).Find(&memories).Error; err != nil {
 		return nil, err
 	}
@@ -249,9 +257,9 @@ func (ms *MemoryService) SearchByKeyword(query string, topK int) ([]Memory, erro
 	return out, nil
 }
 
-// BuildMemoryContext builds a formatted string for system prompt injection.
-func (ms *MemoryService) BuildMemoryContext(query string, maxMemories int) (string, error) {
-	memories, err := ms.SearchMemories(query, maxMemories)
+// BuildMemoryContext builds a formatted string for system prompt injection, scoped to user.
+func (ms *MemoryService) BuildMemoryContext(userID uint, query string, maxMemories int) (string, error) {
+	memories, err := ms.SearchMemories(userID, query, maxMemories)
 	if err != nil || len(memories) == 0 {
 		return "", err
 	}
@@ -264,8 +272,8 @@ func (ms *MemoryService) BuildMemoryContext(query string, maxMemories int) (stri
 	return sb.String(), nil
 }
 
-// ListMemories returns paginated memories.
-func (ms *MemoryService) ListMemories(page, pageSize int, category string) ([]Memory, int64, error) {
+// ListMemories returns paginated memories scoped to user.
+func (ms *MemoryService) ListMemories(userID uint, page, pageSize int, category string) ([]Memory, int64, error) {
 	if page < 1 {
 		page = 1
 	}
@@ -274,7 +282,7 @@ func (ms *MemoryService) ListMemories(page, pageSize int, category string) ([]Me
 	}
 
 	var total int64
-	tx := ms.db.Model(&Memory{})
+	tx := ms.db.Model(&Memory{}).Where("user_id = ?", userID)
 	if category != "" {
 		tx = tx.Where("category = ?", category)
 	}
@@ -289,30 +297,41 @@ func (ms *MemoryService) ListMemories(page, pageSize int, category string) ([]Me
 	return memories, total, err
 }
 
-// DeleteMemory removes a memory by ID.
-func (ms *MemoryService) DeleteMemory(id uint) error {
-	return ms.db.Delete(&Memory{}, id).Error
+// DeleteMemory removes a memory by ID, scoped to user.
+func (ms *MemoryService) DeleteMemory(userID, id uint) error {
+	result := ms.db.Where("id = ? AND user_id = ?", id, userID).Delete(&Memory{})
+	if result.RowsAffected == 0 {
+		return fmt.Errorf("memory not found or not owned by user")
+	}
+	return result.Error
 }
 
-// ClearAll removes all memories.
-func (ms *MemoryService) ClearAll() error {
-	return ms.db.Where("1 = 1").Delete(&Memory{}).Error
+// ClearAll removes all memories for a user.
+func (ms *MemoryService) ClearAll(userID uint) error {
+	return ms.db.Where("user_id = ?", userID).Delete(&Memory{}).Error
 }
 
-// Count returns the total number of memories.
+// Count returns the total number of memories (all users, for pruning).
 func (ms *MemoryService) Count() (int64, error) {
 	var count int64
 	err := ms.db.Model(&Memory{}).Count(&count).Error
 	return count, err
 }
 
+// CountForUser returns the total number of memories for a specific user.
+func (ms *MemoryService) CountForUser(userID uint) (int64, error) {
+	var count int64
+	err := ms.db.Model(&Memory{}).Where("user_id = ?", userID).Count(&count).Error
+	return count, err
+}
+
 // findDuplicate checks if a very similar memory already exists.
-func (ms *MemoryService) findDuplicate(content string, embeddingBytes []byte) (*Memory, error) {
-	// Try vector dedup first.
+func (ms *MemoryService) findDuplicate(userID uint, content string, embeddingBytes []byte) (*Memory, error) {
+	// Try vector dedup first, scoped to user.
 	if len(embeddingBytes) > 0 {
 		queryVec := deserializeEmbedding(embeddingBytes)
 		var memories []Memory
-		if err := ms.db.Where("embedding IS NOT NULL AND length(embedding) > 0").Find(&memories).Error; err != nil {
+		if err := ms.db.Where("user_id = ? AND embedding IS NOT NULL AND length(embedding) > 0", userID).Find(&memories).Error; err != nil {
 			return nil, err
 		}
 		for _, m := range memories {
@@ -324,33 +343,33 @@ func (ms *MemoryService) findDuplicate(content string, embeddingBytes []byte) (*
 		return nil, nil
 	}
 
-	// Fallback: exact substring check.
+	// Fallback: exact substring check, scoped to user.
 	lower := strings.ToLower(strings.TrimSpace(content))
 	var memories []Memory
-	ms.db.Where("LOWER(content) = ?", lower).Limit(1).Find(&memories)
+	ms.db.Where("user_id = ? AND LOWER(content) = ?", userID, lower).Limit(1).Find(&memories)
 	if len(memories) > 0 {
 		return &memories[0], nil
 	}
 	return nil, nil
 }
 
-// pruneIfNeeded removes low-value memories if over the limit.
-func (ms *MemoryService) pruneIfNeeded() {
-	const maxMemories = 5000
-	count, _ := ms.Count()
-	if count < maxMemories {
+// pruneIfNeeded removes low-value memories for a specific user if over the per-user limit.
+func (ms *MemoryService) pruneIfNeeded(userID uint) {
+	const maxPerUser = 1000
+	count, _ := ms.CountForUser(userID)
+	if count < maxPerUser {
 		return
 	}
 
-	// Delete lowest-scoring memories (importance * log(accessCount+1)).
-	excess := int(count - maxMemories + 100) // remove 100 extra for headroom
+	excess := int(count - maxPerUser + 50) // remove 50 extra for headroom
 	if excess <= 0 {
 		return
 	}
 
-	// Simple approach: delete oldest with lowest importance.
-	ms.db.Where("id IN (?)",
-		ms.db.Model(&Memory{}).Select("id").Order("importance ASC, access_count ASC, updated_at ASC").Limit(excess),
+	// Delete this user's lowest-scoring memories.
+	ms.db.Where("user_id = ? AND id IN (?)",
+		userID,
+		ms.db.Model(&Memory{}).Select("id").Where("user_id = ?", userID).Order("importance ASC, access_count ASC, updated_at ASC").Limit(excess),
 	).Delete(&Memory{})
 }
 

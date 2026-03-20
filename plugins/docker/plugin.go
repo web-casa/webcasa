@@ -20,6 +20,7 @@ type Plugin struct {
 	handler         *Handler
 	dockerAvailable bool
 	dockerError     string
+	socketPath      string // configured docker socket path
 }
 
 // New creates a new Docker plugin instance.
@@ -46,13 +47,13 @@ func (p *Plugin) Metadata() pluginpkg.Metadata {
 // so that its routes exist for the guard middleware and status endpoint.
 func (p *Plugin) Init(ctx *pluginpkg.Context) error {
 	// Read socket path from plugin config, default to /var/run/docker.sock.
-	socketPath := ctx.ConfigStore.Get("socket_path")
-	if socketPath == "" {
-		socketPath = "/var/run/docker.sock"
+	p.socketPath = ctx.ConfigStore.Get("socket_path")
+	if p.socketPath == "" {
+		p.socketPath = "/var/run/docker.sock"
 	}
 
 	// Connect to Docker daemon (graceful: don't fail if Docker is unavailable).
-	client, err := NewClient(socketPath)
+	client, err := NewClient(p.socketPath)
 	if err != nil {
 		p.dockerAvailable = false
 		p.dockerError = err.Error()
@@ -156,8 +157,7 @@ func (p *Plugin) requireDocker() gin.HandlerFunc {
 // tryReconnect attempts to connect to the Docker daemon and update the plugin state.
 // Returns true if the daemon is reachable.
 func (p *Plugin) tryReconnect() bool {
-	socketPath := "/var/run/docker.sock"
-	client, err := NewClient(socketPath)
+	client, err := NewClient(p.socketPath)
 	if err != nil {
 		return false
 	}
@@ -166,6 +166,10 @@ func (p *Plugin) tryReconnect() bool {
 	if err := client.Ping(ctx); err != nil {
 		client.Close()
 		return false
+	}
+	// Close old client to release resources (HTTP connection pool).
+	if p.client != nil {
+		p.client.Close()
 	}
 	// Update plugin state
 	p.client = client
@@ -233,7 +237,7 @@ func (p *Plugin) dockerStatus(c *gin.Context) {
 func (p *Plugin) installDocker(c *gin.Context) {
 	// Parse optional mirror parameter.
 	var req struct {
-		Mirror string `json:"mirror"` // none | public | custom domain
+		Mirror string `json:"mirror"` // none | public
 	}
 	_ = c.ShouldBindJSON(&req)
 
@@ -266,10 +270,18 @@ func (p *Plugin) installDocker(c *gin.Context) {
 	// --mode install: skip the interactive mode selection menu
 	// -y: skip all confirmation prompts
 	// --mirror: select mirror (none by default, or user-specified)
-	args := []string{"-c", "curl -sSL https://raw.githubusercontent.com/web-casa/easydocker/main/docker.sh | bash -s -- --mode install -y"}
-	if req.Mirror != "" {
-		args[1] = fmt.Sprintf("curl -sSL https://raw.githubusercontent.com/web-casa/easydocker/main/docker.sh | bash -s -- --mode install -y --mirror %s", req.Mirror)
+	baseCmd := "curl -sSL https://raw.githubusercontent.com/web-casa/easydocker/main/docker.sh | bash -s -- --mode install -y"
+	// Validate mirror to prevent command injection — only allow known safe values.
+	switch req.Mirror {
+	case "public":
+		baseCmd += " --mirror public"
+	case "":
+		// no mirror flag
+	default:
+		writeEvent("error", fmt.Sprintf("unsupported mirror value: %q (allowed: \"public\" or empty)", req.Mirror))
+		return
 	}
+	args := []string{"-c", baseCmd}
 
 	cmd := exec.Command("bash", args...)
 	// Merge stdout and stderr.

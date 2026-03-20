@@ -235,6 +235,13 @@ func ParseTemplateRepo(repoPath string) ([]*TemplateConfig, []string, error) {
 		if tpl.ID == "" {
 			tpl.ID = name
 		}
+		if tpl.Name == "" {
+			tpl.Name = name
+		}
+		if tpl.GitURL == "" {
+			warnings = append(warnings, fmt.Sprintf("skip %s: missing git_url", name))
+			continue
+		}
 		templates = append(templates, &tpl)
 	}
 

@@ -40,11 +40,48 @@ func (s *Service) ListStacks() ([]Stack, error) {
 	if err := s.db.Order("id ASC").Find(&stacks).Error; err != nil {
 		return nil, err
 	}
-	// Refresh status from Docker.
+
+	// Refresh status from Docker — fetch containers once, then match in memory.
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	containers, err := s.client.ListContainers(ctx, true)
+	if err != nil {
+		// If Docker is unreachable, mark all as unknown.
+		for i := range stacks {
+			stacks[i].Status = "unknown"
+		}
+		return stacks, nil
+	}
+
 	for i := range stacks {
-		stacks[i].Status = s.resolveStackStatus(stacks[i].Name)
+		stacks[i].Status = matchStackStatus(stacks[i].Name, containers)
 	}
 	return stacks, nil
+}
+
+// matchStackStatus determines stack status from a pre-fetched container list.
+func matchStackStatus(name string, containers []ContainerInfo) string {
+	sanitized := sanitizeName(name)
+	total, running := 0, 0
+	for _, c := range containers {
+		project := c.Labels["com.docker.compose.project"]
+		if project == name || project == sanitized {
+			total++
+			if c.State == "running" {
+				running++
+			}
+		}
+	}
+	switch {
+	case total == 0:
+		return "stopped"
+	case running == total:
+		return "running"
+	case running > 0:
+		return "partial"
+	default:
+		return "stopped"
+	}
 }
 
 // GetStack returns a single stack.
@@ -75,22 +112,37 @@ func (s *Service) CreateStack(req *CreateStackRequest) (*Stack, error) {
 		return nil, fmt.Errorf("stack name %q already exists", req.Name)
 	}
 
-	// Prepare data directory.
-	stackDir := filepath.Join(s.dataDir, "stacks", sanitizeName(req.Name))
+	// Validate that the sanitized name is not empty/generic after cleaning.
+	sanitized := sanitizeName(req.Name)
+	if sanitized == "unnamed" {
+		return nil, fmt.Errorf("stack name must contain at least one letter or digit")
+	}
+
+	// Check slug collision: different names like "Foo!" and "Foo?" map to the same
+	// compose project name, causing cross-interference.
+	var existingStacks []Stack
+	s.db.Select("name").Find(&existingStacks)
+	for _, ex := range existingStacks {
+		if sanitizeName(ex.Name) == sanitized {
+			return nil, fmt.Errorf("stack name %q conflicts with existing stack %q (same compose project name %q)", req.Name, ex.Name, sanitized)
+		}
+	}
+
+	stackDir := filepath.Join(s.dataDir, "stacks", sanitized)
 	if err := os.MkdirAll(stackDir, 0755); err != nil {
 		return nil, fmt.Errorf("create stack dir: %w", err)
 	}
 
 	// Write compose file.
 	composePath := filepath.Join(stackDir, "docker-compose.yml")
-	if err := os.WriteFile(composePath, []byte(req.ComposeFile), 0644); err != nil {
+	if err := os.WriteFile(composePath, []byte(req.ComposeFile), 0600); err != nil {
 		return nil, fmt.Errorf("write compose file: %w", err)
 	}
 
 	// Write env file if provided.
 	if req.EnvFile != "" {
 		envPath := filepath.Join(stackDir, ".env")
-		if err := os.WriteFile(envPath, []byte(req.EnvFile), 0644); err != nil {
+		if err := os.WriteFile(envPath, []byte(req.EnvFile), 0600); err != nil {
 			return nil, fmt.Errorf("write env file: %w", err)
 		}
 	}
@@ -111,7 +163,10 @@ func (s *Service) CreateStack(req *CreateStackRequest) (*Stack, error) {
 	if req.AutoStart {
 		if err := s.StackUp(stack.ID); err != nil {
 			s.logger.Error("auto-start failed", "stack", req.Name, "err", err)
-			stack.Status = "error"
+			s.db.Model(stack).Update("status", "error")
+			// Return the stack with error status so the caller sees the failure.
+			stack, _ = s.GetStack(stack.ID)
+			return stack, fmt.Errorf("stack created but auto-start failed: %w", err)
 		}
 	}
 
@@ -135,12 +190,12 @@ func (s *Service) UpdateStack(id uint, req *CreateStackRequest) (*Stack, error) 
 
 	// Rewrite files.
 	composePath := filepath.Join(stack.DataDir, "docker-compose.yml")
-	if err := os.WriteFile(composePath, []byte(req.ComposeFile), 0644); err != nil {
+	if err := os.WriteFile(composePath, []byte(req.ComposeFile), 0600); err != nil {
 		return nil, fmt.Errorf("write compose file: %w", err)
 	}
 	envPath := filepath.Join(stack.DataDir, ".env")
 	if req.EnvFile != "" {
-		if err := os.WriteFile(envPath, []byte(req.EnvFile), 0644); err != nil {
+		if err := os.WriteFile(envPath, []byte(req.EnvFile), 0600); err != nil {
 			return nil, fmt.Errorf("write .env file: %w", err)
 		}
 	} else {
@@ -164,8 +219,13 @@ func (s *Service) DeleteStack(id uint) error {
 		return fmt.Errorf("stack is managed by %s, please use the %s plugin to manage it", stack.ManagedBy, stack.ManagedBy)
 	}
 
-	// Stop containers.
-	_ = s.runCompose(stack.Name, stack.DataDir, "down", "--remove-orphans")
+	// Stop containers — if this fails, do not proceed with cleanup so the
+	// stack remains manageable from the UI.
+	if err := s.runCompose(stack.Name, stack.DataDir, "down", "--remove-orphans"); err != nil {
+		s.logger.Error("compose down failed", "stack", stack.Name, "err", err)
+		s.db.Model(stack).Update("status", "error")
+		return fmt.Errorf("failed to stop stack: %w (stack kept in UI for manual cleanup)", err)
+	}
 
 	// Remove data directory.
 	os.RemoveAll(stack.DataDir)
@@ -342,5 +402,9 @@ func sanitizeName(name string) string {
 		}
 		return '-'
 	}, name)
-	return strings.Trim(name, "-")
+	name = strings.Trim(name, "-")
+	if name == "" {
+		name = "unnamed"
+	}
+	return name
 }

@@ -265,6 +265,21 @@ func (m *Manager) Disable(id string) error {
 		return nil
 	}
 
+	// Check that no enabled plugin depends on this one.
+	for othID, othPlugin := range m.plugins {
+		if othID == id {
+			continue
+		}
+		if !m.isEnabled(othID) {
+			continue
+		}
+		for _, dep := range othPlugin.Metadata().Dependencies {
+			if dep == id {
+				return fmt.Errorf("cannot disable %q: plugin %q depends on it (disable %q first)", id, othID, othID)
+			}
+		}
+	}
+
 	// Stop background tasks first.
 	if err := p.Stop(); err != nil {
 		m.logger.Error("failed to stop plugin on disable", "id", id, "err", err)

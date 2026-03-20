@@ -178,12 +178,18 @@ func (a *CoreAPIImpl) ReloadCaddy() error {
 }
 
 func (a *CoreAPIImpl) UpdateHostUpstream(hostID uint, newUpstream string) error {
-	// Update the first upstream's address for the given host.
-	return a.db.Model(&model.Upstream{}).
+	if err := caddy.ValidateUpstream(newUpstream); err != nil {
+		return fmt.Errorf("invalid upstream: %w", err)
+	}
+	if err := a.db.Model(&model.Upstream{}).
 		Where("host_id = ?", hostID).
 		Order("sort_order ASC").
 		Limit(1).
-		Update("address", newUpstream).Error
+		Update("address", newUpstream).Error; err != nil {
+		return fmt.Errorf("update upstream: %w", err)
+	}
+	// Regenerate Caddyfile and reload so traffic actually switches.
+	return a.hostSvc.ApplyConfig()
 }
 
 // ──────────────────────────────────────────────────
@@ -259,6 +265,10 @@ func (a *CoreAPIImpl) CreateProject(req CreateProjectRequest) (uint, error) {
 		branch = "main"
 	}
 	deployMode := req.DeployMode
+	// Auto-set deploy mode for Dockerfile projects.
+	if req.Framework == "dockerfile" && deployMode == "" {
+		deployMode = "docker"
+	}
 	if deployMode == "" {
 		deployMode = "bare"
 	}
@@ -270,18 +280,23 @@ func (a *CoreAPIImpl) CreateProject(req CreateProjectRequest) (uint, error) {
 	}
 	webhookToken := hex.EncodeToString(tokenBytes)
 
+	now := time.Now()
 	project := map[string]interface{}{
-		"name":         req.Name,
-		"git_url":      req.GitURL,
-		"git_branch":   branch,
-		"domain":       req.Domain,
-		"framework":    req.Framework,
-		"deploy_mode":  deployMode,
-		"auto_deploy":  req.AutoDeploy,
-		"status":       "pending",
-		"webhook_token": webhookToken,
-		"created_at":   time.Now(),
-		"updated_at":   time.Now(),
+		"name":              req.Name,
+		"git_url":           req.GitURL,
+		"git_branch":        branch,
+		"domain":            req.Domain,
+		"framework":         req.Framework,
+		"deploy_mode":       deployMode,
+		"auto_deploy":       req.AutoDeploy,
+		"auth_method":       "ssh_key",
+		"install_cmd":       req.InstallCommand,
+		"build_command":     req.BuildCommand,
+		"start_command":     req.StartCommand,
+		"status":            "pending",
+		"webhook_token":     webhookToken,
+		"created_at":        now,
+		"updated_at":        now,
 	}
 
 	result := a.db.Table("plugin_deploy_projects").Create(&project)
@@ -297,6 +312,12 @@ func (a *CoreAPIImpl) CreateProject(req CreateProjectRequest) (uint, error) {
 		Where("webhook_token = ?", webhookToken).
 		Select("id").
 		First(&created)
+
+	// Allocate port for projects that need one: docker mode or bare with a start command.
+	if created.ID > 0 && (deployMode == "docker" || req.StartCommand != "") {
+		port := 10000 + int(created.ID)
+		a.db.Table("plugin_deploy_projects").Where("id = ?", created.ID).Update("port", port)
+	}
 
 	return created.ID, nil
 }
@@ -399,6 +420,9 @@ func (a *CoreAPIImpl) DockerPS() ([]map[string]interface{}, error) {
 func (a *CoreAPIImpl) DockerLogs(containerID string, tail int) (string, error) {
 	if tail <= 0 {
 		tail = 100
+	}
+	if tail > 5000 {
+		tail = 5000
 	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
@@ -530,8 +554,22 @@ func (a *CoreAPIImpl) UpdateHost(id uint, req UpdateHostRequest) error {
 	}
 
 	updates := map[string]interface{}{}
+	if req.Domain != "" {
+		if err := caddy.ValidateDomain(req.Domain); err != nil {
+			return fmt.Errorf("invalid domain: %w", err)
+		}
+		// Check uniqueness.
+		var count int64
+		a.db.Model(&model.Host{}).Where("domain = ? AND id != ?", req.Domain, id).Count(&count)
+		if count > 0 {
+			return fmt.Errorf("domain %q already exists", req.Domain)
+		}
+		updates["domain"] = req.Domain
+	}
 	if req.Upstream != "" {
-		// Update the first upstream address.
+		if err := caddy.ValidateUpstream(req.Upstream); err != nil {
+			return fmt.Errorf("invalid upstream: %w", err)
+		}
 		a.db.Model(&model.Upstream{}).
 			Where("host_id = ?", id).
 			Order("sort_order ASC").
@@ -565,8 +603,8 @@ func (a *CoreAPIImpl) UpdateHost(id uint, req UpdateHostRequest) error {
 		}
 	}
 
-	// Reload Caddy to apply changes.
-	return a.caddyMgr.Reload()
+	// Regenerate Caddyfile and reload Caddy to apply changes.
+	return a.hostSvc.ApplyConfig()
 }
 
 func (a *CoreAPIImpl) GetRecentAlerts() ([]map[string]interface{}, error) {
@@ -631,14 +669,42 @@ func (a *CoreAPIImpl) DatabaseCreateInstance(req DatabaseCreateInstanceRequest) 
 	return 0, nil // ID will be assigned asynchronously by the database plugin
 }
 
+// dbValidCharsets mirrors the database plugin's charset whitelist.
+// Must be kept in sync with plugins/database/dbclient.go validCharsets.
+var dbValidCharsets = map[string]bool{
+	"utf8": true, "utf8mb4": true, "latin1": true, "ascii": true,
+	"binary": true, "utf16": true, "utf32": true, "big5": true,
+	"gb2312": true, "gbk": true, "euckr": true, "sjis": true,
+	"UTF8": true, // PostgreSQL
+}
+
 func (a *CoreAPIImpl) DatabaseCreateDatabase(instanceID uint, name, charset string) error {
 	var inst struct {
-		Engine      string `gorm:"column:engine"`
-		ContainerID string `gorm:"column:container_id"`
+		Engine        string `gorm:"column:engine"`
+		ContainerName string `gorm:"column:container_name"`
+		RootPassword  string `gorm:"column:root_password"`
 	}
 	if err := a.db.Table("plugin_database_instances").Where("id = ?", instanceID).First(&inst).Error; err != nil {
 		return fmt.Errorf("instance not found: %w", err)
 	}
+
+	// Validate charset against whitelist.
+	if charset == "" {
+		if inst.Engine == "postgres" {
+			charset = "UTF8"
+		} else {
+			charset = "utf8mb4"
+		}
+	}
+	if !dbValidCharsets[charset] {
+		return fmt.Errorf("invalid charset: %s", charset)
+	}
+	// Validate name against the same pattern used by the database plugin's
+	// query executor, so databases created here can always be queried later.
+	if !dbValidNameRe.MatchString(name) {
+		return fmt.Errorf("invalid database name %q: must match [a-zA-Z_][a-zA-Z0-9_-]*", name)
+	}
+	safeName := dbEscapeName(name)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
@@ -646,17 +712,13 @@ func (a *CoreAPIImpl) DatabaseCreateDatabase(instanceID uint, name, charset stri
 	var cmd *exec.Cmd
 	switch inst.Engine {
 	case "mysql", "mariadb":
-		if charset == "" {
-			charset = "utf8mb4"
-		}
-		cmd = exec.CommandContext(ctx, "docker", "exec", inst.ContainerID,
-			"mysql", "-uroot", "-e", fmt.Sprintf("CREATE DATABASE IF NOT EXISTS `%s` CHARACTER SET %s;", name, charset))
+		cmd = exec.CommandContext(ctx, "docker", "exec",
+			"-e", "MYSQL_PWD="+inst.RootPassword,
+			inst.ContainerName,
+			"mysql", "-uroot", "-e", fmt.Sprintf("CREATE DATABASE IF NOT EXISTS `%s` CHARACTER SET %s;", safeName, charset))
 	case "postgres":
-		if charset == "" {
-			charset = "UTF8"
-		}
-		cmd = exec.CommandContext(ctx, "docker", "exec", inst.ContainerID,
-			"psql", "-U", "postgres", "-c", fmt.Sprintf("CREATE DATABASE \"%s\" ENCODING '%s';", name, charset))
+		cmd = exec.CommandContext(ctx, "docker", "exec", inst.ContainerName,
+			"psql", "-U", "postgres", "-c", fmt.Sprintf(`CREATE DATABASE "%s" ENCODING '%s';`, safeName, charset))
 	default:
 		return fmt.Errorf("unsupported engine: %s", inst.Engine)
 	}
@@ -670,13 +732,66 @@ func (a *CoreAPIImpl) DatabaseCreateDatabase(instanceID uint, name, charset stri
 	return nil
 }
 
+// dbEscapeName strips backticks, double quotes, semicolons, and single quotes from identifiers.
+var dbValidNameRe = regexp.MustCompile(`^[a-zA-Z_][a-zA-Z0-9_-]*$`)
+
+func dbEscapeName(name string) string {
+	name = strings.ReplaceAll(name, "`", "")
+	name = strings.ReplaceAll(name, `"`, "")
+	name = strings.ReplaceAll(name, ";", "")
+	name = strings.ReplaceAll(name, "'", "")
+	return name
+}
+
+// dbEscapeString escapes a string for use in SQL single-quoted literals.
+// Escapes backslashes first (MySQL treats \ as escape char by default),
+// then single quotes.
+func dbEscapeString(s string) string {
+	s = strings.ReplaceAll(s, `\`, `\\`)
+	s = strings.ReplaceAll(s, "'", "''")
+	return s
+}
+
+// containsUnquotedSemicolon checks for semicolons outside single-quoted
+// SQL strings, avoiding false positives on SELECT ';' AS s.
+func containsUnquotedSemicolon(s string) bool {
+	inQuote := false
+	for i := 0; i < len(s); i++ {
+		ch := s[i]
+		if ch == '\'' {
+			if inQuote && i+1 < len(s) && s[i+1] == '\'' {
+				i++ // escaped quote ''
+				continue
+			}
+			inQuote = !inQuote
+			continue
+		}
+		if ch == '\\' && inQuote {
+			i++ // skip escaped char
+			continue
+		}
+		if ch == ';' && !inQuote {
+			return true
+		}
+	}
+	return false
+}
+
 func (a *CoreAPIImpl) DatabaseCreateUser(instanceID uint, username, password string, databases []string) error {
 	var inst struct {
-		Engine      string `gorm:"column:engine"`
-		ContainerID string `gorm:"column:container_id"`
+		Engine        string `gorm:"column:engine"`
+		ContainerName string `gorm:"column:container_name"`
+		RootPassword  string `gorm:"column:root_password"`
 	}
 	if err := a.db.Table("plugin_database_instances").Where("id = ?", instanceID).First(&inst).Error; err != nil {
 		return fmt.Errorf("instance not found: %w", err)
+	}
+
+	// Sanitize inputs to prevent SQL injection.
+	safeUser := dbEscapeName(username)
+	safePwd := dbEscapeString(password)
+	if safeUser == "" {
+		return fmt.Errorf("invalid username")
 	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
@@ -685,13 +800,13 @@ func (a *CoreAPIImpl) DatabaseCreateUser(instanceID uint, username, password str
 	var cmds []string
 	switch inst.Engine {
 	case "mysql", "mariadb":
-		cmds = append(cmds, fmt.Sprintf("CREATE USER IF NOT EXISTS '%s'@'%%' IDENTIFIED BY '%s';", username, password))
+		cmds = append(cmds, fmt.Sprintf("CREATE USER IF NOT EXISTS '%s'@'%%' IDENTIFIED BY '%s';", dbEscapeString(safeUser), safePwd))
 		for _, db := range databases {
-			cmds = append(cmds, fmt.Sprintf("GRANT ALL PRIVILEGES ON `%s`.* TO '%s'@'%%';", db, username))
+			cmds = append(cmds, fmt.Sprintf("GRANT ALL PRIVILEGES ON `%s`.* TO '%s'@'%%';", dbEscapeName(db), dbEscapeString(safeUser)))
 		}
 		cmds = append(cmds, "FLUSH PRIVILEGES;")
-		sql := strings.Join(cmds, " ")
-		cmd := exec.CommandContext(ctx, "docker", "exec", inst.ContainerID, "mysql", "-uroot", "-e", sql)
+		sqlStmt := strings.Join(cmds, " ")
+		cmd := exec.CommandContext(ctx, "docker", "exec", "-e", "MYSQL_PWD="+inst.RootPassword, inst.ContainerName, "mysql", "-uroot", "-e", sqlStmt)
 		var buf bytes.Buffer
 		cmd.Stdout = &buf
 		cmd.Stderr = &buf
@@ -699,12 +814,12 @@ func (a *CoreAPIImpl) DatabaseCreateUser(instanceID uint, username, password str
 			return fmt.Errorf("create user: %s — %w", buf.String(), err)
 		}
 	case "postgres":
-		cmds = append(cmds, fmt.Sprintf("CREATE USER \"%s\" WITH PASSWORD '%s';", username, password))
+		cmds = append(cmds, fmt.Sprintf(`CREATE USER "%s" WITH PASSWORD '%s';`, safeUser, safePwd))
 		for _, db := range databases {
-			cmds = append(cmds, fmt.Sprintf("GRANT ALL PRIVILEGES ON DATABASE \"%s\" TO \"%s\";", db, username))
+			cmds = append(cmds, fmt.Sprintf(`GRANT ALL PRIVILEGES ON DATABASE "%s" TO "%s";`, dbEscapeName(db), safeUser))
 		}
-		sql := strings.Join(cmds, " ")
-		cmd := exec.CommandContext(ctx, "docker", "exec", inst.ContainerID, "psql", "-U", "postgres", "-c", sql)
+		sqlStmt := strings.Join(cmds, " ")
+		cmd := exec.CommandContext(ctx, "docker", "exec", inst.ContainerName, "psql", "-U", "postgres", "-c", sqlStmt)
 		var buf bytes.Buffer
 		cmd.Stdout = &buf
 		cmd.Stderr = &buf
@@ -722,7 +837,7 @@ func (a *CoreAPIImpl) DatabaseExecuteQuery(instanceID uint, database, query stri
 	// Strip trailing whitespace/semicolons, then reject stacked statements.
 	trimmed := strings.TrimSpace(query)
 	trimmed = strings.TrimRight(trimmed, "; \t\n\r")
-	if strings.Contains(trimmed, ";") {
+	if containsUnquotedSemicolon(trimmed) {
 		return nil, fmt.Errorf("multiple statements are not allowed; submit one query at a time")
 	}
 
@@ -740,9 +855,15 @@ func (a *CoreAPIImpl) DatabaseExecuteQuery(instanceID uint, database, query stri
 	}
 	query = trimmed
 
+	// Reject SELECT INTO (write side-effect via single statement).
+	if strings.Contains(upper, " INTO ") && (strings.Contains(upper, "OUTFILE") || strings.Contains(upper, "DUMPFILE") || strings.Contains(upper, "TEMP ") || strings.Contains(upper, "TEMPORARY ")) {
+		return nil, fmt.Errorf("SELECT INTO is not allowed")
+	}
+
 	var inst struct {
-		Engine      string `gorm:"column:engine"`
-		ContainerID string `gorm:"column:container_id"`
+		Engine        string `gorm:"column:engine"`
+		ContainerName string `gorm:"column:container_name"`
+		RootPassword  string `gorm:"column:root_password"`
 	}
 	if err := a.db.Table("plugin_database_instances").Where("id = ?", instanceID).First(&inst).Error; err != nil {
 		return nil, fmt.Errorf("instance not found: %w", err)
@@ -754,15 +875,15 @@ func (a *CoreAPIImpl) DatabaseExecuteQuery(instanceID uint, database, query stri
 	var cmd *exec.Cmd
 	switch inst.Engine {
 	case "mysql", "mariadb":
-		args := []string{"exec", inst.ContainerID, "mysql", "-uroot", "--batch", "-e", query}
+		args := []string{"exec", "-e", "MYSQL_PWD=" + inst.RootPassword, inst.ContainerName, "mysql", "-uroot", "--batch", "-e", query}
 		if database != "" {
-			args = []string{"exec", inst.ContainerID, "mysql", "-uroot", "--batch", "-D", database, "-e", query}
+			args = []string{"exec", "-e", "MYSQL_PWD=" + inst.RootPassword, inst.ContainerName, "mysql", "-uroot", "--batch", "-D", database, "-e", query}
 		}
 		cmd = exec.CommandContext(ctx, "docker", args...)
 	case "postgres":
-		args := []string{"exec", inst.ContainerID, "psql", "-U", "postgres", "-c", query}
+		args := []string{"exec", inst.ContainerName, "psql", "-U", "postgres", "-c", query}
 		if database != "" {
-			args = []string{"exec", inst.ContainerID, "psql", "-U", "postgres", "-d", database, "-c", query}
+			args = []string{"exec", inst.ContainerName, "psql", "-U", "postgres", "-d", database, "-c", query}
 		}
 		cmd = exec.CommandContext(ctx, "docker", args...)
 	default:
@@ -793,7 +914,7 @@ func (a *CoreAPIImpl) DatabaseExecuteQuery(instanceID uint, database, query stri
 func (a *CoreAPIImpl) DockerListStacks() ([]map[string]interface{}, error) {
 	var results []map[string]interface{}
 	err := a.db.Table("plugin_docker_stacks").
-		Select("id, name, status, file_path, created_at, updated_at").
+		Select("id, name, description, status, data_dir, created_at, updated_at").
 		Find(&results).Error
 	if err != nil {
 		return []map[string]interface{}{}, nil

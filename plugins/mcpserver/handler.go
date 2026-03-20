@@ -45,7 +45,8 @@ func (h *Handler) CreateToken(c *gin.Context) {
 	}
 
 	// Normalise permissions: accept both string ("[]") and []string (["a","b"]).
-	permissions := "[]"
+	// Default to ["*"] (full access) for backwards compatibility when not specified.
+	permissions := `["*"]`
 	if len(req.Permissions) > 0 {
 		var arr []string
 		if json.Unmarshal(req.Permissions, &arr) == nil {

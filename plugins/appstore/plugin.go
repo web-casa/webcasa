@@ -56,7 +56,7 @@ func (p *Plugin) Init(ctx *pluginpkg.Context) error {
 	// 3. Create services
 	sourceMgr := NewSourceManager(ctx.DB, ctx.DataDir, ctx.Logger)
 	p.svc = NewService(ctx.DB, sourceMgr, ctx.CoreAPI, ctx.EventBus, ctx.Logger, ctx.DataDir)
-	p.tplSvc = NewTemplateService(ctx.DB, sourceMgr, ctx.Logger, ctx.DataDir)
+	p.tplSvc = NewTemplateService(ctx.DB, sourceMgr, ctx.Logger, ctx.DataDir, ctx.CoreAPI)
 	p.updater = NewUpdater(ctx.DB, sourceMgr, ctx.Logger)
 	p.handler = NewHandler(p.svc, p.tplSvc)
 
@@ -75,7 +75,7 @@ func (p *Plugin) Init(ctx *pluginpkg.Context) error {
 	r.GET("/sources", p.handler.ListSources)
 	a.POST("/sources", p.handler.AddSource)
 	a.POST("/sources/:id/sync", p.handler.SyncSource)
-	r.GET("/sources/:id/sync/stream", p.handler.SyncSourceStream)
+	a.GET("/sources/:id/sync/stream", p.handler.SyncSourceStream)
 	a.DELETE("/sources/:id", p.handler.RemoveSource)
 
 	// Installed apps (read + admin mutations)

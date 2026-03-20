@@ -103,7 +103,9 @@ func (p *Plugin) Init(ctx *pluginpkg.Context) error {
 	r.POST("/generate-compose", p.handler.GenerateCompose)
 	r.POST("/generate-dockerfile", p.handler.GenerateDockerfile)
 	r.POST("/diagnose", p.handler.Diagnose)
-	r.POST("/review-code", p.handler.ReviewCode)
+
+	// Review-code reads project source files — admin only.
+	a.POST("/review-code", p.handler.ReviewCode)
 
 	// Memory management
 	r.GET("/memories", p.handler.ListMemories)

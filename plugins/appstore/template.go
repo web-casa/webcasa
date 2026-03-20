@@ -3,9 +3,23 @@ package appstore
 import (
 	"fmt"
 	"log/slog"
+	"regexp"
 
+	pluginpkg "github.com/web-casa/webcasa/internal/plugin"
 	"gorm.io/gorm"
 )
+
+var domainRe = regexp.MustCompile(`^[a-zA-Z0-9]([a-zA-Z0-9-]*[a-zA-Z0-9])?(\.[a-zA-Z0-9]([a-zA-Z0-9-]*[a-zA-Z0-9])?)+$`)
+
+func validateTemplateDomain(domain string) error {
+	if len(domain) > 253 {
+		return fmt.Errorf("domain too long (max 253 chars)")
+	}
+	if !domainRe.MatchString(domain) {
+		return fmt.Errorf("invalid domain format: %s", domain)
+	}
+	return nil
+}
 
 // TemplateService handles project template browsing and deployment.
 type TemplateService struct {
@@ -13,14 +27,15 @@ type TemplateService struct {
 	sources *SourceManager
 	logger  *slog.Logger
 	dataDir string
+	coreAPI pluginpkg.CoreAPI
 }
 
 // NewTemplateService creates a TemplateService.
-func NewTemplateService(db *gorm.DB, sources *SourceManager, logger *slog.Logger, dataDir string) *TemplateService {
-	return &TemplateService{db: db, sources: sources, logger: logger, dataDir: dataDir}
+func NewTemplateService(db *gorm.DB, sources *SourceManager, logger *slog.Logger, dataDir string, coreAPI pluginpkg.CoreAPI) *TemplateService {
+	return &TemplateService{db: db, sources: sources, logger: logger, dataDir: dataDir, coreAPI: coreAPI}
 }
 
-// ListTemplates returns all project templates with optional filtering.
+// ListTemplates returns project templates with optional filtering (max 200).
 func (ts *TemplateService) ListTemplates(framework, search string) ([]ProjectTemplate, error) {
 	query := ts.db.Model(&ProjectTemplate{})
 
@@ -34,7 +49,7 @@ func (ts *TemplateService) ListTemplates(framework, search string) ([]ProjectTem
 	}
 
 	var templates []ProjectTemplate
-	if err := query.Order("name ASC").Find(&templates).Error; err != nil {
+	if err := query.Order("name ASC").Limit(200).Find(&templates).Error; err != nil {
 		return nil, err
 	}
 	return templates, nil
@@ -66,33 +81,22 @@ type CreateFromTemplateRequest struct {
 // DeployFromTemplate creates a project from a template by inserting a record
 // into plugin_deploy_projects. Returns the project ID for frontend redirect.
 func (ts *TemplateService) DeployFromTemplate(req *CreateFromTemplateRequest) (uint, error) {
+	// Check if deploy plugin is installed and enabled.
+	if !ts.db.Migrator().HasTable("plugin_deploy_projects") {
+		return 0, fmt.Errorf("deploy plugin is not installed — please enable it first")
+	}
+	// Verify the deploy plugin is currently enabled; the table may exist from a
+	// prior activation but the plugin's API routes are gated by PluginGuardMiddleware,
+	// so creating a project here would leave it unmanageable.
+	var enabledVal *bool
+	ts.db.Table("plugin_states").Where("id = ?", "deploy").Select("enabled").Row().Scan(&enabledVal)
+	if enabledVal == nil || !*enabledVal {
+		return 0, fmt.Errorf("deploy plugin is disabled — please enable it before deploying templates")
+	}
+
 	tpl, err := ts.GetTemplate(req.TemplateID)
 	if err != nil {
 		return 0, fmt.Errorf("template not found: %w", err)
-	}
-
-	// Framework presets (matching deploy plugin's presets)
-	type preset struct {
-		InstallCmd string
-		BuildCmd   string
-		StartCmd   string
-		Port       int
-	}
-	presets := map[string]preset{
-		"nextjs":  {InstallCmd: "npm install", BuildCmd: "npm run build", StartCmd: "npm start", Port: 3000},
-		"nuxt":    {InstallCmd: "npm install", BuildCmd: "npm run build", StartCmd: "node .output/server/index.mjs", Port: 3000},
-		"vite":    {InstallCmd: "npm install", BuildCmd: "npm run build", Port: 0},
-		"remix":   {InstallCmd: "npm install", BuildCmd: "npm run build", StartCmd: "npm start", Port: 3000},
-		"express": {InstallCmd: "npm install", StartCmd: "node index.js", Port: 3000},
-		"go":      {BuildCmd: "go build -o app .", StartCmd: "./app", Port: 8080},
-		"laravel": {InstallCmd: "composer install --no-dev", BuildCmd: "php artisan optimize", StartCmd: "php-fpm", Port: 9000},
-		"flask":   {InstallCmd: "pip install -r requirements.txt", StartCmd: "gunicorn app:app", Port: 8000},
-		"django":  {InstallCmd: "pip install -r requirements.txt", BuildCmd: "python manage.py collectstatic --noinput", StartCmd: "gunicorn config.wsgi:application", Port: 8000},
-	}
-
-	p, ok := presets[tpl.Framework]
-	if !ok {
-		p = preset{Port: 3000}
 	}
 
 	branch := tpl.Branch
@@ -100,30 +104,59 @@ func (ts *TemplateService) DeployFromTemplate(req *CreateFromTemplateRequest) (u
 		branch = "main"
 	}
 
-	// Insert directly into plugin_deploy_projects table
-	record := map[string]interface{}{
-		"name":            req.Name,
-		"domain":          req.Domain,
-		"git_url":         tpl.GitURL,
-		"git_branch":      branch,
-		"framework":       tpl.Framework,
-		"install_command": p.InstallCmd,
-		"build_command":   p.BuildCmd,
-		"start_command":   p.StartCmd,
-		"port":            p.Port,
-		"status":          "pending",
-		"auto_deploy":     false,
+	// Validate domain if provided.
+	if req.Domain != "" {
+		if err := validateTemplateDomain(req.Domain); err != nil {
+			return 0, err
+		}
+		// Check domain uniqueness against existing hosts so we don't create a
+		// project that will fail silently when setting up the reverse proxy.
+		var domainCount int64
+		ts.db.Table("hosts").Where("domain = ?", req.Domain).Count(&domainCount)
+		if domainCount > 0 {
+			return 0, fmt.Errorf("domain %q is already in use by an existing host", req.Domain)
+		}
 	}
 
-	result := ts.db.Table("plugin_deploy_projects").Create(record)
-	if result.Error != nil {
-		return 0, fmt.Errorf("create project: %w", result.Error)
-	}
+	// Look up framework preset commands so the project is deployable out of the box.
+	installCmd, buildCmd, startCmd := frameworkPresetCommands(tpl.Framework)
 
-	// Get the created project ID
-	var projectID uint
-	ts.db.Table("plugin_deploy_projects").Select("id").Where("name = ? AND git_url = ?", req.Name, tpl.GitURL).Order("id DESC").Limit(1).Scan(&projectID)
+	// Use CoreAPI.CreateProject so the deploy plugin's full initialization
+	// runs (webhook token, auth method, deploy mode, port allocation).
+	projectID, err := ts.coreAPI.CreateProject(pluginpkg.CreateProjectRequest{
+		Name:           req.Name,
+		GitURL:         tpl.GitURL,
+		GitBranch:      branch,
+		Domain:         req.Domain,
+		Framework:      tpl.Framework,
+		DeployMode:     "", // let CoreAPI infer from framework
+		InstallCommand: installCmd,
+		BuildCommand:   buildCmd,
+		StartCommand:   startCmd,
+	})
+	if err != nil {
+		return 0, fmt.Errorf("create project: %w", err)
+	}
 
 	ts.logger.Info("created project from template", "template", tpl.Name, "project_id", projectID)
 	return projectID, nil
+}
+
+// frameworkPresetCommands returns install/build/start commands for known frameworks.
+func frameworkPresetCommands(framework string) (install, build, start string) {
+	presets := map[string][3]string{
+		"nextjs":  {"npm install", "npm run build", "npm start"},
+		"nuxt":    {"npm install", "npm run build", "node .output/server/index.mjs"},
+		"vite":    {"npm install", "npm run build", ""},
+		"remix":   {"npm install", "npm run build", "npm start"},
+		"express": {"npm install", "", "node index.js"},
+		"go":      {"", "go build -o app .", "./app"},
+		"laravel": {"composer install --no-dev", "php artisan optimize", "php-fpm"},
+		"flask":   {"pip install -r requirements.txt", "", "gunicorn app:app"},
+		"django":  {"pip install -r requirements.txt", "python manage.py collectstatic --noinput", "gunicorn config.wsgi:application"},
+	}
+	if p, ok := presets[framework]; ok {
+		return p[0], p[1], p[2]
+	}
+	return "", "", ""
 }

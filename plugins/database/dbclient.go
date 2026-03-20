@@ -4,9 +4,10 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"regexp"
 	"strings"
 
-	_ "github.com/go-sql-driver/mysql" // MySQL driver
+	mysqldriver "github.com/go-sql-driver/mysql" // MySQL driver
 	_ "github.com/lib/pq"              // PostgreSQL driver
 	"github.com/redis/go-redis/v9"
 )
@@ -21,7 +22,13 @@ func NewDBClient() *DBClient {
 
 // connectMySQL connects to a MySQL or MariaDB instance.
 func (c *DBClient) connectMySQL(inst *Instance) (*sql.DB, error) {
-	dsn := fmt.Sprintf("root:%s@tcp(127.0.0.1:%d)/", inst.RootPassword, inst.Port)
+	// Use mysql.Config to safely build DSN with any special characters in password.
+	cfg := mysqldriver.NewConfig()
+	cfg.User = "root"
+	cfg.Passwd = inst.RootPassword
+	cfg.Net = "tcp"
+	cfg.Addr = fmt.Sprintf("127.0.0.1:%d", inst.Port)
+	dsn := cfg.FormatDSN()
 	db, err := sql.Open("mysql", dsn)
 	if err != nil {
 		return nil, err
@@ -35,8 +42,11 @@ func (c *DBClient) connectMySQL(inst *Instance) (*sql.DB, error) {
 
 // connectPostgres connects to a PostgreSQL instance.
 func (c *DBClient) connectPostgres(inst *Instance) (*sql.DB, error) {
-	dsn := fmt.Sprintf("host=127.0.0.1 port=%d user=postgres password=%s sslmode=disable",
-		inst.Port, inst.RootPassword)
+	// Quote password with single quotes; escape backslashes first, then quotes (libpq convention).
+	escapedPwd := strings.ReplaceAll(inst.RootPassword, `\`, `\\`)
+	escapedPwd = strings.ReplaceAll(escapedPwd, "'", `\'`)
+	dsn := fmt.Sprintf("host=127.0.0.1 port=%d user=postgres password='%s' sslmode=disable",
+		inst.Port, escapedPwd)
 	db, err := sql.Open("postgres", dsn)
 	if err != nil {
 		return nil, err
@@ -58,13 +68,24 @@ func (c *DBClient) connectRedis(inst *Instance) *redis.Client {
 
 // ── Database operations ──
 
+// validCharsets whitelist of safe charset values.
+var validCharsets = map[string]bool{
+	"utf8": true, "utf8mb4": true, "latin1": true, "ascii": true,
+	"binary": true, "utf16": true, "utf32": true, "big5": true,
+	"gb2312": true, "gbk": true, "euckr": true, "sjis": true,
+	"UTF8": true, // PostgreSQL
+}
+
 // CreateDatabase creates a database in the instance.
 func (c *DBClient) CreateDatabase(inst *Instance, name, charset string) error {
+	if !validCharsets[charset] {
+		return fmt.Errorf("invalid charset: %s", charset)
+	}
 	switch inst.Engine {
 	case EngineMySQL, EngineMariaDB:
 		return c.mysqlExec(inst, fmt.Sprintf("CREATE DATABASE `%s` CHARACTER SET %s", escapeName(name), charset))
 	case EnginePostgres:
-		return c.pgCreateDatabase(inst, name)
+		return c.pgCreateDatabase(inst, name, charset)
 	default:
 		return fmt.Errorf("engine %s does not support database creation", inst.Engine)
 	}
@@ -159,14 +180,14 @@ func (c *DBClient) pgExec(inst *Instance, query string) error {
 }
 
 // pgCreateDatabase uses a separate connection to create a database (can't run inside a tx).
-func (c *DBClient) pgCreateDatabase(inst *Instance, name string) error {
+func (c *DBClient) pgCreateDatabase(inst *Instance, name, charset string) error {
 	db, err := c.connectPostgres(inst)
 	if err != nil {
 		return err
 	}
 	defer db.Close()
 	// CREATE DATABASE cannot run in a transaction in PG.
-	_, err = db.Exec(fmt.Sprintf(`CREATE DATABASE "%s"`, escapeName(name)))
+	_, err = db.Exec(fmt.Sprintf(`CREATE DATABASE "%s" ENCODING '%s'`, escapeName(name), charset))
 	return err
 }
 
@@ -180,9 +201,13 @@ func escapeName(name string) string {
 	return name
 }
 
-// escapeString escapes single quotes for SQL string literals.
+// escapeString escapes a string for use in SQL single-quoted literals.
+// Escapes backslashes first (MySQL treats \ as escape char by default),
+// then single quotes.
 func escapeString(s string) string {
-	return strings.ReplaceAll(s, "'", "''")
+	s = strings.ReplaceAll(s, `\`, `\\`)
+	s = strings.ReplaceAll(s, "'", "''")
+	return s
 }
 
 // ── Query Execution ──
@@ -206,22 +231,36 @@ func (c *DBClient) ExecuteQuery(ctx context.Context, inst *Instance, database, q
 }
 
 // executeSQLQuery executes a SQL query on a MySQL, MariaDB, or PostgreSQL instance.
+// validDatabaseName checks that a database name is safe for DSN/SQL use.
+var validDBNameRe = regexp.MustCompile(`^[a-zA-Z_][a-zA-Z0-9_-]*$`)
+
 func (c *DBClient) executeSQLQuery(ctx context.Context, driver string, inst *Instance, database, query string, limit int) (*QueryResult, error) {
+	if database != "" && !validDBNameRe.MatchString(database) {
+		return nil, fmt.Errorf("invalid database name: %s", database)
+	}
+
 	var db *sql.DB
 	var err error
 
 	switch driver {
 	case "mysql":
 		if database != "" {
-			dsn := fmt.Sprintf("root:%s@tcp(127.0.0.1:%d)/%s", inst.RootPassword, inst.Port, database)
-			db, err = sql.Open("mysql", dsn)
+			cfg := mysqldriver.NewConfig()
+			cfg.User = "root"
+			cfg.Passwd = inst.RootPassword
+			cfg.Net = "tcp"
+			cfg.Addr = fmt.Sprintf("127.0.0.1:%d", inst.Port)
+			cfg.DBName = database
+			db, err = sql.Open("mysql", cfg.FormatDSN())
 		} else {
 			db, err = c.connectMySQL(inst)
 		}
 	case "postgres":
 		if database != "" {
-			dsn := fmt.Sprintf("host=127.0.0.1 port=%d user=postgres password=%s sslmode=disable dbname=%s",
-				inst.Port, inst.RootPassword, database)
+			escapedPwd := strings.ReplaceAll(inst.RootPassword, `\`, `\\`)
+			escapedPwd = strings.ReplaceAll(escapedPwd, "'", `\'`)
+			dsn := fmt.Sprintf("host=127.0.0.1 port=%d user=postgres password='%s' sslmode=disable dbname=%s",
+				inst.Port, escapedPwd, database)
 			db, err = sql.Open("postgres", dsn)
 		} else {
 			db, err = c.connectPostgres(inst)

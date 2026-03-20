@@ -69,6 +69,9 @@ func (h *Handler) Read(c *gin.Context) {
 
 // Write saves content to a file.
 func (h *Handler) Write(c *gin.Context) {
+	// Limit request body to maxReadSize (10 MB) to prevent OOM.
+	c.Request.Body = http.MaxBytesReader(c.Writer, c.Request.Body, maxReadSize)
+
 	var req struct {
 		Path    string `json:"path" binding:"required"`
 		Content string `json:"content"`

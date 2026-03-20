@@ -161,6 +161,7 @@ type CoreAPI interface {
 
 // UpdateHostRequest describes fields that can be changed on an existing host via AI.
 type UpdateHostRequest struct {
+	Domain       string `json:"domain,omitempty"`
 	Upstream     string `json:"upstream,omitempty"`
 	TLSMode      string `json:"tls_mode,omitempty"`      // auto, dns, custom, off
 	ForceHTTPS   *bool  `json:"force_https,omitempty"`
@@ -171,13 +172,16 @@ type UpdateHostRequest struct {
 
 // CreateProjectRequest is the set of fields needed to create a deployment project via AI.
 type CreateProjectRequest struct {
-	Name         string `json:"name"`
-	GitURL       string `json:"git_url"`
-	GitBranch    string `json:"git_branch"`
-	Domain       string `json:"domain"`
-	Framework    string `json:"framework"`     // optional, auto-detect if empty
-	DeployMode   string `json:"deploy_mode"`   // bare | docker, default: bare
-	AutoDeploy   bool   `json:"auto_deploy"`
+	Name            string `json:"name"`
+	GitURL          string `json:"git_url"`
+	GitBranch       string `json:"git_branch"`
+	Domain          string `json:"domain"`
+	Framework       string `json:"framework"`        // optional, auto-detect if empty
+	DeployMode      string `json:"deploy_mode"`      // bare | docker, default: bare
+	AutoDeploy      bool   `json:"auto_deploy"`
+	InstallCommand  string `json:"install_command"`
+	BuildCommand    string `json:"build_command"`
+	StartCommand    string `json:"start_command"`
 }
 
 // CreateHostRequest is the minimal set of fields a plugin needs to create a

@@ -1547,7 +1547,7 @@ func registerMemoryTools(r *ToolRegistry) {
 			if p.Importance == 0 {
 				p.Importance = 0.5
 			}
-			mem, err := r.svc.memory.SaveMemory(p.Content, p.Category, p.Importance, nil)
+			mem, err := r.svc.memory.SaveMemory(userIDFromContext(ctx), p.Content, p.Category, p.Importance, nil)
 			if err != nil {
 				return nil, err
 			}
@@ -1585,7 +1585,7 @@ func registerMemoryTools(r *ToolRegistry) {
 			if err := json.Unmarshal(args, &p); err != nil {
 				return nil, fmt.Errorf("parse args: %w", err)
 			}
-			memories, err := r.svc.memory.SearchMemories(p.Query, p.Limit)
+			memories, err := r.svc.memory.SearchMemories(userIDFromContext(ctx), p.Query, p.Limit)
 			if err != nil {
 				return nil, err
 			}
@@ -1621,7 +1621,7 @@ func registerMemoryTools(r *ToolRegistry) {
 			if err := json.Unmarshal(args, &p); err != nil {
 				return nil, fmt.Errorf("parse args: %w", err)
 			}
-			memories, total, err := r.svc.memory.ListMemories(p.Page, 20, p.Category)
+			memories, total, err := r.svc.memory.ListMemories(userIDFromContext(ctx), p.Page, 20, p.Category)
 			if err != nil {
 				return nil, err
 			}
@@ -1647,6 +1647,7 @@ func registerMemoryTools(r *ToolRegistry) {
 			"required": []string{"id"},
 		}),
 		ReadOnly:          false,
+		AdminOnly:         true,
 		NeedsConfirmation: true,
 		Handler: func(ctx context.Context, args json.RawMessage) (interface{}, error) {
 			var p struct {
@@ -1655,7 +1656,7 @@ func registerMemoryTools(r *ToolRegistry) {
 			if err := json.Unmarshal(args, &p); err != nil {
 				return nil, fmt.Errorf("parse args: %w", err)
 			}
-			if err := r.svc.memory.DeleteMemory(p.ID); err != nil {
+			if err := r.svc.memory.DeleteMemory(userIDFromContext(ctx), p.ID); err != nil {
 				return nil, err
 			}
 			return map[string]interface{}{"status": "deleted", "id": p.ID}, nil

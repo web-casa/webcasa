@@ -170,7 +170,7 @@ func (h *Handler) InstanceLogs(c *gin.Context) {
 	if err != nil {
 		return
 	}
-	tail := c.DefaultQuery("tail", "200")
+	tail := sanitizeTail(c.DefaultQuery("tail", "200"))
 	logs, err := h.svc.InstanceLogs(id, tail)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
@@ -409,7 +409,7 @@ func (h *Handler) InstanceLogsWS(c *gin.Context) {
 		conn.WriteMessage(websocket.TextMessage, []byte("Error: invalid id"))
 		return
 	}
-	tail := c.DefaultQuery("tail", "100")
+	tail := sanitizeTail(c.DefaultQuery("tail", "100"))
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -440,6 +440,17 @@ func (h *Handler) InstanceLogsWS(c *gin.Context) {
 }
 
 // ── Helpers ──
+
+func sanitizeTail(s string) string {
+	n, err := strconv.Atoi(s)
+	if err != nil || n <= 0 {
+		return "200"
+	}
+	if n > 5000 {
+		n = 5000
+	}
+	return strconv.Itoa(n)
+}
 
 func parseID(c *gin.Context) (uint, error) {
 	id, err := strconv.ParseUint(c.Param("id"), 10, 32)
