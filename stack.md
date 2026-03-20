@@ -2,27 +2,37 @@
 
 ## 架构概览
 
-WebCasa 采用经典的前后端分离 + 单二进制分发架构：
+WebCasa 采用前后端分离 + 插件化架构：
 
 ```
 ┌─────────────────────────────────────────────────────┐
 │  Browser (React SPA)                                │
 │  http://panel:39921                                  │
 └────────────────┬────────────────────────────────────┘
-                 │ REST API (JSON)
+                 │ REST API (JSON) + SSE + WebSocket
                  ▼
 ┌─────────────────────────────────────────────────────┐
 │  Go Backend (Gin)                                   │
+│                                                     │
 │  ┌──────────┐ ┌──────────┐ ┌───────────┐           │
 │  │ Handler  │→│ Service  │→│ GORM/DB   │→ SQLite   │
-│  └──────────┘ └────┬─────┘ └───────────┘           │
-│                    │                                 │
-│              ┌─────▼──────┐                         │
-│              │ Caddy Mgr  │                         │
-│              └─────┬──────┘                         │
+│  └──────────┘ └──────────┘ └───────────┘           │
+│                                                     │
+│  ┌──────────────────────────────────────┐           │
+│  │ Plugin Manager                       │           │
+│  │ ┌────────┐ ┌─────────┐ ┌─────────┐  │           │
+│  │ │EventBus│ │ConfigSto│ │ CoreAPI │  │           │
+│  │ └────────┘ └─────────┘ └─────────┘  │           │
+│  │ Plugins: deploy│docker│ai│db│file│  │           │
+│  │   backup│monitor│appstore│mcp│...   │           │
+│  └──────────────────────┬───────────────┘           │
+│                         │                           │
+│              ┌──────────▼──────┐                    │
+│              │   Caddy Manager │                    │
+│              └──────────┬──────┘                    │
 │    Render ──→ Caddyfile ──→ caddy reload            │
-└────────────────────┼────────────────────────────────┘
-                     ▼
+└──────────────────────────┼──────────────────────────┘
+                           ▼
 ┌─────────────────────────────────────────────────────┐
 │  Caddy Server                                       │
 │  :80 / :443  ──→  upstream backends                 │
@@ -33,212 +43,147 @@ WebCasa 采用经典的前后端分离 + 单二进制分发架构：
 ## 技术栈
 
 ### 后端
-
-| 组件 | 技术 | 版本 | 用途 |
-|------|------|------|------|
-| 语言 | Go | 1.26+ | 后端主语言 |
-| Web 框架 | Gin | 1.10 | HTTP 路由、中间件 |
-| ORM | GORM | 1.25 | 数据库操作、Auto Migrate |
-| 数据库 | SQLite | 3.x | 嵌入式持久化（WAL 模式） |
-| 认证 | golang-jwt | v5 | JWT Token 签发/验证 |
-| 密码 | bcrypt | — | 密码哈希 |
-| CORS | gin-contrib/cors | — | 跨域请求支持 |
+| 组件 | 技术 | 版本 |
+|------|------|------|
+| 语言 | Go | 1.26+ |
+| HTTP 框架 | Gin | v1.10 |
+| ORM | GORM | v1.25 |
+| 数据库 | SQLite (WAL) | mattn/go-sqlite3 |
+| 认证 | JWT (HS256) + TOTP + ALTCHA PoW | - |
+| 加密 | AES-GCM (secrets), bcrypt (passwords) | - |
+| 定时任务 | robfig/cron/v3 | - |
+| Docker | Docker SDK + docker compose CLI | - |
+| 备份 | Kopia CLI | - |
+| MCP | mcp-go SDK | - |
 
 ### 前端
-
-| 组件 | 技术 | 版本 | 用途 |
-|------|------|------|------|
-| 框架 | React | 19 | UI 框架 |
-| 构建 | Vite | 7 | 开发服务器 + 构建 |
-| 组件库 | Radix UI Themes | 3.x | 企业级 UI 组件 |
-| CSS | Tailwind CSS | v4 | 工具类 CSS |
-| 状态管理 | Zustand | 5 | 轻量状态管理 |
-| 路由 | React Router | 7 | SPA 路由 |
-| HTTP | Axios | 1.13 | API 请求客户端 |
-| 图标 | Lucide React | — | SVG 图标库 |
-| 编辑器 | CodeMirror | 6 | Caddyfile 在线编辑器 |
-
-### 部署
-
-| 组件 | 技术 | 用途 |
+| 组件 | 技术 | 版本 |
 |------|------|------|
-| 进程管理 | systemd | 服务注册、开机启动 |
-| 容器 | Docker (multi-stage) | 可选容器化部署 |
-| 反代核心 | Caddy 2.x | 反向代理 + 自动 HTTPS |
+| 框架 | React | 19 |
+| 构建 | Vite | 7 |
+| UI 库 | Radix UI Themes | - |
+| 样式 | Tailwind CSS | 4 |
+| 状态 | Zustand | - |
+| 国际化 | react-i18next | - |
+| 编辑器 | CodeMirror 6 | - |
+| 图标 | Lucide React | - |
+| HTTP | Axios | - |
 
-## 后端分层
+## 插件系统
 
-```
-main.go                        入口：初始化组件、注册路由、启动服务
-  │
-  ├── internal/config/         配置层：环境变量读取
-  ├── internal/database/       数据层：SQLite 初始化 + Auto Migrate
-  ├── internal/model/          模型层：GORM 结构体 + DTO
-  ├── internal/auth/           认证层：JWT 签发/验证/中间件
-  ├── internal/handler/        控制器层：HTTP 请求处理
-  │     ├── auth.go              登录/注册/用户信息
-  │     ├── host.go              Host CRUD
-  │     ├── caddy.go             进程控制 + Caddyfile 编辑器 API
-  │     ├── log.go               日志查看
-  │     ├── export.go            配置导入/导出
-  │     ├── dashboard.go         Dashboard 统计
-  │     ├── user.go              多用户管理
-  │     ├── audit.go             审计日志
-  │     ├── cert.go              SSL 证书上传
-  │     └── dns_provider.go      DNS Provider CRUD
-  ├── internal/service/        服务层：业务逻辑
-  │     └── host.go              Host CRUD + ApplyConfig
-  └── internal/caddy/          Caddy 管理层
-        ├── renderer.go          数据库 → Caddyfile 渲染
-        └── manager.go           进程启停 + 原子写入 + Format/Validate
-```
-
-## 数据流
-
-### 创建 Host
+### 架构
 
 ```
-用户提交表单
-  → POST /api/hosts (handler)
-    → HostService.Create (service)
-      → GORM 写入 SQLite
-      → ApplyConfig()
-        → 从 DB 读取全部 Hosts
-        → RenderCaddyfile() 生成配置文本
-        → Manager.WriteCaddyfile()
-          → 写临时文件
-          → caddy validate (若可用)
-          → 备份旧文件
-          → 原子 rename
-        → Manager.Reload() (若 Caddy 运行中)
-    → 返回 JSON 响应
+Plugin Interface
+├── Metadata()   → ID, Name, Version, Dependencies, Priority
+├── Init(ctx)    → DB migrate, route registration, service init
+├── Start()      → Background tasks (schedulers, watchers)
+└── Stop()       → Cleanup
+
+Plugin Context
+├── DB           → GORM connection (tables: plugin_{id}_*)
+├── Router       → /api/plugins/{id}/ (JWT required)
+├── AdminRouter  → /api/plugins/{id}/ (JWT + admin)
+├── EventBus     → Pub/sub with wildcard matching
+├── ConfigStore  → Scoped key-value settings
+├── CoreAPI      → 150+ methods (host/deploy/docker/db/file/...)
+├── DataDir      → data/plugins/{id}/
+└── Logger       → slog with plugin ID prefix
 ```
 
-### Caddyfile 生成策略
+### 插件列表
 
-采用 `strings.Builder` 程序化构建（非模板），好处是：
-- 类型安全，无模板注入风险
-- 条件逻辑灵活（路径路由、多上游、Header 等）
-- Go 原生，无额外依赖
+| ID | 插件 | 优先级 | 依赖 | 数据表 |
+|----|------|--------|------|--------|
+| deploy | 项目部署 | 5 | - | projects, deployments |
+| docker | Docker | 10 | - | stacks |
+| database | 数据库 | 15 | docker | instances, databases, users |
+| php | PHP | 16 | docker | runtimes, sites |
+| ai | AI 助手 | 30 | - | conversations, messages, memories |
+| filemanager | 文件管理 | 40 | - | (无) |
+| firewall | 防火墙 | 45 | - | (无) |
+| cronjob | 定时任务 | 50 | - | tasks, logs |
+| monitoring | 系统监控 | 50 | - | metrics, alert_rules, alert_history |
+| backup | 备份 | 55 | - | configs, snapshots |
+| appstore | 应用商店 | 60 | docker | sources, apps, installed, templates |
+| mcpserver | MCP 服务 | 90 | - | tokens |
 
-生成的 Caddyfile 结构：
+### 插件间通信
 
-```caddyfile
-{
-    admin localhost:2019
-    log { output file ... }
-}
+- **EventBus** — 内存 pub/sub，支持 wildcard（如 `deploy.*`）
+- **CoreAPI** — 150+ 方法，插件通过 CoreAPI 访问其他插件的数据和功能
+- **数据隔离** — 每个插件的表以 `plugin_{id}_` 为前缀，文件存储在 `data/plugins/{id}/`
 
-# Proxy host
-example.com {
-    tls /path/to/cert.pem /path/to/key.pem  # 自定义证书（可选）
-    basicauth {                              # Basic Auth（可选）
-        admin $2a$14$...
-    }
-    reverse_proxy localhost:3000 localhost:3001 {
-        lb_policy round_robin
-        header_up X-Real-IP {remote_host}
-    }
-    log { output file .../access-example.com.log }
-}
+## 安全架构
 
-# Redirect host
-old.example.com {
-    redir https://new.example.com{uri} permanent
-    log { output file .../access-old.example.com.log }
-}
+### 认证层
+- JWT HS256（24h 过期）
+- TOTP 二步验证（AES-GCM 加密存储密钥）
+- bcrypt 恢复码
+- ALTCHA PoW 防暴力破解
+
+### 授权层
+- `protected` 路由 — 任何登录用户
+- `adminOnly` 路由 — 仅管理员
+- 插件路由 — PluginGuardMiddleware（禁用插件返回 404）
+- MCP Token — `["*"]` 全权限 / 精细范围控制
+
+### 输入验证
+- Caddyfile 注入防护 — `ValidateCaddyValue()`, `ValidateDomain()`, `ValidateUpstream()`
+- Custom directives — 逐字符花括号深度跟踪
+- DNS 凭据 — `safeDnsValue()` 拒绝换行/花括号
+- SQL 注入 — 参数化查询 + `isReadOnlyQuery()` + `containsUnquotedSemicolon()`
+- 路径穿越 — `filepath.EvalSymlinks()` + 前缀检查
+- 命令注入 — upstream/域名字段字符白名单
+
+### 凭据保护
+- API Key / Deploy Key — AES-GCM 加密存储
+- 数据库 Root 密码 — CoreAPI.EncryptSecret/DecryptSecret
+- DNS Provider Config — JSON 存储，API 响应中 mask 为 `***`
+- MCP Token — SHA-256 哈希存储，constant-time 比较
+
+## 数据库 Schema
+
+### 核心表
+```
+users           — 用户（bcrypt 密码 + TOTP + 角色）
+hosts           — 站点（域名唯一，30+ 配置字段）
+upstreams       — 上游服务器（CASCADE 删除）
+routes          — 路径路由（upstream_id 映射）
+custom_headers  — 自定义响应头
+access_rules    — IP 访问规则
+basic_auths     — HTTP 基础认证
+dns_providers   — DNS 提供商配置
+certificates    — 自定义 SSL 证书
+tags / groups   — 站点标签和分组
+host_tags       — 多对多关联
+templates       — 站点模板
+settings        — 系统设置 KV
+audit_logs      — 审计日志
+plugin_states   — 插件启用/禁用状态
 ```
 
-### 原子写入流程
+### 插件表（自动迁移）
+每个插件在 `Init()` 中通过 `db.AutoMigrate()` 创建自己的表，表名以 `plugin_{id}_` 为前缀。
 
-```
-1. 写入 Caddyfile.tmp
-2. caddy validate --config Caddyfile.tmp  (可用时)
-3. 备份 Caddyfile → backups/Caddyfile.YYYYMMDD-HHMMSS.bak
-4. rename(Caddyfile.tmp → Caddyfile)      (原子操作)
-5. caddy reload                            (Caddy 运行时)
-```
+## 前端路由
 
-验证失败 → 删除 tmp，原配置不受影响
-rename 是文件系统原子操作，中途崩溃不会出现半写状态
-
-## 数据库模型
-
-```
-users             用户表
-  └─ id, username, password(bcrypt), role(admin/viewer), timestamps
-
-dns_providers     DNS API 提供商
-  └─ id, name, provider(cloudflare/alidns/tencentcloud/route53),
-     config(JSON), is_default, timestamps
-
-audit_logs        审计日志
-  └─ id, user_id, username, action, target, target_id, detail, ip, created_at
-
-hosts             站点主表
-  ├─ id, domain, host_type(proxy/redirect/static/php), enabled
-  ├─ tls_enabled, tls_mode(auto/dns/wildcard/custom/off), dns_provider_id
-  ├─ http_redirect, websocket
-  ├─ redirect_url, redirect_code        # redirect 类型
-  ├─ root_path, directory_browse, php_fastcgi, index_files  # static/php 类型
-  ├─ custom_cert_path, custom_key_path  # 自定义证书
-  ├─ compression, cache_enabled, cache_ttl  # 性能选项
-  ├─ cors_enabled, cors_origins, cors_methods, cors_headers  # CORS
-  ├─ security_headers, error_page_path  # 安全/错误页
-  ├─ custom_directives  # 自定义 Caddy 指令
-  ├── upstreams[]         上游服务器（一对多）
-  ├── routes[]            路径路由（一对多）
-  ├── custom_headers[]    自定义 Header（一对多）
-  ├── access_rules[]      IP 访问控制（一对多）
-  └── basic_auths[]       HTTP Basic Auth（一对多）
-```
-
-## API 端点
-
-| Method | Path | Auth | 说明 |
-|--------|------|------|------|
-| POST | `/api/auth/setup` | ✗ | 首次创建管理员 |
-| POST | `/api/auth/login` | ✗ | 登录 |
-| GET | `/api/auth/need-setup` | ✗ | 是否需要初始化 |
-| GET | `/api/auth/me` | ✓ | 当前用户 |
-| GET | `/api/dashboard/stats` | ✓ | Dashboard 统计 |
-| GET | `/api/hosts` | ✓ | 列出全部 Host |
-| POST | `/api/hosts` | ✓ | 创建 Host |
-| GET | `/api/hosts/:id` | ✓ | 获取 Host |
-| PUT | `/api/hosts/:id` | ✓ | 更新 Host |
-| DELETE | `/api/hosts/:id` | ✓ | 删除 Host |
-| PATCH | `/api/hosts/:id/toggle` | ✓ | 启用/禁用 |
-| POST | `/api/hosts/:id/cert` | ✓ | 上传自定义 SSL 证书 |
-| DELETE | `/api/hosts/:id/cert` | ✓ | 删除自定义证书 |
-| GET | `/api/caddy/status` | ✓ | Caddy 状态 |
-| POST | `/api/caddy/start` | ✓ | 启动 Caddy |
-| POST | `/api/caddy/stop` | ✓ | 停止 Caddy |
-| POST | `/api/caddy/reload` | ✓ | 重载配置 |
-| GET | `/api/caddy/caddyfile` | ✓ | 查看 Caddyfile |
-| POST | `/api/caddy/caddyfile` | ✓ | 保存 Caddyfile |
-| POST | `/api/caddy/fmt` | ✓ | 格式化 Caddyfile |
-| POST | `/api/caddy/validate` | ✓ | 验证 Caddyfile 语法 |
-| GET | `/api/logs` | ✓ | 查看日志 |
-| GET | `/api/logs/files` | ✓ | 列出日志文件 |
-| GET | `/api/logs/download` | ✓ | 下载日志 |
-| GET | `/api/config/export` | ✓ | 导出配置 |
-| POST | `/api/config/import` | ✓ | 导入配置 |
-| GET | `/api/users` | ✓ | 列出用户 |
-| POST | `/api/users` | ✓ | 创建用户 |
-| PUT | `/api/users/:id` | ✓ | 更新用户 |
-| DELETE | `/api/users/:id` | ✓ | 删除用户 |
-| GET | `/api/audit/logs` | ✓ | 审计日志查询 |
-| GET | `/api/dns-providers` | ✓ | 列出 DNS Provider |
-| POST | `/api/dns-providers` | ✓ | 创建 DNS Provider |
-| GET | `/api/dns-providers/:id` | ✓ | 获取 DNS Provider |
-| PUT | `/api/dns-providers/:id` | ✓ | 更新 DNS Provider |
-| DELETE | `/api/dns-providers/:id` | ✓ | 删除 DNS Provider |
-
-## 安全设计
-
-- **密码**：bcrypt 哈希存储，永不明文传输/存储
-- **JWT**：HS256 签名，24h 过期，Secret 由安装脚本随机生成
-- **数据库**：config 文件 600 权限，仅 root 可读
-- **systemd**：独立用户运行、ProtectSystem=strict、NoNewPrivileges
-- **CORS**：AllowAllOrigins（面板自身服务前端，安全由 JWT 保障）
-- **Caddyfile**：写入前 validate，失败不影响运行中配置
+| 路径 | 页面 | 说明 |
+|------|------|------|
+| `/` | Dashboard | 仪表盘 |
+| `/hosts` | HostList | 站点管理 |
+| `/editor` | CaddyfileEditor | Caddyfile 编辑器 |
+| `/settings` | Settings | 系统设置（6 个 Tab） |
+| `/docker` | DockerOverview | Docker 管理 |
+| `/deploy` | ProjectList | 项目部署 |
+| `/database` | DatabaseInstances | 数据库管理 |
+| `/files` | FileManager | 文件管理 |
+| `/terminal` | WebTerminal | Web 终端 |
+| `/monitoring` | MonitoringDashboard | 系统监控 |
+| `/backup` | BackupManager | 备份管理 |
+| `/store` | AppStore | 应用商店 |
+| `/firewall` | FirewallManager | 防火墙 |
+| `/php` | PHPManager | PHP 管理 |
+| `/cronjob` | CronJobManager | 定时任务 |
+| `/mcp` | MCPManager | MCP Token 管理 |
+| `/plugins` | PluginsPage | 插件管理 |

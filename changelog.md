@@ -6,6 +6,42 @@
 
 ---
 
+## [0.9.5] - 2026-03-20
+
+### Security — 全量安全审查与加固
+
+基于 6 轮外部安全审查 + 全量代码审查（6 个并行 agent），修复 100+ 安全和可靠性问题。
+
+#### 安全修复
+- **Caddyfile 注入防护** — DNS 凭据、BasicAuth 用户名、custom_directives `} {` 绕过全部修复
+- **路由权限加固** — Caddyfile 仅 admin 可读、review-code 移至 admin 路由、SQLite Browser 限制在数据目录 + admin-only
+- **AI Memory 用户隔离** — 所有查询按 user_id 隔离，per-user prune 限制，delete_memory 仅 admin
+- **MCP Token 安全** — constant-time hash 比较、空权限默认拒绝（需 `["*"]` 显式授权）
+- **Google API Key** — 从 URL 参数改为 `x-goog-api-key` 请求头
+- **密码最低长度** — 统一为 8 位（setup/login/user create）
+- **上传文件名** — `filepath.Base()` 防路径穿越
+- **凭据加密基础设施** — CoreAPI.EncryptSecret/DecryptSecret (AES-GCM)
+
+#### 可靠性修复
+- **ApplyConfig 回滚** — Caddy reload 失败时自动恢复旧 Caddyfile
+- **Host 更新路由重映射** — upstream 重建后自动更新 route.UpstreamID 映射
+- **创建失败回滚** — Docker stack / 数据库实例 / PHP runtime / FrankenPHP 站点 auto-start 失败时回滚 DB + 清理文件
+- **删除保护** — Docker stack / 数据库实例 / PHP runtime/site compose down 失败时保留 UI 记录
+- **Docker daemon 配置回滚** — restart 失败时恢复旧 daemon.json
+- **PHP 配置/扩展回滚** — restart/rebuild 失败时恢复旧配置
+- **SSE 解析** — 同时支持 `data: ` 和 `data:` 两种格式（兼容 GLM 等提供商）
+- **端口验证** — 数据库实例自定义端口范围检查 + 冲突检测
+- **用户授权回滚** — grant 失败时 drop 已创建用户
+
+#### 功能改进
+- **插件 i18n** — 12 个插件的名称/描述/分类全部中英文翻译
+- **MCP 独立页面** — Token 管理从系统设置独立，仅 MCP 插件启用时显示
+- **模板域名检查** — 部署前检查域名是否已占用
+- **App Store 域名验证** — InstallApp 时校验域名格式
+- **Dockerfile 修复** — 运行时镜像包含前端静态文件
+
+---
+
 ## [1.0.0] - 2026-03-01
 
 ### 🎉 Web.Casa Pro — AI-First 服务器管理面板

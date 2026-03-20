@@ -306,6 +306,34 @@ https://你的面板地址/api/plugins/deploy/webhook/{token}
 
 支持 OpenAI API 兼容的任何服务（OpenAI、Anthropic via proxy、Ollama 等）。
 
+### 插件管理
+
+在 **插件管理** 页面可以启用/禁用各功能插件。
+
+**内置插件（12 个）：**
+
+| 插件 | 说明 | 依赖 |
+|------|------|------|
+| 项目部署 | Git 源码部署（Node.js/Go/PHP/Python） | - |
+| Docker | Docker & Compose 管理 | - |
+| 数据库 | MySQL/PostgreSQL/MariaDB/Redis 实例 | Docker |
+| PHP | PHP-FPM 和 FrankenPHP 站点管理 | Docker |
+| AI 助手 | AI 聊天 + 67 工具 + NLOps | - |
+| 文件管理 | 文件浏览器 + 在线编辑器 + Web 终端 | - |
+| 防火墙 | firewalld 规则管理 | - |
+| 定时任务 | Cron 定时任务管理 | - |
+| 系统监控 | 实时指标 + 历史图表 + 阈值告警 | - |
+| 备份 | Kopia 备份（本地/S3/WebDAV/SFTP） | - |
+| 应用商店 | 一键 Docker 应用安装 + 模板市场 | Docker |
+| MCP 服务 | AI IDE 集成（Cursor/Windsurf/Claude Code） | - |
+
+**操作方式：**
+
+- 启用插件：点击开关即可，插件会自动创建数据表和注册路由
+- 禁用插件：关闭开关后，该插件的 API 和侧边栏入口自动消失
+- 依赖管理：有依赖的插件（如数据库依赖 Docker）需要先启用依赖插件
+- 侧边栏：可在插件管理页面控制各插件是否显示在左侧边栏
+
 ---
 
 ## 命令行工具

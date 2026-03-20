@@ -1,98 +1,50 @@
-# i18n 翻译工作交接文档
+# i18n 国际化状态
 
-> 本文档为低级模型（或后续开发者）提供 Phase 2 翻译工作的上下文和规范。
+## 框架
 
-## 已完成的工作
+- **库**: react-i18next
+- **配置**: `web/src/i18n.js`
+- **翻译文件**: `web/src/locales/en.json` / `zh.json`
+- **默认语言**: English
+- **Fallback**: English
+- **语言检测**: 浏览器语言自动检测
 
-框架已搭建完毕，以下文件已就位：
+## 翻译覆盖
 
-| 文件 | 说明 |
-|------|------|
-| `web/src/i18n.js` | i18next 初始化，语言检测 (localStorage → navigator)，fallback=en |
-| `web/src/locales/en.json` | 英文翻译（**已包含全部 12 个命名空间的完整 key**） |
-| `web/src/locales/zh.json` | 中文翻译（**已包含全部 12 个命名空间的完整 key**） |
-| `web/src/main.jsx` | 已引入 `import './i18n.js'` |
-| `web/src/pages/Login.jsx` | ✅ 已改造完毕（参考示例） |
-| `web/src/pages/Layout.jsx` | ✅ 已改造完毕（参考示例） |
+### 已完成
 
-## 你的任务
+- 所有核心页面已完成 i18n（Dashboard、HostList、Settings、Login 等）
+- 12 个插件的名称、描述、分类标签（`plugins.names.*` / `plugins.descriptions.*` / `plugins.categories.*`）
+- 侧边栏导航（Layout.jsx）
+- 插件管理页面（PluginsPage.jsx）
+- 插件前端 Manifest 支持 `label` + `label_zh` 双语标签
 
-将以下 **9 个页面文件** 中的硬编码中文/英文字符串替换为 `t()` 调用。
+### 翻译 Key 命名空间
 
-### 待改造文件清单
+| 命名空间 | 说明 |
+|----------|------|
+| `common` | 通用词汇（保存、取消、删除等） |
+| `nav` | 导航菜单 |
+| `dashboard` | 仪表盘 |
+| `hosts` | 站点管理 |
+| `settings` | 系统设置 |
+| `deploy` | 项目部署 |
+| `docker` | Docker 管理 |
+| `database` | 数据库管理 |
+| `monitoring` | 系统监控 |
+| `backup` | 备份管理 |
+| `appstore` | 应用商店 |
+| `mcp` | MCP 服务 |
+| `plugins` | 插件管理 |
+| `notify` | 通知 |
+| `ai` | AI 助手 |
+| `firewall` | 防火墙 |
+| `cronjob` | 定时任务 |
+| `php` | PHP 管理 |
 
-1. `web/src/pages/Dashboard.jsx` — 使用 `dashboard.*` 命名空间
-2. `web/src/pages/HostList.jsx` — 使用 `host.*` + `common.*` 命名空间（最大文件，~53KB）
-3. `web/src/pages/Settings.jsx` — 使用 `settings.*` 命名空间
-4. `web/src/pages/Users.jsx` — 使用 `user.*` 命名空间
-5. `web/src/pages/AuditLogs.jsx` — 使用 `audit.*` 命名空间
-6. `web/src/pages/DnsProviders.jsx` — 使用 `dns.*` 命名空间
-7. `web/src/pages/Certificates.jsx` — 使用 `cert.*` 命名空间
-8. `web/src/pages/CaddyfileEditor.jsx` — 使用 `editor.*` 命名空间
-9. `web/src/pages/Logs.jsx` — 使用 `log.*` 命名空间
+### 添加新翻译的规范
 
-## 改造模式（参照 Login.jsx 和 Layout.jsx）
-
-### Step 1: 添加 import
-
-在文件顶部添加：
-
-```jsx
-import { useTranslation } from 'react-i18next'
-```
-
-### Step 2: 在组件函数内获取 `t`
-
-```jsx
-export default function Dashboard() {
-    const { t } = useTranslation()
-    // ...
-}
-```
-
-### Step 3: 替换硬编码字符串
-
-```jsx
-// 之前：
-<Heading>站点分布</Heading>
-
-// 之后：
-<Heading>{t('dashboard.host_distribution')}</Heading>
-```
-
-### Step 4: 带插值的情况
-
-```jsx
-// 之前：
-tooltip={`代理: ${hosts.proxy ?? 0} / 跳转: ${hosts.redirect ?? 0}`}
-
-// 之后：
-tooltip={`${t('dashboard.proxy_count', { count: hosts.proxy ?? 0 })} / ${t('dashboard.redirect_count', { count: hosts.redirect ?? 0 })}`}
-```
-
-## 翻译 Key 查找
-
-所有翻译 key 已在 `en.json` 和 `zh.json` 中预定义。直接搜索对应命名空间即可。
-
-**如果发现某个字符串在翻译文件中没有对应 key**，请：
-1. 在 `en.json` 和 `zh.json` 的对应命名空间下新增 key
-2. key 命名使用小写 + 下划线，如 `host.confirm_delete`
-
-## 通用 key（`common.*`）
-
-按钮文本优先使用 `common.*`：
-- Save → `t('common.save')`
-- Cancel → `t('common.cancel')`
-- Delete → `t('common.delete')`
-- Loading... → `t('common.loading')`
-- Enabled/Disabled → `t('common.enabled')` / `t('common.disabled')`
-
-## 验证
-
-每改完一个文件后运行：
-
-```bash
-cd /home/ivmm/webcasa/web && npm run build
-```
-
-确认无编译错误。全部完成后可选择在浏览器中测试语言切换。
+1. 同时在 `en.json` 和 `zh.json` 中添加 key
+2. 在组件中使用 `const { t } = useTranslation()` + `t('namespace.key')`
+3. 对于可能不存在的 key，使用 `t('key', { defaultValue: 'fallback' })`
+4. 插件名称翻译统一放在 `plugins.names.{pluginId}`

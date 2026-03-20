@@ -4,186 +4,198 @@
 
 ## Project Overview
 
-WebCasa is a web-based management panel for the Caddy reverse proxy server, similar to Nginx Proxy Manager. It generates Caddyfile configurations from a SQLite database and manages the Caddy process lifecycle.
+WebCasa (https://web.casa) is an AI-First lightweight server control panel built on Caddy. It starts as a reverse proxy management panel (Lite) and extends to a full server management platform (Pro) through a compile-time plugin system.
+
+**Current version**: 0.9.x (see `VERSION` file)
 
 ## Architecture
 
-- **Pattern**: Caddyfile generation + `caddy reload` (not Admin API)
-- **Backend**: Go 1.26 + Gin + GORM + SQLite
-- **Frontend**: React 19 + Vite 7 + Radix UI Themes + Zustand + CodeMirror 6
-- **Distribution**: Single binary (frontend embedded at build time) or Docker
+- **Pattern**: Plugin-based architecture with compile-time registration (not `.so`)
+- **Backend**: Go 1.26+ / Gin / GORM / SQLite (WAL mode)
+- **Frontend**: React 19 / Vite 7 / Radix UI Themes / Tailwind CSS / Zustand / react-i18next
+- **Distribution**: Single binary + `web/dist/` static files, or Docker
+- **Core**: Caddy reverse proxy management via Caddyfile generation + `caddy reload`
 
 ## Key Design Decisions
 
-1. **Caddyfile over Admin API** — Human-readable config, file-based persistence, simpler rollback (backup before write), `caddy reload` is graceful (zero-downtime)
-2. **Atomic writes** — Write temp → validate → backup → rename. Never partial writes.
-3. **Caddy binary optional** — The panel works without Caddy installed (skips validation, shows config preview). Useful for UI development.
-4. **Single service user** — `webcasa` system user runs both the panel and controls Caddy via CLI commands.
-5. **Multi-user with roles** — Users have `admin` or `viewer` roles. All mutations are audit-logged.
+1. **Caddyfile over Admin API** — Human-readable config, file-based persistence, atomic writes (temp → validate → backup → rename), `caddy reload` is graceful (zero-downtime)
+2. **Plugin system** — Go Interface + compile-time registration. Plugins get: API routes, DB tables (prefixed `plugin_{id}_*`), data directory, EventBus, ConfigStore, CoreAPI access
+3. **Two-tier auth** — `protected` routes (any logged-in user) vs `adminOnly` routes (admin role required). Plugins get both router groups
+4. **i18n** — react-i18next with `en.json` / `zh.json`. Plugin names/descriptions have i18n keys in `plugins.names.*` / `plugins.descriptions.*`
+5. **Security** — ALTCHA PoW on setup/login, bcrypt passwords, AES-GCM encrypted secrets (TOTP, deploy keys, API keys), constant-time token comparison
 
 ## Directory Map
 
 ```
-main.go                          → Entry point, route registration, SPA serving
-internal/config/config.go        → Env var config loading (WEBCASA_* vars)
-internal/model/model.go          → All GORM models + request DTOs
-internal/database/database.go    → SQLite init, auto-migrate, WAL mode
-internal/auth/auth.go            → JWT generate/parse/middleware, bcrypt helpers
-internal/caddy/renderer.go       → Host[] → Caddyfile text (strings.Builder)
-internal/caddy/manager.go        → Caddy process: start/stop/reload, format/validate, atomic file write
-internal/service/host.go         → Business logic: CRUD + ApplyConfig + import/export
-internal/handler/auth.go         → /api/auth/* endpoints
-internal/handler/host.go         → /api/hosts/* CRUD endpoints (with audit logging)
-internal/handler/caddy.go        → /api/caddy/* process control + Caddyfile editor API
-internal/handler/log.go          → /api/logs log viewing + download
-internal/handler/cert.go         → /api/hosts/:id/cert SSL cert upload/delete
-internal/handler/export.go       → /api/config/export|import
-internal/handler/user.go         → /api/users/* multi-user CRUD
-internal/handler/audit.go        → /api/audit/logs audit log viewer
-internal/handler/dashboard.go    → /api/dashboard/stats aggregated stats
-internal/handler/dns_provider.go → /api/dns-providers/* DNS API provider CRUD
-web/src/main.jsx                 → React entry, Radix Theme wrapper
-web/src/App.jsx                  → React Router setup, auth guard
-web/src/api/index.js             → Axios client, JWT interceptors
-web/src/stores/auth.js           → Zustand auth state (login/logout/token)
-web/src/pages/Login.jsx          → Login + first-time setup page
-web/src/pages/Layout.jsx         → Sidebar nav layout
-web/src/pages/Dashboard.jsx      → Enhanced stats cards (host/TLS/system info)
-web/src/pages/HostList.jsx       → Host table + create/edit dialog (4 types, tabbed form)
-web/src/pages/Logs.jsx           → Log viewer with search/filter
-web/src/pages/Settings.jsx       → Caddy control, Caddyfile preview, import/export
-web/src/pages/Users.jsx          → Multi-user management (CRUD + roles)
-web/src/pages/AuditLogs.jsx      → Audit log viewer with pagination
-web/src/pages/CaddyfileEditor.jsx→ CodeMirror 6 editor with format/validate/save
-install.sh                       → One-click install for major Linux distros
+main.go                          -> Entry point, route registration, plugin init, SPA serving
+VERSION                          -> Version number (single source of truth)
+internal/
+  config/config.go               -> Env var config loading (WEBCASA_* vars)
+  model/model.go                 -> Core GORM models (Host, Upstream, Route, User, etc.)
+  database/database.go           -> SQLite init, auto-migrate, WAL mode
+  auth/                          -> JWT, bcrypt, TOTP, ALTCHA PoW, rate limiter
+  crypto/crypto.go               -> AES-GCM encrypt/decrypt for secrets
+  caddy/
+    renderer.go                  -> Host[] -> Caddyfile text (all host types + TLS + DNS)
+    manager.go                   -> Caddy process: start/stop/reload, atomic file write
+    validate.go                  -> Domain, upstream, IP, Caddyfile value, custom directives validation
+  service/
+    host.go                      -> Host CRUD, ApplyConfig (render + write + reload), Clone, Import/Export
+    template.go                  -> Host templates (presets + custom + import/export)
+    totp.go                      -> 2FA (TOTP + recovery codes)
+  handler/                       -> HTTP handlers for core routes (auth, host, caddy, user, etc.)
+  plugin/
+    types.go                     -> Plugin interface, CoreAPI interface, Context, FrontendManifest
+    manager.go                   -> Plugin lifecycle: init, start, stop, enable/disable, dependency sort
+    eventbus.go                  -> In-memory pub/sub with wildcard matching
+    configstore.go               -> Per-plugin key-value config (scoped DB prefix)
+    coreapi.go                   -> CoreAPI implementation (150+ methods for cross-plugin access)
+  notify/                        -> Notification system (Webhook, Email, Discord, Telegram)
+plugins/
+  deploy/                        -> Source code deployment (Git clone, build, process management)
+  docker/                        -> Docker & Compose management (stacks, containers, images, daemon config)
+  ai/                            -> AI assistant (chat, tool use 67+ tools, memory, code review, inspection)
+  database/                      -> Database instances (MySQL, PostgreSQL, MariaDB, Redis via Docker)
+  filemanager/                   -> File browser, editor, archive, web terminal (PTY)
+  backup/                        -> Backup/restore via Kopia (local, S3, WebDAV, SFTP)
+  monitoring/                    -> System metrics, history charts, threshold alerts
+  appstore/                      -> One-click Docker app install, project template marketplace
+  mcpserver/                     -> MCP (Model Context Protocol) server for AI IDE integration
+  firewall/                      -> firewalld rule management
+  cronjob/                       -> Scheduled task management (robfig/cron)
+  php/                           -> PHP-FPM and FrankenPHP runtime management
+web/
+  src/pages/                     -> React page components (30+ pages)
+  src/locales/                   -> i18n translation files (en.json, zh.json)
+  src/stores/                    -> Zustand stores (auth, pluginNav)
+  src/api/index.js               -> Axios API client with all endpoint definitions
 ```
+
+## Plugin System
+
+### Plugin Interface
+
+```go
+type Plugin interface {
+    Metadata() Metadata    // ID, name, version, dependencies, priority
+    Init(ctx *Context) error  // DB migrations, route registration, setup
+    Start() error          // Background tasks
+    Stop() error           // Cleanup
+}
+```
+
+### Plugin Context
+
+Each plugin receives:
+- `DB` — shared GORM connection (use `plugin_{id}_*` table prefix)
+- `Router` / `AdminRouter` — Gin route groups at `/api/plugins/{id}/`
+- `EventBus` — publish/subscribe events
+- `ConfigStore` — scoped key-value settings
+- `CoreAPI` — 150+ methods to access core functionality and other plugins
+- `DataDir` — `data/plugins/{id}/` for files
+- `Logger` — structured logger with plugin ID prefix
+
+### CoreAPI Highlights
+
+- Host management: `CreateHost`, `DeleteHost`, `UpdateHost`, `UpdateHostUpstream`
+- Settings: `GetSetting`, `SetSetting`
+- Deploy: `CreateProject`, `TriggerBuild`, `StartProject`, `StopProject`
+- Docker: `DockerPS`, `DockerLogs`, `DockerManageContainer`, `DockerRunContainer`
+- Database: `DatabaseCreateInstance`, `DatabaseCreateDatabase`, `DatabaseExecuteQuery`
+- File ops: `FileWrite`, `FileDelete`, `FileRename`
+- Secrets: `EncryptSecret`, `DecryptSecret`
+- And more (monitoring, backup, firewall, cron, notifications)
 
 ## Data Flow: Creating a Host
 
 ```
-POST /api/hosts → handler.Create → service.Create
-  → GORM insert into hosts + upstreams tables
-  → audit log entry via WriteAuditLog()
-  → service.ApplyConfig()
-    → service.List() (reload all hosts from DB)
-    → caddy.RenderCaddyfile(hosts, config, dnsProviders)
-    → manager.WriteCaddyfile(content)
-      → write to .tmp file
-      → exec: caddy validate (if binary exists)
-      → backup old file to backups/
-      → os.Rename (atomic)
-    → manager.Reload() (if caddy is running)
-      → exec: caddy reload --config <path>
+POST /api/hosts -> handler.Create -> service.Create
+  -> Validate domain, upstreams, IP rules, headers, custom directives, basicauth usernames
+  -> GORM insert into hosts + upstreams + headers + rules + basic_auths
+  -> Audit log entry
+  -> service.ApplyConfig()
+    -> List all hosts from DB
+    -> caddy.RenderCaddyfile(hosts, config, dnsProviders)
+    -> manager.WriteCaddyfile(content)  // atomic: temp -> validate -> backup -> rename
+    -> manager.Reload()                 // if fails, rollback to previous Caddyfile
 ```
 
-## Database Schema (SQLite, GORM auto-migrated)
+## Database Schema
 
-- `users` — id, username, password (bcrypt), role (admin/viewer), timestamps
-- `dns_providers` — id, name, provider (cloudflare/alidns/tencentcloud/route53), config (JSON), is_default, timestamps
-- `hosts` — id, domain (unique), host_type (proxy/redirect/static/php), enabled, tls_enabled, tls_mode (auto/dns/wildcard/custom/off), dns_provider_id (FK), http_redirect, websocket, redirect_url, redirect_code, custom_cert_path, custom_key_path, compression, cache_enabled, cache_ttl, cors_enabled, cors_origins, cors_methods, cors_headers, security_headers, error_page_path, custom_directives, root_path, directory_browse, php_fastcgi, index_files, timestamps
-- `upstreams` — id, host_id (FK CASCADE), address, weight, sort_order
-- `routes` — id, host_id (FK CASCADE), path, upstream_id, sort_order
-- `custom_headers` — id, host_id (FK CASCADE), direction, operation, name, value, sort_order
-- `access_rules` — id, host_id (FK CASCADE), rule_type (allow/deny), ip_range (CIDR), sort_order
-- `basic_auths` — id, host_id (FK CASCADE), username, password_hash (bcrypt)
-- `audit_logs` — id, user_id, username, action, target, target_id, detail, ip, created_at
+### Core Tables
+- `users` — id, username, password (bcrypt), role (admin/viewer), totp_secret, totp_enabled
+- `hosts` — domain (unique), host_type (proxy/redirect/static/php), 30+ config fields
+- `upstreams`, `routes`, `custom_headers`, `access_rules`, `basic_auths` — host children (CASCADE)
+- `dns_providers` — provider type + encrypted config JSON
+- `certificates` — custom SSL cert paths
+- `tags`, `groups`, `host_tags` — host organization
+- `templates` — reusable host configuration snapshots
+- `settings` — key-value store
+- `audit_logs` — user action history
 
-All child tables cascade on delete with the parent host.
-
-## Host Types
-
-| Type | Description | Key Fields |
-|------|-------------|------------|
-| `proxy` (default) | Reverse proxy to upstream servers | `upstreams[]` |
-| `redirect` | 301/302 redirect to target URL | `redirect_url`, `redirect_code` |
-| `static` | Static file hosting | `root_path`, `directory_browse`, `index_files` |
-| `php` | PHP site via FastCGI | `root_path`, `php_fastcgi`, `index_files` |
-
-The renderer dispatches to `renderProxyHost()`, `renderRedirect()`, `renderStaticHost()`, or `renderPHPHost()`.
-
-## Per-Host Options (Batch 2)
-
-| Feature | Model Field | Caddyfile Output |
-|---------|-------------|-----------------|
-| 响应压缩 | `compression` | `encode gzip zstd` |
-| CORS 跨域 | `cors_enabled/origins/methods/headers` | Preflight + response headers |
-| 安全响应头 | `security_headers` | HSTS, X-Frame-Options, CSP, etc |
-| 自定义错误页 | `error_page_path` | `handle_errors { ... }` |
-| 自定义指令 | `custom_directives` | Raw Caddy config |
-
-## TLS Modes
-
-| Mode | Description |
-|------|-------------|
-| `auto` (default) | Let's Encrypt HTTP challenge |
-| `dns` | DNS Challenge via DNS provider |
-| `wildcard` | Wildcard cert via DNS Challenge |
-| `custom` | User-uploaded cert/key |
-| `off` | No TLS (HTTP only) |
+### Plugin Tables (prefixed `plugin_{id}_*`)
+- `plugin_deploy_projects`, `plugin_deploy_deployments` — deploy plugin
+- `plugin_docker_stacks` — Docker Compose stacks
+- `plugin_database_instances`, `plugin_database_databases`, `plugin_database_users`
+- `plugin_ai_conversations`, `plugin_ai_messages`, `plugin_ai_memories`
+- `plugin_backup_configs`, `plugin_backup_snapshots`
+- `plugin_monitoring_metrics`, `plugin_monitoring_alert_rules`
+- `plugin_appstore_sources`, `plugin_appstore_apps`, `plugin_appstore_installed`
+- `plugin_mcpserver_tokens` — MCP API tokens
+- `plugin_firewall_*`, `plugin_cronjob_tasks`, `plugin_php_*`
 
 ## API Authentication
 
-- Public endpoints: `POST /api/auth/setup`, `POST /api/auth/login`, `GET /api/auth/need-setup`
-- All other endpoints require `Authorization: Bearer <jwt>` header
-- JWT: HS256, 24h expiry, signed with `WEBCASA_JWT_SECRET` env var
-- Auth middleware in `internal/auth/auth.go` sets `user_id` and `username` in Gin context
+- **Public**: `POST /api/auth/setup`, `POST /api/auth/login`, `GET /api/auth/need-setup`, `GET /api/auth/altcha-challenge`
+- **Protected** (JWT required): `GET /api/hosts`, `GET /api/caddy/status`, etc.
+- **Admin-only** (JWT + admin role): mutations, `GET /api/caddy/caddyfile`, cert management
+- **Plugin routes**: `/api/plugins/{id}/*` — gated by PluginGuardMiddleware (disabled plugins return 404)
+- **MCP tokens**: `wc_` prefixed API tokens with scoped permissions, constant-time hash comparison
 
-## Environment Variables
-
-All prefixed with `WEBCASA_`:
-- `PORT` (default: 39921)
-- `DATA_DIR` (default: ./data)
-- `DB_PATH` (default: data/webcasa.db)
-- `JWT_SECRET` (default: insecure dev value — MUST change in production)
-- `CADDY_BIN` (default: "caddy" from PATH)
-- `CADDYFILE_PATH` (default: data/Caddyfile)
-- `LOG_DIR` (default: data/logs)
-- `ADMIN_API` (default: http://localhost:2019)
+JWT: HS256, 24h expiry. 2FA: TOTP with encrypted secret + bcrypt recovery codes.
 
 ## Common Tasks
 
-### Adding a new API endpoint
-1. Add handler method in `internal/handler/`
-2. Register route in `main.go` (protected or public group)
+### Adding a new plugin feature
+1. Add handler method in `plugins/{id}/handler.go`
+2. Register route in `plugins/{id}/plugin.go` Init() (use `ctx.Router` or `ctx.AdminRouter`)
 3. Add API function in `web/src/api/index.js`
-4. Use in React component
+4. Create/update React component in `web/src/pages/`
 
-### Adding a new Host feature (e.g., rate limiting)
-1. Add field to `model.Host` struct + `HostCreateRequest` DTO
-2. GORM auto-migrates on restart
-3. Update `caddy.RenderCaddyfile()` in `renderer.go`
-4. Update `service.Create/Update` to handle the new field
-5. Update frontend form in `HostList.jsx`
+### Adding a CoreAPI method
+1. Add method signature to `CoreAPI` interface in `internal/plugin/types.go`
+2. Implement in `internal/plugin/coreapi.go`
+3. Add stub in test files: `internal/plugin/manager_test.go` and `plugins/ai/tools_test.go`
 
-### Adding a new page
-1. Create `web/src/pages/NewPage.jsx`
-2. Add route in `web/src/App.jsx`
-3. Add sidebar link in `web/src/pages/Layout.jsx` (navItems array)
+### Security validation for Caddyfile fields
+- All user-input strings rendered into Caddyfile must pass `caddy.ValidateCaddyValue()`
+- Upstreams: `caddy.ValidateUpstream()` — rejects shell metacharacters
+- Domains: `caddy.ValidateDomain()` — strict format check
+- Custom directives: `caddy.SanitizeCustomDirectives()` — per-character brace depth tracking
+- DNS credentials: `safeDnsValue()` — rejects newlines, braces, quotes
+- BasicAuth usernames: validated via `ValidateCaddyValue` before rendering
 
 ## Testing
 
 ```bash
-# Backend
-go test ./... -v
+# All tests
+go test ./... -timeout 120s
+
+# Skip slow service tests
+go test $(go list ./... | grep -v internal/service) -timeout 60s
 
 # Frontend build check
 cd web && npm run build
-
-# Manual API test
-curl -X POST http://localhost:39921/api/auth/setup \
-  -H 'Content-Type: application/json' \
-  -d '{"username":"admin","password":"admin123"}'
 ```
 
 ## Gotchas
 
-- **SQLite CGO**: `CGO_ENABLED=1` is required for the SQLite driver (mattn/go-sqlite3)
-- **Caddy not found**: The panel gracefully handles missing Caddy binary — it skips validation but still writes the Caddyfile
-- **CORS**: Uses `AllowAllOrigins: true` because the Go server serves both API and frontend
-- **Frontend embed**: In production, `web/dist/` is served by the Go binary. In dev, Vite runs on :5173 and proxies `/api` to :39921
-- **Host domain uniqueness**: Domain field has a unique index; duplicates are rejected at service layer
-- **Bool pointer fields**: `Enabled`, `TLSEnabled`, etc. are `*bool` to distinguish nil (use GORM default) from explicit false
-- **BasicAuth passwords**: Stored as bcrypt hashes; never pre-filled in edit forms, only replaced when new values are submitted
-- **Custom certs**: Stored in `DATA_DIR/certs/<domain>/cert.pem|key.pem`, key file permissions set to 0600
-- **DNS Provider secrets**: Config stored as JSON in DB, masked to `***` in list API response
-- **Audit logging**: All host/caddy/user mutations emit audit log entries via `WriteAuditLog()` helper
+- **CGO required**: `CGO_ENABLED=1` for SQLite driver (mattn/go-sqlite3)
+- **Bool pointers**: `Enabled`, `TLSEnabled`, etc. are `*bool` to distinguish nil from false
+- **ApplyConfig rollback**: If `caddy reload` fails, the old Caddyfile is automatically restored
+- **Plugin data isolation**: Tables use `plugin_{id}_*` prefix, files go in `data/plugins/{id}/`
+- **AI memory isolation**: Memories are scoped by `user_id`; per-user prune limits (1000/user)
+- **MCP token permissions**: Empty `"[]"` = no permissions; `["*"]` = full access
+- **Frontend dist**: Not embedded in binary; must be at `web/dist/` relative to working directory
+- **Docker container ports**: Default to `127.0.0.1` (loopback), not `0.0.0.0`
+- **Password minimum**: 8 characters enforced across all endpoints (setup, login, user create)
