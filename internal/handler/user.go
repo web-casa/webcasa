@@ -31,7 +31,7 @@ func (h *UserHandler) List(c *gin.Context) {
 func (h *UserHandler) Create(c *gin.Context) {
 	var req struct {
 		Username string `json:"username" binding:"required"`
-		Password string `json:"password" binding:"required,min=6"`
+		Password string `json:"password" binding:"required,min=8"`
 		Role     string `json:"role"`
 	}
 	if err := c.ShouldBindJSON(&req); err != nil {

@@ -157,6 +157,10 @@ type CoreAPI interface {
 	CronJobDelete(id uint) error
 	CronJobLogs(taskID uint, limit int) ([]map[string]interface{}, error)
 	CronJobTrigger(id uint) error
+
+	// ── Credential encryption for plugins ──
+	EncryptSecret(plaintext string) (string, error)
+	DecryptSecret(ciphertext string) (string, error)
 }
 
 // UpdateHostRequest describes fields that can be changed on an existing host via AI.

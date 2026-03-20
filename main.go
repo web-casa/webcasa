@@ -362,7 +362,7 @@ func main() {
 // initPlugins creates the plugin manager and registers all compiled-in plugins.
 // New plugins are added here by calling pluginMgr.Register(...).
 func initPlugins(db *gorm.DB, protectedRouter *gin.RouterGroup, adminRouter *gin.RouterGroup, publicRouter *gin.RouterGroup, hostSvc *service.HostService, caddyMgr *caddy.Manager, cfg *config.Config) *plugin.Manager {
-	coreAPI := plugin.NewCoreAPI(db, hostSvc, caddyMgr, cfg.DataDir)
+	coreAPI := plugin.NewCoreAPI(db, hostSvc, caddyMgr, cfg.DataDir, cfg.JWTSecret)
 	pluginMgr := plugin.NewManager(db, protectedRouter, adminRouter, publicRouter, coreAPI, cfg.DataDir)
 	coreAPI.SetEventBus(pluginMgr.EventBus())
 

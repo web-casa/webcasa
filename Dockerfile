@@ -28,6 +28,7 @@ RUN curl -sSL "https://caddyserver.com/api/download?os=linux&arch=$(uname -m | s
 
 WORKDIR /app
 COPY --from=backend /app/webcasa .
+COPY --from=backend /app/web/dist ./web/dist
 
 # Create data directory
 RUN mkdir -p /app/data/logs /app/data/backups

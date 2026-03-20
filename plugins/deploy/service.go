@@ -654,6 +654,10 @@ func (s *Service) runHealthCheck(project *Project, port int, logWriter *LogWrite
 	if hcPath == "" {
 		hcPath = "/"
 	}
+	// Validate path to prevent SSRF via protocol injection or path traversal.
+	if !strings.HasPrefix(hcPath, "/") {
+		hcPath = "/" + hcPath
+	}
 	hcTimeout := time.Duration(project.HealthCheckTimeout) * time.Second
 	if hcTimeout <= 0 {
 		hcTimeout = 30 * time.Second

@@ -338,6 +338,12 @@ func renderPHPHost(b *strings.Builder, host model.Host) {
 	b.WriteString("\tfile_server\n")
 }
 
+// safeDnsValue validates a DNS credential value for Caddyfile safety.
+// Rejects characters that could break out of the Caddyfile block.
+func safeDnsValue(val string) bool {
+	return !strings.ContainsAny(val, "\n\r{}\"\\;#")
+}
+
 func renderDnsTLS(b *strings.Builder, p model.DnsProvider) {
 	// Parse JSON config to extract API token/key
 	var cfg map[string]string
@@ -349,7 +355,7 @@ func renderDnsTLS(b *strings.Builder, p model.DnsProvider) {
 	switch p.Provider {
 	case "cloudflare":
 		token := cfg["api_token"]
-		if token == "" {
+		if token == "" || !safeDnsValue(token) {
 			return
 		}
 		b.WriteString("\ttls {\n")
@@ -358,7 +364,7 @@ func renderDnsTLS(b *strings.Builder, p model.DnsProvider) {
 	case "alidns":
 		ak := cfg["access_key_id"]
 		sk := cfg["access_key_secret"]
-		if ak == "" || sk == "" {
+		if ak == "" || sk == "" || !safeDnsValue(ak) || !safeDnsValue(sk) {
 			return
 		}
 		b.WriteString("\ttls {\n")
@@ -367,7 +373,7 @@ func renderDnsTLS(b *strings.Builder, p model.DnsProvider) {
 	case "tencentcloud":
 		sid := cfg["secret_id"]
 		sk := cfg["secret_key"]
-		if sid == "" || sk == "" {
+		if sid == "" || sk == "" || !safeDnsValue(sid) || !safeDnsValue(sk) {
 			return
 		}
 		b.WriteString("\ttls {\n")
@@ -377,11 +383,14 @@ func renderDnsTLS(b *strings.Builder, p model.DnsProvider) {
 		region := cfg["region"]
 		ak := cfg["access_key_id"]
 		sk := cfg["secret_access_key"]
-		if ak == "" || sk == "" {
+		if ak == "" || sk == "" || !safeDnsValue(ak) || !safeDnsValue(sk) {
 			return
 		}
 		if region == "" {
 			region = "us-east-1"
+		}
+		if !safeDnsValue(region) {
+			return
 		}
 		b.WriteString("\ttls {\n")
 		b.WriteString(fmt.Sprintf("\t\tdns route53 {\n\t\t\tregion %s\n\t\t\taccess_key_id %s\n\t\t\tsecret_access_key %s\n\t\t}\n", region, ak, sk))

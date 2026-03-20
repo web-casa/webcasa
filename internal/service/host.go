@@ -207,6 +207,9 @@ func (s *HostService) Create(req *model.HostCreateRequest) (*model.Host, error) 
 
 	// Hash basic auth passwords
 	for _, ba := range req.BasicAuths {
+		if err := caddy.ValidateCaddyValue("basicauth username", ba.Username); err != nil {
+			return nil, err
+		}
 		hash, err := bcrypt.GenerateFromPassword([]byte(ba.Password), bcrypt.DefaultCost)
 		if err != nil {
 			return nil, fmt.Errorf("failed to hash password for user '%s': %w", ba.Username, err)
@@ -413,6 +416,9 @@ func (s *HostService) Update(id uint, req *model.HostCreateRequest) (*model.Host
 
 	// Hash basic auth passwords
 	for _, ba := range req.BasicAuths {
+		if err := caddy.ValidateCaddyValue("basicauth username", ba.Username); err != nil {
+			return nil, err
+		}
 		hash, err := bcrypt.GenerateFromPassword([]byte(ba.Password), bcrypt.DefaultCost)
 		if err != nil {
 			return nil, fmt.Errorf("failed to hash password for user '%s': %w", ba.Username, err)

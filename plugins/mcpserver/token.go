@@ -3,6 +3,7 @@ package mcpserver
 import (
 	"crypto/rand"
 	"crypto/sha256"
+	"crypto/subtle"
 	"encoding/hex"
 	"errors"
 	"fmt"
@@ -78,7 +79,7 @@ func (s *TokenService) ValidateToken(plaintext string) (*APIToken, error) {
 	}
 
 	for i := range candidates {
-		if candidates[i].TokenHash == tokenHash {
+		if subtle.ConstantTimeCompare([]byte(candidates[i].TokenHash), []byte(tokenHash)) == 1 {
 			// Check expiry
 			if candidates[i].ExpiresAt != nil && candidates[i].ExpiresAt.Before(time.Now()) {
 				return nil, errors.New("token expired")

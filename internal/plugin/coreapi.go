@@ -18,6 +18,7 @@ import (
 
 	"github.com/robfig/cron/v3"
 	"github.com/web-casa/webcasa/internal/caddy"
+	"github.com/web-casa/webcasa/internal/crypto"
 	"github.com/web-casa/webcasa/internal/model"
 	"github.com/web-casa/webcasa/internal/service"
 	"gorm.io/gorm"
@@ -26,19 +27,25 @@ import (
 // CoreAPIImpl implements CoreAPI by delegating to existing services.
 // Exported so that main.go can call SetEventBus after Manager creation.
 type CoreAPIImpl struct {
-	db       *gorm.DB
-	hostSvc  *service.HostService
-	caddyMgr *caddy.Manager
-	dataDir  string
-	eventBus *EventBus
+	db        *gorm.DB
+	hostSvc   *service.HostService
+	caddyMgr  *caddy.Manager
+	dataDir   string
+	eventBus  *EventBus
+	jwtSecret string
 }
 
 // NewCoreAPI creates a CoreAPI backed by the given services.
-func NewCoreAPI(db *gorm.DB, hostSvc *service.HostService, caddyMgr *caddy.Manager, dataDir string) *CoreAPIImpl {
+func NewCoreAPI(db *gorm.DB, hostSvc *service.HostService, caddyMgr *caddy.Manager, dataDir string, jwtSecret ...string) *CoreAPIImpl {
+	secret := ""
+	if len(jwtSecret) > 0 {
+		secret = jwtSecret[0]
+	}
 	return &CoreAPIImpl{
-		db:       db,
-		hostSvc:  hostSvc,
-		caddyMgr: caddyMgr,
+		db:        db,
+		hostSvc:   hostSvc,
+		caddyMgr:  caddyMgr,
+		jwtSecret: secret,
 		dataDir:  dataDir,
 	}
 }
@@ -1866,6 +1873,24 @@ func (a *CoreAPIImpl) CronJobTrigger(id uint) error {
 		})
 	}
 	return nil
+}
+
+// ──────────────────────────────────────────────────
+// Credential encryption
+// ──────────────────────────────────────────────────
+
+func (a *CoreAPIImpl) EncryptSecret(plaintext string) (string, error) {
+	if a.jwtSecret == "" {
+		return plaintext, nil // no-op if secret not configured
+	}
+	return crypto.Encrypt(plaintext, a.jwtSecret)
+}
+
+func (a *CoreAPIImpl) DecryptSecret(ciphertext string) (string, error) {
+	if a.jwtSecret == "" {
+		return ciphertext, nil
+	}
+	return crypto.Decrypt(ciphertext, a.jwtSecret)
 }
 
 // ──────────────────────────────────────────────────

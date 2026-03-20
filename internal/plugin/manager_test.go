@@ -140,6 +140,8 @@ func (s *stubCoreAPI) CronJobUpdate(id uint, updates map[string]interface{}) err
 func (s *stubCoreAPI) CronJobDelete(id uint) error                                       { return nil }
 func (s *stubCoreAPI) CronJobLogs(taskID uint, limit int) ([]map[string]interface{}, error) { return nil, nil }
 func (s *stubCoreAPI) CronJobTrigger(id uint) error                                      { return nil }
+func (s *stubCoreAPI) EncryptSecret(plaintext string) (string, error)                    { return plaintext, nil }
+func (s *stubCoreAPI) DecryptSecret(ciphertext string) (string, error)                   { return ciphertext, nil }
 
 // ── stub plugin ──
 

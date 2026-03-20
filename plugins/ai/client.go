@@ -297,9 +297,9 @@ func (c *LLMClient) buildGoogleRequest(ctx context.Context, messages []chatMessa
 	if stream {
 		method = "streamGenerateContent"
 	}
-	url := fmt.Sprintf("%s/v1beta/models/%s:%s?key=%s", c.baseURL, c.model, method, c.apiKey)
+	url := fmt.Sprintf("%s/v1beta/models/%s:%s", c.baseURL, c.model, method)
 	if stream {
-		url += "&alt=sse"
+		url += "?alt=sse"
 	}
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(payload))
@@ -307,6 +307,7 @@ func (c *LLMClient) buildGoogleRequest(ctx context.Context, messages []chatMessa
 		return nil, err
 	}
 	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("x-goog-api-key", c.apiKey)
 	return req, nil
 }
 

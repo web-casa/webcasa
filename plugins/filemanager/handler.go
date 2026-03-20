@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 
@@ -105,7 +106,9 @@ func (h *Handler) Upload(c *gin.Context) {
 
 	dest := path
 	if strings.HasSuffix(dest, "/") {
-		dest += header.Filename
+		// Strip directory components from the uploaded filename to prevent
+		// path traversal via crafted filenames like "../../etc/cron.d/evil".
+		dest += filepath.Base(header.Filename)
 	}
 
 	// Stream directly to disk instead of buffering in memory.

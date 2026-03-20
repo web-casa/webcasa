@@ -155,6 +155,12 @@ func (s *Service) InstallApp(req *InstallAppRequest) (*InstalledApp, error) {
 	if app.ForceExpose && req.Domain == "" {
 		return nil, fmt.Errorf("this app requires a domain to function properly")
 	}
+	// Validate domain format to prevent .env injection and Caddy config injection.
+	if req.Domain != "" {
+		if err := caddy.ValidateDomain(req.Domain); err != nil {
+			return nil, fmt.Errorf("invalid domain: %w", err)
+		}
+	}
 
 	// 3. Parse form fields
 	var fields []FormField

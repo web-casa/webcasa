@@ -83,7 +83,10 @@ func ValidateFormValues(fields []FormField, values map[string]string) error {
 		// Regex validation
 		if f.Regex != "" {
 			re, err := regexp.Compile(f.Regex)
-			if err == nil && !re.MatchString(v) {
+			if err != nil {
+				return fmt.Errorf("field %q: invalid validation pattern", f.Label)
+			}
+			if !re.MatchString(v) {
 				msg := f.PatternError
 				if msg == "" {
 					msg = fmt.Sprintf("does not match pattern %s", f.Regex)
