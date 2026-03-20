@@ -12,6 +12,19 @@ import (
 	"time"
 )
 
+// parseSSEDataLine extracts the data payload from an SSE line.
+// Handles both "data: payload" (with space) and "data:payload" (without space)
+// per the SSE specification. Returns the payload and true if the line is a data line.
+func parseSSEDataLine(line string) (string, bool) {
+	if strings.HasPrefix(line, "data: ") {
+		return line[6:], true
+	}
+	if strings.HasPrefix(line, "data:") {
+		return line[5:], true
+	}
+	return "", false
+}
+
 // LLMClient communicates with various LLM provider APIs.
 type LLMClient struct {
 	baseURL    string
@@ -328,10 +341,10 @@ func (c *LLMClient) parseOpenAIStream(r io.Reader, cb StreamCallback) error {
 	scanner := bufio.NewScanner(r)
 	for scanner.Scan() {
 		line := scanner.Text()
-		if !strings.HasPrefix(line, "data: ") {
+		data, ok := parseSSEDataLine(line)
+		if !ok {
 			continue
 		}
-		data := strings.TrimPrefix(line, "data: ")
 		if data == "[DONE]" {
 			break
 		}
@@ -356,10 +369,10 @@ func (c *LLMClient) parseAnthropicStream(r io.Reader, cb StreamCallback) error {
 	scanner := bufio.NewScanner(r)
 	for scanner.Scan() {
 		line := scanner.Text()
-		if !strings.HasPrefix(line, "data: ") {
+		data, ok := parseSSEDataLine(line)
+		if !ok {
 			continue
 		}
-		data := strings.TrimPrefix(line, "data: ")
 
 		var event anthropicStreamEvent
 		if err := json.Unmarshal([]byte(data), &event); err != nil {
@@ -386,10 +399,10 @@ func (c *LLMClient) parseGoogleStream(r io.Reader, cb StreamCallback) error {
 	scanner := bufio.NewScanner(r)
 	for scanner.Scan() {
 		line := scanner.Text()
-		if !strings.HasPrefix(line, "data: ") {
+		data, ok := parseSSEDataLine(line)
+		if !ok {
 			continue
 		}
-		data := strings.TrimPrefix(line, "data: ")
 
 		var chunk googleStreamChunk
 		if err := json.Unmarshal([]byte(data), &chunk); err != nil {

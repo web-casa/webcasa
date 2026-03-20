@@ -186,10 +186,10 @@ func (c *LLMClient) parseOpenAIToolStream(r io.Reader, cb StreamEventCallback) e
 
 	for scanner.Scan() {
 		line := scanner.Text()
-		if !strings.HasPrefix(line, "data: ") {
+		data, ok := parseSSEDataLine(line)
+		if !ok {
 			continue
 		}
-		data := strings.TrimPrefix(line, "data: ")
 		if data == "[DONE]" {
 			break
 		}
@@ -419,7 +419,8 @@ func (c *LLMClient) parseAnthropicToolStream(r io.Reader, cb StreamEventCallback
 
 	for scanner.Scan() {
 		line := scanner.Text()
-		if !strings.HasPrefix(line, "data: ") {
+		data, ok := parseSSEDataLine(line)
+		if !ok {
 			// Collect non-SSE lines for error reporting if no events are received.
 			if eventsReceived == 0 && line != "" && rawLines.Len() < 2048 {
 				rawLines.WriteString(line)
@@ -427,7 +428,6 @@ func (c *LLMClient) parseAnthropicToolStream(r io.Reader, cb StreamEventCallback
 			}
 			continue
 		}
-		data := strings.TrimPrefix(line, "data: ")
 
 		var event anthropicToolStreamEvent
 		if err := json.Unmarshal([]byte(data), &event); err != nil {

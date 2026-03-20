@@ -45,6 +45,19 @@ Caddyfile.tmp
 .DS_Store
 Thumbs.db
 
+# === AI Tools ===
+.claude/
+.kiro/
+.qwen/
+.cursor/
+.windsurf/
+.augment/
+.aider*
+.codeium/
+.continue/
+.agent/
+.agents/
+
 # === OS ===
 .Trash-*
 desktop.ini
