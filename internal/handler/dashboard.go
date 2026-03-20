@@ -124,7 +124,7 @@ func (h *DashboardHandler) News(c *gin.Context) {
 	ctx, cancel := context.WithTimeout(c.Request.Context(), 5*time.Second)
 	defer cancel()
 
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, "https://web.casa/api/news", nil)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, "https://news.web.casa/api/news", nil)
 	if err != nil {
 		c.JSON(http.StatusOK, []any{})
 		return
