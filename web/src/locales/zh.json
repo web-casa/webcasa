@@ -1044,7 +1044,42 @@
         "install_failed": "安装失败",
         "copy_logs": "复制日志",
         "show_sidebar": "在侧边栏显示",
-        "hide_sidebar": "从侧边栏隐藏"
+        "hide_sidebar": "从侧边栏隐藏",
+        "names": {
+            "deploy": "项目部署",
+            "docker": "Docker",
+            "database": "数据库",
+            "php": "PHP",
+            "ai": "AI 助手",
+            "filemanager": "文件管理",
+            "firewall": "防火墙",
+            "cronjob": "定时任务",
+            "monitoring": "系统监控",
+            "backup": "备份管理",
+            "appstore": "应用商店",
+            "mcpserver": "MCP 服务"
+        },
+        "descriptions": {
+            "deploy": "Node.js、Go、PHP、Python 项目的源码部署，支持自动检测和进程管理",
+            "docker": "Docker 和 Docker Compose 管理，支持简单和高级模式",
+            "database": "通过 Docker 创建和管理 MySQL、PostgreSQL、MariaDB、Redis 实例",
+            "php": "管理 PHP-FPM 和 FrankenPHP 运行时，一键创建 PHP 站点",
+            "ai": "AI 驱动的聊天助手，支持错误诊断和模板生成",
+            "filemanager": "文件浏览器、在线编辑器和 Web 终端",
+            "firewall": "通过 Web 界面管理 firewalld 规则",
+            "cronjob": "通用定时任务管理，支持 Shell 命令执行",
+            "monitoring": "实时系统指标、历史图表和阈值告警",
+            "backup": "通过 Kopia 备份和恢复面板数据、Docker 卷和数据库",
+            "appstore": "一键 Docker 应用安装和项目模板市场",
+            "mcpserver": "MCP 协议服务，用于 AI IDE 集成（Cursor、Windsurf、Claude Code）"
+        },
+        "categories": {
+            "deploy": "部署",
+            "database": "数据库",
+            "tool": "工具",
+            "monitor": "监控",
+            "management": "管理"
+        }
     },
     "database": {
         "title": "数据库管理",

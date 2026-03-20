@@ -1044,7 +1044,42 @@
         "install_failed": "Installation failed",
         "copy_logs": "Copy Logs",
         "show_sidebar": "Show in sidebar",
-        "hide_sidebar": "Hide from sidebar"
+        "hide_sidebar": "Hide from sidebar",
+        "names": {
+            "deploy": "Project Deploy",
+            "docker": "Docker",
+            "database": "Database",
+            "php": "PHP",
+            "ai": "AI Assistant",
+            "filemanager": "File Manager",
+            "firewall": "Firewall",
+            "cronjob": "Cron Jobs",
+            "monitoring": "System Monitoring",
+            "backup": "Backup Manager",
+            "appstore": "App Store",
+            "mcpserver": "MCP Server"
+        },
+        "descriptions": {
+            "deploy": "Source code deployment for Node.js, Go, PHP, Python projects with auto-detection and process management",
+            "docker": "Docker & Docker Compose management with simple and advanced modes",
+            "database": "Create and manage MySQL, PostgreSQL, MariaDB, Redis instances via Docker",
+            "php": "Manage PHP-FPM and FrankenPHP runtimes, create PHP websites with one click",
+            "ai": "AI-powered chat assistant with error diagnosis and template generation",
+            "filemanager": "File browser, online editor, and web terminal",
+            "firewall": "Manage firewalld rules via web UI",
+            "cronjob": "General-purpose scheduled task management with shell command execution",
+            "monitoring": "Real-time system metrics, historical charts, and threshold alerts",
+            "backup": "Backup and restore panel data, Docker volumes, and databases via Kopia",
+            "appstore": "One-click Docker app installation and project template marketplace",
+            "mcpserver": "Model Context Protocol server for AI IDE integration (Cursor, Windsurf, Claude Code)"
+        },
+        "categories": {
+            "deploy": "Deploy",
+            "database": "Database",
+            "tool": "Tool",
+            "monitor": "Monitor",
+            "management": "Management"
+        }
     },
     "database": {
         "title": "Database Management",

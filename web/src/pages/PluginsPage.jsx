@@ -184,11 +184,11 @@ export default function PluginsPage() {
                             <Flex align="start" justify="between" gap="4">
                                 <Flex direction="column" gap="1" style={{ flex: 1 }}>
                                     <Flex align="center" gap="2" wrap="wrap">
-                                        <Text weight="bold" size="3">{p.name}</Text>
+                                        <Text weight="bold" size="3">{t(`plugins.names.${p.id}`, { defaultValue: p.name })}</Text>
                                         <Badge variant="soft" size="1">v{p.version}</Badge>
                                         {p.category && (
                                             <Badge color={categoryColors[p.category] || 'gray'} variant="soft" size="1">
-                                                {p.category}
+                                                {t(`plugins.categories.${p.category}`, { defaultValue: p.category })}
                                             </Badge>
                                         )}
                                         {p.enabled && (
@@ -197,7 +197,7 @@ export default function PluginsPage() {
                                             </Badge>
                                         )}
                                     </Flex>
-                                    <Text size="2" color="gray">{p.description}</Text>
+                                    <Text size="2" color="gray">{t(`plugins.descriptions.${p.id}`, { defaultValue: p.description })}</Text>
                                     {p.dependencies?.length > 0 && (
                                         <Flex align="center" gap="1" wrap="wrap" mt="1">
                                             <Text size="1" color="gray">{t('plugins.depends_on')}:</Text>
@@ -213,7 +213,7 @@ export default function PluginsPage() {
                                                         style={{ cursor: 'default' }}
                                                     >
                                                         <Power size={10} />
-                                                        {depPlugin?.name || dep}
+                                                        {t(`plugins.names.${dep}`, { defaultValue: depPlugin?.name || dep })}
                                                     </Badge>
                                                 )
                                             })}

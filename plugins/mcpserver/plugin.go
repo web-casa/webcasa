@@ -160,7 +160,13 @@ func (p *Plugin) FrontendManifest() plugin.FrontendManifest {
 	return plugin.FrontendManifest{
 		ID: "mcpserver",
 		Routes: []plugin.FrontendRoute{
-			// No dedicated frontend page; tokens managed via Settings tab
+			{
+				Path:    "/mcp",
+				Menu:    true,
+				Icon:    "Cpu",
+				Label:   "MCP Server",
+				LabelZh: "MCP 服务",
+			},
 		},
 		MenuGroup: "tool",
 		MenuOrder: 10,
