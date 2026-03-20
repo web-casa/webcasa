@@ -493,7 +493,7 @@ cmd_update() {
         return 0
     fi
 
-    local url="https://github.com/${GITHUB_REPO}/releases/download/v${latest_ver}/webcasa_${latest_ver}_linux_${arch}.tar.gz"
+    local url="https://github.com/${GITHUB_REPO}/releases/download/v${latest_ver}/webcasa-linux-${arch}.tar.gz"
 
     local tmpdir
     tmpdir=$(mktemp -d)
