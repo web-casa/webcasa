@@ -366,7 +366,7 @@ func (s *Service) ChatWithTools(ctx context.Context, req ChatRequest, userID uin
 
 			// Check admin-only permission before executing.
 			tool := s.tools.Get(tc.Name)
-			if tool != nil && tool.AdminOnly && userRole != "admin" {
+			if tool != nil && tool.AdminOnly && userRole != "admin" && userRole != "owner" {
 				resultContent := `{"error": "Permission denied: this tool requires admin privileges"}`
 				cb(StreamEvent{
 					Type:    "tool_result",

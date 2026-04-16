@@ -9,7 +9,7 @@ type User struct {
 	ID             uint      `gorm:"primaryKey" json:"id"`
 	Username       string    `gorm:"uniqueIndex;not null;size:64" json:"username"`
 	Password       string    `gorm:"not null" json:"-"` // bcrypt hash, never exposed in JSON
-	Role           string    `gorm:"not null;size:16;default:admin" json:"role"` // "admin" or "viewer"
+	Role           string    `gorm:"not null;size:16;default:admin" json:"role"` // owner, admin, operator, viewer
 	TOTPSecret     string    `gorm:"size:512" json:"-"`                          // AES-GCM encrypted TOTP secret
 	TOTPEnabled    *bool     `gorm:"default:false" json:"totp_enabled"`          // whether 2FA is enabled
 	RecoveryCodes  string    `gorm:"type:text" json:"-"`                         // JSON array of recovery code hashes
@@ -80,6 +80,8 @@ type Host struct {
 	PHPFastCGI      string `gorm:"size:255" json:"php_fastcgi"`        // PHP-FPM address e.g. "localhost:9000"
 	IndexFiles      string `gorm:"size:255" json:"index_files"`        // custom index files e.g. "index.html index.php"
 	// Phase 6: group and tag associations
+	// Per-host configuration overrides (JSON map, 3-tier: host → global → default)
+	ConfigOverrides string `gorm:"type:text" json:"config_overrides,omitempty"`
 	GroupID         *uint  `json:"group_id"`                              // FK to Group (optional)
 	Group           *Group `gorm:"foreignKey:GroupID" json:"group,omitempty"` // GORM association for Preload
 	Tags            []Tag  `gorm:"many2many:host_tags" json:"tags"`        // many-to-many via host_tags

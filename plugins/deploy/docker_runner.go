@@ -8,6 +8,8 @@ import (
 	"os/exec"
 	"strings"
 	"time"
+
+	"github.com/web-casa/webcasa/plugins/deploy/builders"
 )
 
 // DockerRunner manages Docker containers for project deployment.
@@ -38,23 +40,38 @@ func (r *DockerRunner) StagingContainerName(projectID uint) string {
 	return fmt.Sprintf("webcasa-project-%d-staging", projectID)
 }
 
-// BuildImage runs `docker build` in the given directory and streams output to the logWriter.
+// BuildImage runs the appropriate builder in the given directory and streams output to the logWriter.
+// buildType can be: dockerfile, nixpacks, paketo, railpack, static, auto, or "" (legacy = dockerfile).
 // Returns the image tag on success.
-func (r *DockerRunner) BuildImage(ctx context.Context, dir string, projectID uint, buildNum int, logWriter *LogWriter) (string, error) {
+func (r *DockerRunner) BuildImage(ctx context.Context, dir string, projectID uint, buildNum int, logWriter *LogWriter, buildType ...string) (string, error) {
 	imageTag := r.ImageTag(projectID, buildNum)
 
-	logWriter.Write([]byte(fmt.Sprintf("==> Building Docker image: %s\n", imageTag)))
+	// Determine builder type.
+	bt := ""
+	if len(buildType) > 0 {
+		bt = buildType[0]
+	}
+	if bt == "auto" || bt == "" {
+		bt = builders.DetectBuilder(dir)
+	}
 
-	cmd := exec.CommandContext(ctx, "docker", "build", "-t", imageTag, ".")
+	logWriter.Write([]byte(fmt.Sprintf("==> Building with %s: %s\n", bt, imageTag)))
+
+	binName, args, err := builders.BuildCommand(bt, dir, imageTag)
+	if err != nil {
+		return "", fmt.Errorf("builder setup failed: %w", err)
+	}
+
+	cmd := exec.CommandContext(ctx, binName, args...)
 	cmd.Dir = dir
 	cmd.Stdout = logWriter
 	cmd.Stderr = logWriter
 
 	if err := cmd.Run(); err != nil {
-		return "", fmt.Errorf("docker build failed: %w", err)
+		return "", fmt.Errorf("%s build failed: %w", bt, err)
 	}
 
-	logWriter.Write([]byte(fmt.Sprintf("==> Docker image built: %s\n", imageTag)))
+	logWriter.Write([]byte(fmt.Sprintf("==> Image built: %s\n", imageTag)))
 	return imageTag, nil
 }
 

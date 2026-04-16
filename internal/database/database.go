@@ -50,7 +50,29 @@ func Init(dbPath string) *gorm.DB {
 	// Seed default settings
 	db.Where("key = ?", "auto_reload").FirstOrCreate(&model.Setting{Key: "auto_reload", Value: "true"})
 	db.Where("key = ?", "server_ipv4").FirstOrCreate(&model.Setting{Key: "server_ipv4", Value: ""})
+	db.Where("key = ?", "dns_verify_on_create").FirstOrCreate(&model.Setting{Key: "dns_verify_on_create", Value: "false"})
+	db.Where("key = ?", "wildcard_domain").FirstOrCreate(&model.Setting{Key: "wildcard_domain", Value: ""})
+	db.Where("key = ?", "wildcard_tls_mode").FirstOrCreate(&model.Setting{Key: "wildcard_tls_mode", Value: "auto"})
 	db.Where("key = ?", "server_ipv6").FirstOrCreate(&model.Setting{Key: "server_ipv6", Value: ""})
+
+	// RBAC migration: promote first admin to owner if no owner exists yet.
+	var ownerCount int64
+	db.Model(&model.User{}).Where("role = ?", "owner").Count(&ownerCount)
+	if ownerCount == 0 {
+		// Select the exact user ID first, then update by PK (safe across all SQL dialects).
+		var firstAdmin model.User
+		if db.Where("role = ?", "admin").Order("id ASC").First(&firstAdmin).Error == nil {
+			db.Model(&model.User{}).Where("id = ?", firstAdmin.ID).Update("role", "owner")
+			log.Printf("RBAC migration: promoted user '%s' (ID %d) to owner", firstAdmin.Username, firstAdmin.ID)
+		} else {
+			// No admin users either — promote the very first user regardless of role.
+			var firstUser model.User
+			if db.Order("id ASC").First(&firstUser).Error == nil {
+				db.Model(&model.User{}).Where("id = ?", firstUser.ID).Update("role", "owner")
+				log.Printf("RBAC migration: promoted user '%s' (ID %d) to owner (no admin found)", firstUser.Username, firstUser.ID)
+			}
+		}
+	}
 
 	log.Println("Database initialized successfully")
 	return db

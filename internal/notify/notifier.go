@@ -16,8 +16,9 @@ import (
 
 // Notifier dispatches notifications to configured channels.
 type Notifier struct {
-	db     *gorm.DB
-	logger *slog.Logger
+	db       *gorm.DB
+	logger   *slog.Logger
+	skipSSRF bool // for testing only — skips SSRF validation on webhook URLs
 }
 
 // NewNotifier creates a new Notifier.
@@ -94,13 +95,26 @@ func (n *Notifier) sendWebhook(ch Channel, event NotifyEvent) error {
 	if cfg.URL == "" {
 		return fmt.Errorf("webhook URL is empty")
 	}
+	if !n.skipSSRF {
+		if err := ValidateWebhookURL(cfg.URL); err != nil {
+			return fmt.Errorf("webhook URL blocked: %w", err)
+		}
+	}
 
 	body, err := json.Marshal(event)
 	if err != nil {
 		return err
 	}
 
-	client := &http.Client{Timeout: 10 * time.Second}
+	client := &http.Client{
+		Timeout: 10 * time.Second,
+		CheckRedirect: func(r *http.Request, via []*http.Request) error {
+			return http.ErrUseLastResponse
+		},
+	}
+	if !n.skipSSRF {
+		client.Transport = &http.Transport{DialContext: SafeDialContext}
+	}
 	req, err := http.NewRequest("POST", cfg.URL, bytes.NewReader(body))
 	if err != nil {
 		return err
@@ -216,6 +230,11 @@ func (n *Notifier) sendDiscord(ch Channel, event NotifyEvent) error {
 	if cfg.WebhookURL == "" {
 		return fmt.Errorf("discord webhook URL is empty")
 	}
+	if !n.skipSSRF {
+		if err := ValidateWebhookURL(cfg.WebhookURL); err != nil {
+			return fmt.Errorf("discord webhook URL blocked: %w", err)
+		}
+	}
 
 	// Determine embed color based on event type.
 	color := 3447003 // blue (default)
@@ -252,7 +271,15 @@ func (n *Notifier) sendDiscord(ch Channel, event NotifyEvent) error {
 		return err
 	}
 
-	client := &http.Client{Timeout: 10 * time.Second}
+	client := &http.Client{
+		Timeout: 10 * time.Second,
+		CheckRedirect: func(r *http.Request, via []*http.Request) error {
+			return http.ErrUseLastResponse
+		},
+	}
+	if !n.skipSSRF {
+		client.Transport = &http.Transport{DialContext: SafeDialContext}
+	}
 	req, err := http.NewRequest("POST", cfg.WebhookURL, bytes.NewReader(body))
 	if err != nil {
 		return err

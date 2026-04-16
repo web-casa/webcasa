@@ -3,6 +3,7 @@ package deploy
 import (
 	"context"
 	"crypto/rand"
+	"errors"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
@@ -16,6 +17,10 @@ import (
 	pluginpkg "github.com/web-casa/webcasa/internal/plugin"
 	"gorm.io/gorm"
 )
+
+// ErrBuildCoalesced is returned when a build request is merged into an already-queued build.
+// The caller should treat this as a non-error (build will still happen, just coalesced).
+var ErrBuildCoalesced = fmt.Errorf("build coalesced into queued request")
 
 // Service is the main deploy service that coordinates Git, Builder, and ProcessManager.
 type Service struct {
@@ -36,9 +41,10 @@ type Service struct {
 	mu         sync.RWMutex
 	activeLogs map[uint]*LogWriter
 
-	// Build semaphores per project: channel of capacity 1 for queued builds
-	buildMu   sync.Mutex
-	buildSems map[uint]chan struct{}
+	// Build queue with coalescing: same-project builds replace queued (not running) ones.
+	buildMu      sync.Mutex
+	buildSems    map[uint]chan struct{}
+	buildPending map[uint]bool // tracks projects with queued builds waiting to run
 
 	// GitHub App auth helper
 	ghApp *GitHubAppAuth
@@ -73,8 +79,9 @@ func NewService(db *gorm.DB, coreAPI pluginpkg.CoreAPI, eventBus *pluginpkg.Even
 		logger:     logger,
 		dataDir:    dataDir,
 		jwtSecret:  jwtSecret,
-		activeLogs: make(map[uint]*LogWriter),
-		buildSems:  make(map[uint]chan struct{}),
+		activeLogs:   make(map[uint]*LogWriter),
+		buildSems:    make(map[uint]chan struct{}),
+		buildPending: make(map[uint]bool),
 		ghApp:       &GitHubAppAuth{},
 		configStore: configStore,
 		cron:        NewCronScheduler(db, logger, dataDir),
@@ -236,6 +243,28 @@ func (s *Service) UpdateProject(id uint, updates map[string]interface{}) error {
 		}
 	}
 
+	// Encrypt GitHub token if being updated
+	if gt, ok := updates["github_token"]; ok {
+		if tokenStr, ok := gt.(string); ok && tokenStr != "" {
+			enc, err := crypto.Encrypt(tokenStr, s.jwtSecret)
+			if err != nil {
+				return fmt.Errorf("encrypt github token: %w", err)
+			}
+			updates["github_token"] = enc
+		}
+	}
+
+	// Encrypt webhook secret if being updated
+	if ws, ok := updates["webhook_secret"]; ok {
+		if secretStr, ok := ws.(string); ok && secretStr != "" {
+			enc, err := crypto.Encrypt(secretStr, s.jwtSecret)
+			if err != nil {
+				return fmt.Errorf("encrypt webhook secret: %w", err)
+			}
+			updates["webhook_secret"] = enc
+		}
+	}
+
 	return s.db.Model(&Project{}).Where("id = ?", id).Updates(updates).Error
 }
 
@@ -285,6 +314,23 @@ func (s *Service) DeleteProject(id uint) error {
 		s.cron.RemoveJob(job.ID)
 	}
 
+	// Clean up preview deployments
+	var previews []PreviewDeployment
+	s.db.Where("project_id = ?", id).Find(&previews)
+	for _, p := range previews {
+		if p.HostID > 0 {
+			if err := s.coreAPI.DeleteHost(p.HostID); err != nil {
+				s.logger.Warn("failed to delete preview host during project cleanup", "host_id", p.HostID, "err", err)
+			}
+		}
+		if p.ContainerName != "" {
+			if err := s.coreAPI.DockerRemoveContainer(p.ContainerName, true); err != nil {
+				s.logger.Warn("failed to remove preview container during project cleanup", "container", p.ContainerName, "err", err)
+			}
+		}
+	}
+	s.db.Where("project_id = ?", id).Delete(&PreviewDeployment{})
+
 	// Delete DB records
 	s.db.Where("project_id = ?", id).Delete(&CronJob{})
 	s.db.Where("project_id = ?", id).Delete(&ExtraProcess{})
@@ -313,31 +359,50 @@ func (s *Service) CloneEnvVars(sourceID, targetID uint) error {
 }
 
 // Build triggers a new build for a project (runs in background goroutine).
+// If a build is already running, queues this request. If a build is already
+// queued, the older queued request is replaced (only the latest version builds).
 func (s *Service) Build(projectID uint) error {
-	// Acquire per-project build semaphore. If a build is already running,
-	// wait up to 5 minutes instead of immediately rejecting.
 	s.buildMu.Lock()
 	sem, ok := s.buildSems[projectID]
 	if !ok {
 		sem = make(chan struct{}, 1)
 		s.buildSems[projectID] = sem
 	}
-	s.buildMu.Unlock()
 
-	// Try to acquire immediately, otherwise wait with timeout.
+	// Try to acquire immediately.
 	select {
 	case sem <- struct{}{}:
-		// Acquired immediately.
+		s.buildMu.Unlock()
+		// Acquired — proceed to build.
 	default:
-		// Another build is running — wait in queue.
+		// Another build is running. Check if one is already queued.
+		if s.buildPending[projectID] {
+			s.buildMu.Unlock()
+			s.logger.Info("build coalesced: replacing queued build with latest", "project_id", projectID)
+			return ErrBuildCoalesced // the queued goroutine will pick up the latest code
+		}
+		s.buildPending[projectID] = true
+		s.buildMu.Unlock()
+
 		s.logger.Info("build queued, waiting for current build to finish", "project_id", projectID)
 		timer := time.NewTimer(5 * time.Minute)
 		defer timer.Stop()
 		select {
 		case sem <- struct{}{}:
-			// Acquired after waiting.
+			s.buildMu.Lock()
+			delete(s.buildPending, projectID)
+			s.buildMu.Unlock()
 		case <-timer.C:
-			return fmt.Errorf("build queue timeout: another build is still running after 5 minutes")
+			s.buildMu.Lock()
+			delete(s.buildPending, projectID)
+			s.buildMu.Unlock()
+			// Re-enqueue asynchronously so coalesced requests are not lost.
+			go func() {
+				if err := s.Build(projectID); err != nil && !errors.Is(err, ErrBuildCoalesced) {
+					s.logger.Error("re-enqueued build failed", "project_id", projectID, "err", err)
+				}
+			}()
+			return fmt.Errorf("build queue timeout: re-enqueued for retry")
 		}
 	}
 
@@ -654,9 +719,12 @@ func (s *Service) runHealthCheck(project *Project, port int, logWriter *LogWrite
 	if hcPath == "" {
 		hcPath = "/"
 	}
-	// Validate path to prevent SSRF via protocol injection or path traversal.
 	if !strings.HasPrefix(hcPath, "/") {
 		hcPath = "/" + hcPath
+	}
+	method := project.HealthCheckMethod
+	if method == "" {
+		method = "GET"
 	}
 	hcTimeout := time.Duration(project.HealthCheckTimeout) * time.Second
 	if hcTimeout <= 0 {
@@ -667,8 +735,20 @@ func (s *Service) runHealthCheck(project *Project, port int, logWriter *LogWrite
 		hcRetries = 3
 	}
 
-	logWriter.Write([]byte(fmt.Sprintf("==> Health check: GET http://127.0.0.1:%d%s (retries=%d, timeout=%s)\n", port, hcPath, hcRetries, hcTimeout)))
-	if err := s.health.WaitHealthy(port, hcPath, hcRetries, hcTimeout); err != nil {
+	logWriter.Write([]byte(fmt.Sprintf("==> Health check: %s http://127.0.0.1:%d%s (retries=%d, timeout=%s)\n", method, port, hcPath, hcRetries, hcTimeout)))
+
+	cfg := HealthCheckConfig{
+		Port:        port,
+		Path:        hcPath,
+		Method:      method,
+		ExpectCode:  project.HealthCheckExpectCode,
+		ExpectBody:  project.HealthCheckExpectBody,
+		Timeout:     hcTimeout,
+		Retries:     hcRetries,
+		StartPeriod: time.Duration(project.HealthCheckStartPeriod) * time.Second,
+	}
+
+	if err := s.health.WaitHealthyAdvanced(cfg); err != nil {
 		logWriter.Write([]byte(fmt.Sprintf("WARNING: Health check failed: %v\n", err)))
 		return false
 	}
@@ -685,7 +765,7 @@ func (s *Service) runDockerDeploy(project *Project, deployment *Deployment, logW
 
 	// Step 1: Build Docker image
 	logWriter.Write([]byte("\n=== Docker: Building image ===\n"))
-	imageTag, err := s.docker.BuildImage(ctx, projectDir, project.ID, deployment.BuildNum, logWriter)
+	imageTag, err := s.docker.BuildImage(ctx, projectDir, project.ID, deployment.BuildNum, logWriter, project.BuildType)
 	if err != nil {
 		s.logger.Error("docker build failed", "project", project.Name, "error", err)
 		s.db.Model(&Project{}).Where("id = ?", project.ID).Updates(map[string]interface{}{
@@ -694,6 +774,9 @@ func (s *Service) runDockerDeploy(project *Project, deployment *Deployment, logW
 		})
 		return
 	}
+
+	// Save image tag on deployment record for instant rollback (no rebuild needed).
+	s.db.Model(deployment).Update("image_tag", imageTag)
 
 	// Decode env vars
 	var envVars []EnvVar
@@ -884,8 +967,12 @@ func (s *Service) Rollback(projectID uint, buildNum int) error {
 	s.db.Model(&Project{}).Where("id = ?", projectID).Update("current_build", buildNum)
 
 	if project.DeployMode == "docker" {
-		// For Docker mode: run the older image tag
-		imageTag := s.docker.ImageTag(projectID, buildNum)
+		// For Docker mode: prefer stored image tag for instant rollback;
+		// fall back to computed tag for older deployments without the field.
+		imageTag := deployment.ImageTag
+		if imageTag == "" {
+			imageTag = s.docker.ImageTag(projectID, buildNum)
+		}
 
 		var envVars []EnvVar
 		if project.EnvVars != "" {
@@ -956,6 +1043,19 @@ func (s *Service) HandleWebhook(token string) error {
 		return fmt.Errorf("project not found or auto-deploy disabled")
 	}
 	return s.Build(project.ID)
+}
+
+// decryptField decrypts an AES-GCM encrypted field, falling back to plaintext for pre-migration values.
+func (s *Service) decryptField(encrypted string) (string, error) {
+	if encrypted == "" {
+		return "", nil
+	}
+	decrypted, err := crypto.Decrypt(encrypted, s.jwtSecret)
+	if err != nil {
+		// Might be plaintext from before encryption was added.
+		return encrypted, nil
+	}
+	return decrypted, nil
 }
 
 // DecryptDeployKey decrypts the project's stored deploy key.

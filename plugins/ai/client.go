@@ -91,7 +91,7 @@ func (c *LLMClient) ChatStream(ctx context.Context, messages []chatMessage, cb S
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
-		respBody, _ := io.ReadAll(resp.Body)
+		respBody, _ := io.ReadAll(io.LimitReader(resp.Body, 10*1024*1024))
 		return fmt.Errorf("API error %d: %s", resp.StatusCode, string(respBody))
 	}
 
@@ -116,7 +116,7 @@ func (c *LLMClient) TestConnection(ctx context.Context) error {
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
-		respBody, _ := io.ReadAll(resp.Body)
+		respBody, _ := io.ReadAll(io.LimitReader(resp.Body, 10*1024*1024))
 		return fmt.Errorf("API error %d: %s", resp.StatusCode, string(respBody))
 	}
 

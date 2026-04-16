@@ -54,7 +54,9 @@ func newTestNotifier(t *testing.T) (*Notifier, *gorm.DB) {
 	t.Helper()
 	db := setupTestDB(t)
 	log := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError}))
-	return NewNotifier(db, log), db
+	n := NewNotifier(db, log)
+	n.skipSSRF = true // tests use 127.0.0.1 which SSRF check would block
+	return n, db
 }
 
 func TestNotifier_CRUD(t *testing.T) {

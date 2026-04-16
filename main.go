@@ -148,7 +148,12 @@ func main() {
 	protected := api.Group("")
 	protected.Use(auth.Middleware(cfg.JWTSecret, auth.WithDB(db)))
 
-	// Admin-only routes (JWT + admin role required)
+	// Operator routes (JWT + operator/admin/owner role required)
+	operatorOnly := api.Group("")
+	operatorOnly.Use(auth.Middleware(cfg.JWTSecret, auth.WithDB(db)))
+	operatorOnly.Use(auth.RequireOperator(db))
+
+	// Admin-only routes (JWT + admin/owner role required)
 	adminOnly := api.Group("")
 	adminOnly.Use(auth.Middleware(cfg.JWTSecret, auth.WithDB(db)))
 	adminOnly.Use(auth.RequireAdmin(db))
@@ -173,7 +178,7 @@ func main() {
 	protected.GET("/hosts/:id", hostH.Get)
 	adminOnly.PUT("/hosts/:id", hostH.Update)
 	adminOnly.DELETE("/hosts/:id", hostH.Delete)
-	adminOnly.PATCH("/hosts/:id/toggle", hostH.Toggle)
+	operatorOnly.PATCH("/hosts/:id/toggle", hostH.Toggle)
 	adminOnly.POST("/hosts/:id/clone", hostH.Clone)
 
 	// SSL Certificate management (admin only — modifies TLS config)
@@ -181,12 +186,12 @@ func main() {
 	adminOnly.POST("/hosts/:id/cert", certH.Upload)
 	adminOnly.DELETE("/hosts/:id/cert", certH.Delete)
 
-	// Caddy process control (admin only)
+	// Caddy process control (operator for start/stop/reload, admin for config)
 	caddyH := handler.NewCaddyHandler(caddyMgr, db)
 	protected.GET("/caddy/status", caddyH.Status)
-	adminOnly.POST("/caddy/start", caddyH.Start)
-	adminOnly.POST("/caddy/stop", caddyH.Stop)
-	adminOnly.POST("/caddy/reload", caddyH.Reload)
+	operatorOnly.POST("/caddy/start", caddyH.Start)
+	operatorOnly.POST("/caddy/stop", caddyH.Stop)
+	operatorOnly.POST("/caddy/reload", caddyH.Reload)
 	adminOnly.GET("/caddy/check-upgrade", caddyH.CheckUpgrade)
 	adminOnly.POST("/caddy/upgrade", caddyH.Upgrade)
 	adminOnly.GET("/caddy/caddyfile", caddyH.GetCaddyfile)
@@ -203,19 +208,19 @@ func main() {
 
 	// Config import/export (admin only)
 	exportH := handler.NewExportHandler(hostSvc)
-	protected.GET("/config/export", exportH.Export)
+	adminOnly.GET("/config/export", exportH.Export)
 	adminOnly.POST("/config/import", exportH.Import)
 
 	// User management (admin only)
 	userH := handler.NewUserHandler(db)
-	protected.GET("/users", userH.List)
+	adminOnly.GET("/users", userH.List)
 	adminOnly.POST("/users", userH.Create)
 	adminOnly.PUT("/users/:id", userH.Update)
 	adminOnly.DELETE("/users/:id", userH.Delete)
 
-	// Audit logs
+	// Audit logs (admin only — contains user actions, IPs, sensitive context)
 	auditH := handler.NewAuditHandler(db)
-	protected.GET("/audit/logs", auditH.List)
+	adminOnly.GET("/audit/logs", auditH.List)
 
 	// DNS providers (admin only for mutations)
 	dnsH := handler.NewDnsProviderHandler(db)
@@ -261,31 +266,32 @@ func main() {
 	adminOnly.POST("/templates/:id/create-host", tplH.CreateHost)
 	adminOnly.POST("/hosts/:id/save-as-template", tplH.SaveAsTemplate)
 
-	// Settings (admin only for mutations)
+	// Settings (admin only — may contain sensitive values)
 	settingH := handler.NewSettingHandler(db)
-	protected.GET("/settings/all", settingH.GetAll)
+	adminOnly.GET("/settings/all", settingH.GetAll)
 	adminOnly.PUT("/settings", settingH.Update)
 
 	// Notifications
 	notifier := notify.NewNotifier(db, slog.Default())
 	notifyH := handler.NewNotifyHandler(notifier)
-	protected.GET("/notify/channels", notifyH.ListChannels)
+	adminOnly.GET("/notify/channels", notifyH.ListChannels)
 	adminOnly.POST("/notify/channels", notifyH.CreateChannel)
 	adminOnly.PUT("/notify/channels/:id", notifyH.UpdateChannel)
 	adminOnly.DELETE("/notify/channels/:id", notifyH.DeleteChannel)
 	adminOnly.POST("/notify/channels/:id/test", notifyH.TestChannel)
 
-	// Certificates (admin only for mutations)
+	// Certificates (admin only — contains file paths)
 	certMgrH := handler.NewCertificateHandler(db, cfg)
-	protected.GET("/certificates", certMgrH.List)
+	adminOnly.GET("/certificates", certMgrH.List)
 	adminOnly.POST("/certificates", certMgrH.Upload)
 	adminOnly.DELETE("/certificates/:id", certMgrH.Delete)
 
 	// ============ Plugin System ============
 	pluginRouter := protected.Group("/plugins")
+	operatorPluginRouter := operatorOnly.Group("/plugins")
 	adminPluginRouter := adminOnly.Group("/plugins")
 	publicPluginRouter := api.Group("/plugins") // public routes (no JWT) for webhooks etc.
-	pluginMgr := initPlugins(db, pluginRouter, adminPluginRouter, publicPluginRouter, hostSvc, caddyMgr, cfg)
+	pluginMgr := initPlugins(db, pluginRouter, operatorPluginRouter, adminPluginRouter, publicPluginRouter, hostSvc, caddyMgr, cfg)
 
 	// ============ Notification Integration ============
 	// Subscribe notifier to EventBus for deploy/backup/monitoring events
@@ -361,9 +367,9 @@ func main() {
 
 // initPlugins creates the plugin manager and registers all compiled-in plugins.
 // New plugins are added here by calling pluginMgr.Register(...).
-func initPlugins(db *gorm.DB, protectedRouter *gin.RouterGroup, adminRouter *gin.RouterGroup, publicRouter *gin.RouterGroup, hostSvc *service.HostService, caddyMgr *caddy.Manager, cfg *config.Config) *plugin.Manager {
+func initPlugins(db *gorm.DB, protectedRouter *gin.RouterGroup, operatorRouter *gin.RouterGroup, adminRouter *gin.RouterGroup, publicRouter *gin.RouterGroup, hostSvc *service.HostService, caddyMgr *caddy.Manager, cfg *config.Config) *plugin.Manager {
 	coreAPI := plugin.NewCoreAPI(db, hostSvc, caddyMgr, cfg.DataDir, cfg.JWTSecret)
-	pluginMgr := plugin.NewManager(db, protectedRouter, adminRouter, publicRouter, coreAPI, cfg.DataDir)
+	pluginMgr := plugin.NewManager(db, protectedRouter, operatorRouter, adminRouter, publicRouter, coreAPI, cfg.DataDir)
 	coreAPI.SetEventBus(pluginMgr.EventBus())
 
 	// ── Register plugins here ──
@@ -415,7 +421,7 @@ func initPlugins(db *gorm.DB, protectedRouter *gin.RouterGroup, adminRouter *gin
 	return pluginMgr
 }
 
-// setupFrontend serves the Vue SPA from web/dist if it exists
+// setupFrontend serves the React SPA from web/dist if it exists
 func setupFrontend(r *gin.Engine) {
 	distPath := "web/dist"
 

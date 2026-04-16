@@ -182,5 +182,5 @@ func readMultipartFile(header *multipart.FileHeader) ([]byte, error) {
 		return nil, err
 	}
 	defer src.Close()
-	return io.ReadAll(src)
+	return io.ReadAll(io.LimitReader(src, 1024*1024)) // 1MB cap for certificates
 }

@@ -1,11 +1,19 @@
 package deploy
 
 import (
+	"bytes"
+	"crypto/hmac"
+	"errors"
+	"crypto/sha256"
+	"crypto/subtle"
+	"encoding/hex"
 	"encoding/json"
+	"io"
 	"net/http"
 	"strconv"
 
 	"github.com/gin-gonic/gin"
+	"github.com/web-casa/webcasa/plugins/deploy/builders"
 )
 
 // Handler provides HTTP handlers for the deploy plugin API.
@@ -38,6 +46,13 @@ func (h *Handler) GetProject(c *gin.Context) {
 	if err != nil {
 		c.JSON(http.StatusNotFound, gin.H{"error": "project not found"})
 		return
+	}
+	// Mask env var values for non-admin users (viewers/operators can see keys but not values).
+	role, _ := c.Get("user_role")
+	if role != "admin" && role != "owner" {
+		for i := range project.EnvVarList {
+			project.EnvVarList[i].Value = "***"
+		}
 	}
 	c.JSON(http.StatusOK, project)
 }
@@ -139,15 +154,27 @@ func (h *Handler) UpdateProject(c *gin.Context) {
 		"start_command": true, "install_command": true, "port": true,
 		"auto_deploy": true, "env_vars": true, "deploy_mode": true,
 		"health_check_path": true, "health_check_timeout": true, "health_check_retries": true,
-		"memory_limit": true, "cpu_limit": true, "build_timeout": true,
-		"auth_method": true, "github_app_id": true,
+		"health_check_method": true, "health_check_expect_code": true,
+		"health_check_expect_body": true, "health_check_start_period": true,
+		"memory_limit": true, "cpu_limit": true, "build_timeout": true, "build_type": true,
+		"auth_method": true, "github_app_id": true, "webhook_secret": true,
 		"github_private_key": true, "github_installation_id": true,
 		"github_oauth_install_id": true, "github_repo_full_name": true,
+		"preview_enabled": true, "preview_expiry": true, "github_token": true,
 	}
 	filtered := make(map[string]interface{})
 	for k, v := range req {
 		if allowed[k] {
 			filtered[k] = v
+		}
+	}
+
+	// Validate build_type against allowlist.
+	if bt, ok := filtered["build_type"]; ok {
+		btStr, isStr := bt.(string)
+		if !isStr || !builders.ValidBuilderTypes[btStr] {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "invalid build_type: must be dockerfile, nixpacks, paketo, railpack, static, auto, or empty"})
+			return
 		}
 	}
 
@@ -187,6 +214,10 @@ func (h *Handler) BuildProject(c *gin.Context) {
 		return
 	}
 	if err := h.svc.Build(id); err != nil {
+		if errors.Is(err, ErrBuildCoalesced) {
+			c.JSON(http.StatusOK, gin.H{"ok": true, "message": "build coalesced into queued request"})
+			return
+		}
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
 	}
@@ -296,8 +327,65 @@ func (h *Handler) GetBuildLog(c *gin.Context) {
 // Webhook POST /api/plugins/deploy/webhook/:token
 func (h *Handler) Webhook(c *gin.Context) {
 	token := c.Param("token")
-	if err := h.svc.HandleWebhook(token); err != nil {
-		c.JSON(http.StatusNotFound, gin.H{"error": err.Error()})
+
+	// Look up the project to check for HMAC secret.
+	var project Project
+	if err := h.svc.db.Where("webhook_token = ?", token).First(&project).Error; err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "project not found"})
+		return
+	}
+
+	// Verify webhook signature if the project has a webhook secret configured.
+	if project.WebhookSecret != "" {
+		// Decrypt the stored secret (it's AES-GCM encrypted).
+		secret, decErr := h.svc.decryptField(project.WebhookSecret)
+		if decErr != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to decrypt webhook secret"})
+			return
+		}
+
+		body, _ := io.ReadAll(io.LimitReader(c.Request.Body, 1024*1024)) // 1MB cap
+		// Restore body so downstream code can re-read it.
+		c.Request.Body = io.NopCloser(bytes.NewReader(body))
+
+		verified := false
+
+		// GitHub: HMAC-SHA256 signature in X-Hub-Signature-256 header.
+		if sig := c.GetHeader("X-Hub-Signature-256"); sig != "" {
+			mac := hmac.New(sha256.New, []byte(secret))
+			mac.Write(body)
+			expected := "sha256=" + hex.EncodeToString(mac.Sum(nil))
+			if hmac.Equal([]byte(sig), []byte(expected)) {
+				verified = true
+			}
+		}
+
+		// GitLab: plain secret token comparison in X-Gitlab-Token header.
+		if !verified {
+			if tok := c.GetHeader("X-Gitlab-Token"); tok != "" {
+				if subtle.ConstantTimeCompare([]byte(tok), []byte(secret)) == 1 {
+					verified = true
+				}
+			}
+		}
+
+		if !verified {
+			c.JSON(http.StatusUnauthorized, gin.H{"error": "invalid or missing webhook signature"})
+			return
+		}
+	}
+
+	if !project.AutoDeploy {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "auto-deploy is disabled"})
+		return
+	}
+
+	if err := h.svc.Build(project.ID); err != nil {
+		if errors.Is(err, ErrBuildCoalesced) {
+			c.JSON(http.StatusOK, gin.H{"ok": true, "message": "build coalesced into queued request"})
+			return
+		}
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
 	c.JSON(http.StatusOK, gin.H{"ok": true, "message": "build triggered"})

@@ -59,26 +59,59 @@ func (s *Service) ListStacks() ([]Stack, error) {
 	return stacks, nil
 }
 
-// matchStackStatus determines stack status from a pre-fetched container list.
+// matchStackStatus determines stack status from a pre-fetched container list
+// using a priority-based state machine (inspired by Coolify's ContainerStatusAggregator).
+// Returns: "running", "degraded", "starting", "paused", or "stopped".
 func matchStackStatus(name string, containers []ContainerInfo) string {
 	sanitized := sanitizeName(name)
-	total, running := 0, 0
+
+	var states []string
 	for _, c := range containers {
 		project := c.Labels["com.docker.compose.project"]
 		if project == name || project == sanitized {
-			total++
-			if c.State == "running" {
-				running++
-			}
+			states = append(states, c.State)
 		}
 	}
-	switch {
-	case total == 0:
+
+	if len(states) == 0 {
 		return "stopped"
-	case running == total:
+	}
+
+	running, restarting, exited, paused, dead, created := 0, 0, 0, 0, 0, 0
+	for _, st := range states {
+		switch st {
+		case "running":
+			running++
+		case "restarting":
+			restarting++
+		case "exited":
+			exited++
+		case "dead", "removing":
+			dead++
+		case "paused":
+			paused++
+		case "created":
+			created++
+		}
+	}
+
+	switch {
+	case dead > 0:
+		return "degraded"
+	case restarting > 0:
+		return "degraded"
+	case running > 0 && exited > 0:
+		return "degraded"
+	case running > 0 && created > 0:
+		return "starting"
+	case running > 0 && running == len(states):
 		return "running"
+	case paused > 0 && paused == len(states):
+		return "paused"
+	case created > 0:
+		return "starting"
 	case running > 0:
-		return "partial"
+		return "starting"
 	default:
 		return "stopped"
 	}
@@ -236,11 +269,14 @@ func (s *Service) DeleteStack(id uint) error {
 // ── Stack Lifecycle ──
 
 // StackUp starts a stack (docker compose up -d).
+// Pulls images first to avoid failures on first start.
 func (s *Service) StackUp(id uint) error {
 	stack, err := s.GetStack(id)
 	if err != nil {
 		return err
 	}
+	// Pull images first (ignore errors — image may be local/built).
+	_ = s.runCompose(stack.Name, stack.DataDir, "pull")
 	return s.runCompose(stack.Name, stack.DataDir, "up", "-d", "--remove-orphans")
 }
 
@@ -322,6 +358,7 @@ func (s *Service) StackLogsFollow(ctx context.Context, id uint, tail string) (io
 // ── Helpers ──
 
 // resolveStackStatus checks Docker for actual container states of a compose project.
+// Uses the same aggregation logic as ListStacks for consistency.
 func (s *Service) resolveStackStatus(name string) string {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
@@ -331,27 +368,7 @@ func (s *Service) resolveStackStatus(name string) string {
 		return "unknown"
 	}
 
-	total, running := 0, 0
-	for _, c := range containers {
-		project := c.Labels["com.docker.compose.project"]
-		if project == name || project == sanitizeName(name) {
-			total++
-			if c.State == "running" {
-				running++
-			}
-		}
-	}
-
-	switch {
-	case total == 0:
-		return "stopped"
-	case running == total:
-		return "running"
-	case running > 0:
-		return "partial"
-	default:
-		return "stopped"
-	}
+	return matchStackStatus(name, containers)
 }
 
 // runCompose executes a docker compose command in the given directory.

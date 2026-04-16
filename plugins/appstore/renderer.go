@@ -154,8 +154,16 @@ func SanitizeCompose(compose string) string {
 		line := scanner.Text()
 		trimmed := strings.TrimSpace(line)
 
-		// Skip traefik and runtipi labels
+		// Skip traefik and runtipi labels (both YAML mapping and list formats)
+		// Mapping:  traefik.enable: true
+		// List:     - traefik.enable=true
+		// List:     - "traefik.enable=true"
 		if strings.HasPrefix(trimmed, "traefik.") || strings.HasPrefix(trimmed, "runtipi.") {
+			continue
+		}
+		stripped := strings.TrimPrefix(trimmed, "- ")
+		stripped = strings.Trim(stripped, "\"'")
+		if strings.HasPrefix(stripped, "traefik.") || strings.HasPrefix(stripped, "runtipi.") {
 			continue
 		}
 
@@ -186,8 +194,8 @@ func SanitizeCompose(compose string) string {
 	return result
 }
 
-// cleanEmptySection removes a YAML section that has no content after it
-// (only whitespace/empty lines before the next same-level or higher key).
+// cleanEmptySection removes a YAML section that has no real content after it.
+// A section is considered empty if all child lines are blank or comments.
 func cleanEmptySection(content, sectionKey string) string {
 	lines := strings.Split(content, "\n")
 	var out []string
@@ -195,23 +203,28 @@ func cleanEmptySection(content, sectionKey string) string {
 	for i < len(lines) {
 		trimmed := strings.TrimSpace(lines[i])
 		if trimmed == sectionKey {
-			// Check if next non-empty line is at same or lower indent (section is empty)
 			indent := len(lines[i]) - len(strings.TrimLeft(lines[i], " \t"))
+			// Scan all child lines — if they're all blank or comments, the section is empty.
 			j := i + 1
-			empty := true
+			hasContent := false
 			for j < len(lines) {
-				if strings.TrimSpace(lines[j]) == "" {
+				childTrimmed := strings.TrimSpace(lines[j])
+				if childTrimmed == "" || strings.HasPrefix(childTrimmed, "#") {
 					j++
 					continue
 				}
 				childIndent := len(lines[j]) - len(strings.TrimLeft(lines[j], " \t"))
 				if childIndent > indent {
-					empty = false
+					// Real content found at deeper indent.
+					hasContent = true
+					break
 				}
+				// Same or lower indent = next sibling section, stop scanning.
 				break
 			}
-			if empty {
-				i++ // skip empty section header
+			if !hasContent {
+				// Skip section header and all its blank/comment children.
+				i = j
 				continue
 			}
 		}

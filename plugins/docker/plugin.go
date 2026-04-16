@@ -85,30 +85,32 @@ func (p *Plugin) Init(ctx *pluginpkg.Context) error {
 
 	// Daemon configuration (settings page — no requireDocker, settings should
 	// be accessible even if the daemon is currently down).
-	r.GET("/daemon-config", p.handler.GetDaemonConfig)
+	a.GET("/daemon-config", p.handler.GetDaemonConfig) // admin only — daemon config is sensitive
 	a.PUT("/daemon-config", p.handler.UpdateDaemonConfig)
 
 	// System (read)
 	r.GET("/info", p.requireDocker(), p.handler.Info)
 
-	// Stacks (read + admin mutations)
+	o := ctx.OperatorRouter // operator+ (operational actions)
+
+	// Stacks (read + operator operations + admin config)
 	r.GET("/stacks", p.requireDocker(), p.handler.ListStacks)
 	a.POST("/stacks", p.requireDocker(), p.handler.CreateStack)
 	r.GET("/stacks/:id", p.requireDocker(), p.handler.GetStack)
 	a.PUT("/stacks/:id", p.requireDocker(), p.handler.UpdateStack)
 	a.DELETE("/stacks/:id", p.requireDocker(), p.handler.DeleteStack)
-	a.POST("/stacks/:id/up", p.requireDocker(), p.handler.StackUp)
-	a.POST("/stacks/:id/down", p.requireDocker(), p.handler.StackDown)
-	a.POST("/stacks/:id/restart", p.requireDocker(), p.handler.StackRestart)
-	a.POST("/stacks/:id/pull", p.requireDocker(), p.handler.StackPull)
+	o.POST("/stacks/:id/up", p.requireDocker(), p.handler.StackUp)
+	o.POST("/stacks/:id/down", p.requireDocker(), p.handler.StackDown)
+	o.POST("/stacks/:id/restart", p.requireDocker(), p.handler.StackRestart)
+	o.POST("/stacks/:id/pull", p.requireDocker(), p.handler.StackPull)
 	r.GET("/stacks/:id/logs", p.requireDocker(), p.handler.StackLogs)
 
-	// Containers (read + admin mutations)
+	// Containers (read + operator operations + admin mutations)
 	r.GET("/containers", p.requireDocker(), p.handler.ListContainers)
 	a.POST("/containers/run", p.requireDocker(), p.handler.RunContainer)
-	a.POST("/containers/:id/start", p.requireDocker(), p.handler.StartContainer)
-	a.POST("/containers/:id/stop", p.requireDocker(), p.handler.StopContainer)
-	a.POST("/containers/:id/restart", p.requireDocker(), p.handler.RestartContainer)
+	o.POST("/containers/:id/start", p.requireDocker(), p.handler.StartContainer)
+	o.POST("/containers/:id/stop", p.requireDocker(), p.handler.StopContainer)
+	o.POST("/containers/:id/restart", p.requireDocker(), p.handler.RestartContainer)
 	a.DELETE("/containers/:id", p.requireDocker(), p.handler.RemoveContainer)
 	r.GET("/containers/:id/logs", p.requireDocker(), p.handler.ContainerLogs)
 	r.GET("/containers/:id/stats", p.requireDocker(), p.handler.ContainerStats)

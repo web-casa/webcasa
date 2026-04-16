@@ -28,8 +28,9 @@ type BackupConfig struct {
 	SftpPath        string    `gorm:"size:512" json:"sftp_path"`
 	ScheduleEnabled bool      `gorm:"default:false" json:"schedule_enabled"`
 	CronExpr        string    `gorm:"size:64;default:0 2 * * *" json:"cron_expr"`
-	RetainCount     int       `gorm:"default:10" json:"retain_count"`
-	RetainDays      int       `gorm:"default:30" json:"retain_days"`
+	RetainCount     int       `gorm:"default:10" json:"retain_count"`       // keep latest N snapshots (0=unlimited)
+	RetainDays      int       `gorm:"default:30" json:"retain_days"`        // delete snapshots older than N days (0=unlimited)
+	RetainMaxSizeMB int       `gorm:"default:0" json:"retain_max_size_mb"` // max total backup size in MB (0=unlimited)
 	Scopes          JSONArray `gorm:"type:text" json:"scopes"` // ["panel", "docker", "database"]
 	RepoPassword    string    `gorm:"size:256" json:"-"`
 	RepoInitialized bool      `gorm:"default:false" json:"repo_initialized"`
@@ -88,8 +89,9 @@ type UpdateConfigRequest struct {
 	SftpPath        string   `json:"sftp_path"`
 	ScheduleEnabled *bool    `json:"schedule_enabled"`
 	CronExpr        string   `json:"cron_expr"`
-	RetainCount     int      `json:"retain_count"`
-	RetainDays      int      `json:"retain_days"`
+	RetainCount     *int     `json:"retain_count"`
+	RetainDays      *int     `json:"retain_days"`
+	RetainMaxSizeMB *int     `json:"retain_max_size_mb"`
 	Scopes          []string `json:"scopes"`
 	RepoPassword    string   `json:"repo_password"`
 }

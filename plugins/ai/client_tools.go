@@ -125,7 +125,7 @@ func (c *LLMClient) chatToolsOpenAI(ctx context.Context, messages []ToolUseMessa
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
-		respBody, _ := io.ReadAll(resp.Body)
+		respBody, _ := io.ReadAll(io.LimitReader(resp.Body, 10*1024*1024))
 		return fmt.Errorf("API error %d: %s", resp.StatusCode, string(respBody))
 	}
 
@@ -335,14 +335,14 @@ func (c *LLMClient) chatToolsAnthropic(ctx context.Context, messages []ToolUseMe
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
-		respBody, _ := io.ReadAll(resp.Body)
+		respBody, _ := io.ReadAll(io.LimitReader(resp.Body, 10*1024*1024))
 		return fmt.Errorf("API error %d: %s", resp.StatusCode, string(respBody))
 	}
 
 	// Check Content-Type: if the response is not SSE, read as JSON error.
 	ct := resp.Header.Get("Content-Type")
 	if ct != "" && !strings.Contains(ct, "text/event-stream") && !strings.Contains(ct, "text/plain") {
-		respBody, _ := io.ReadAll(resp.Body)
+		respBody, _ := io.ReadAll(io.LimitReader(resp.Body, 10*1024*1024))
 		return fmt.Errorf("API error (unexpected content-type %s): %s", ct, string(respBody))
 	}
 

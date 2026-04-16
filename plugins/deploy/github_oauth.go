@@ -253,7 +253,7 @@ func (s *GitHubOAuthService) exchangeCodeForToken(code string) (string, error) {
 	}
 	defer resp.Body.Close()
 
-	body, _ := io.ReadAll(resp.Body)
+	body, _ := io.ReadAll(io.LimitReader(resp.Body, 10*1024*1024))
 	var result struct {
 		AccessToken string `json:"access_token"`
 		Error       string `json:"error"`
@@ -296,7 +296,7 @@ func (s *GitHubOAuthService) fetchInstallationInfo(installationID int64) (*GitHu
 	}
 	defer resp.Body.Close()
 
-	body, _ := io.ReadAll(resp.Body)
+	body, _ := io.ReadAll(io.LimitReader(resp.Body, 10*1024*1024))
 	if resp.StatusCode != http.StatusOK {
 		return nil, fmt.Errorf("GitHub API error (%d): %s", resp.StatusCode, string(body))
 	}
@@ -374,7 +374,7 @@ func (s *GitHubOAuthService) ListRepos(installationID int64) ([]GitHubRepo, erro
 		if err != nil {
 			return nil, fmt.Errorf("list repos request: %w", err)
 		}
-		body, _ := io.ReadAll(resp.Body)
+		body, _ := io.ReadAll(io.LimitReader(resp.Body, 10*1024*1024))
 		resp.Body.Close()
 
 		if resp.StatusCode != http.StatusOK {

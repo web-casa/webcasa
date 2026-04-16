@@ -3,6 +3,7 @@ package deploy
 import (
 	"crypto/rand"
 	"encoding/hex"
+	"errors"
 	"fmt"
 
 	pluginpkg "github.com/web-casa/webcasa/internal/plugin"
@@ -36,7 +37,7 @@ func (p *Plugin) Metadata() pluginpkg.Metadata {
 // Init initialises the deploy plugin: migrates DB, creates service, registers routes.
 func (p *Plugin) Init(ctx *pluginpkg.Context) error {
 	// Migrate models
-	if err := ctx.DB.AutoMigrate(&Project{}, &Deployment{}, &CronJob{}, &ExtraProcess{}, &GitHubInstallation{}); err != nil {
+	if err := ctx.DB.AutoMigrate(&Project{}, &Deployment{}, &PreviewDeployment{}, &CronJob{}, &ExtraProcess{}, &GitHubInstallation{}); err != nil {
 		return fmt.Errorf("migrate: %w", err)
 	}
 
@@ -62,8 +63,9 @@ func (p *Plugin) Init(ctx *pluginpkg.Context) error {
 	p.handler = NewHandler(p.svc)
 
 	// Register API routes under /api/plugins/deploy/
-	r := ctx.Router       // read-only
-	a := ctx.AdminRouter  // admin-only
+	r := ctx.Router          // read-only (any authenticated user)
+	o := ctx.OperatorRouter  // operator+ (operations: build/start/stop)
+	a := ctx.AdminRouter     // admin-only (config changes)
 
 	// Frameworks presets (read)
 	r.GET("/frameworks", p.handler.GetFrameworks)
@@ -80,11 +82,11 @@ func (p *Plugin) Init(ctx *pluginpkg.Context) error {
 	// Webhook info (admin only — token is sensitive)
 	a.GET("/projects/:id/webhook", p.handler.GetWebhookInfo)
 
-	// Project actions (admin)
-	a.POST("/projects/:id/build", p.handler.BuildProject)
-	a.POST("/projects/:id/start", p.handler.StartProject)
-	a.POST("/projects/:id/stop", p.handler.StopProject)
-	a.POST("/projects/:id/rollback", p.handler.RollbackProject)
+	// Project actions (operator — operational, not config changes)
+	o.POST("/projects/:id/build", p.handler.BuildProject)
+	o.POST("/projects/:id/start", p.handler.StartProject)
+	o.POST("/projects/:id/stop", p.handler.StopProject)
+	o.POST("/projects/:id/rollback", p.handler.RollbackProject)
 
 	// Build cache (admin)
 	r.GET("/projects/:id/cache", p.handler.GetCacheInfo)
@@ -133,7 +135,7 @@ func (p *Plugin) Init(ctx *pluginpkg.Context) error {
 				projectID = uint(v)
 			}
 			if projectID > 0 {
-				if err := p.svc.Build(projectID); err != nil {
+				if err := p.svc.Build(projectID); err != nil && !errors.Is(err, ErrBuildCoalesced) {
 					ctx.Logger.Error("trigger_build via event failed", "project_id", projectID, "err", err)
 				}
 			}

@@ -129,6 +129,6 @@ func saveUploadedFile(header *multipart.FileHeader, dst string) error {
 	}
 	defer out.Close()
 
-	_, err = io.Copy(out, src)
+	_, err = io.Copy(out, io.LimitReader(src, 1024*1024)) // 1MB cap for certificates
 	return err
 }

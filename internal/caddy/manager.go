@@ -23,6 +23,11 @@ type Manager struct {
 	cfg  *config.Config
 	mu   sync.Mutex
 	proc *os.Process // tracked only when we start Caddy ourselves
+
+	// Reload coalescing: multiple rapid reload requests are merged into one.
+	reloadMu      sync.Mutex
+	reloadTimer   *time.Timer
+	reloadWaiters []chan error // all goroutines waiting for the coalesced reload
 }
 
 // NewManager creates a new Caddy manager
@@ -98,6 +103,46 @@ func (m *Manager) Reload() error {
 	}
 	log.Println("Caddy reloaded successfully")
 	return nil
+}
+
+// RequestReload schedules a Caddy reload with debouncing.
+// Multiple calls within 500ms are coalesced into a single reload.
+// Each caller gets its own channel and receives the shared result.
+func (m *Manager) RequestReload() error {
+	m.reloadMu.Lock()
+
+	// Each caller gets its own result channel.
+	waiter := make(chan error, 1)
+	m.reloadWaiters = append(m.reloadWaiters, waiter)
+
+	// Stop any pending timer. If Stop returns false, the callback is already
+	// running or scheduled — it will pick up our waiter from the slice.
+	// Only create a new timer if we successfully stopped the old one or there was none.
+	needNewTimer := true
+	if m.reloadTimer != nil {
+		if !m.reloadTimer.Stop() {
+			// Timer already fired — callback is running or about to run.
+			// It will drain the current waiters including ours. Don't create a new timer.
+			needNewTimer = false
+		}
+	}
+
+	if needNewTimer {
+		m.reloadTimer = time.AfterFunc(500*time.Millisecond, func() {
+			err := m.Reload()
+			m.reloadMu.Lock()
+			waiters := m.reloadWaiters
+			m.reloadWaiters = nil
+			m.reloadTimer = nil
+			m.reloadMu.Unlock()
+			for _, w := range waiters {
+				w <- err
+			}
+		})
+	}
+	m.reloadMu.Unlock()
+
+	return <-waiter
 }
 
 // EnsureCaddyfile creates a minimal valid Caddyfile if one does not exist.

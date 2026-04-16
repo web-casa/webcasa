@@ -37,7 +37,7 @@ func (p *Plugin) Metadata() pluginpkg.Metadata {
 func (p *Plugin) Init(ctx *pluginpkg.Context) error {
 	rootPath := ctx.ConfigStore.Get("root_path")
 	if rootPath == "" {
-		rootPath = "/home"
+		rootPath = "/"
 	}
 
 	p.fileOps = NewFileOps(rootPath)

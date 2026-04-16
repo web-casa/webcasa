@@ -22,26 +22,28 @@ type Manager struct {
 	order    []string            // topological load order
 	disabled sync.Map            // id → true for disabled plugins (runtime guard)
 
-	db           *gorm.DB
-	router       *gin.RouterGroup // /api/plugins (protected)
-	adminRouter  *gin.RouterGroup // /api/plugins (admin only)
-	publicRouter *gin.RouterGroup // /api/plugins (public, no JWT)
-	eventBus     *EventBus
-	coreAPI      CoreAPI
-	dataDir      string // base data directory
-	logger       *slog.Logger
+	db             *gorm.DB
+	router         *gin.RouterGroup // /api/plugins (protected, any role)
+	operatorRouter *gin.RouterGroup // /api/plugins (operator/admin/owner)
+	adminRouter    *gin.RouterGroup // /api/plugins (admin/owner only)
+	publicRouter   *gin.RouterGroup // /api/plugins (public, no JWT)
+	eventBus       *EventBus
+	coreAPI        CoreAPI
+	dataDir        string // base data directory
+	logger         *slog.Logger
 }
 
 // NewManager creates a plugin Manager.
-func NewManager(db *gorm.DB, router *gin.RouterGroup, adminRouter *gin.RouterGroup, publicRouter *gin.RouterGroup, coreAPI CoreAPI, dataDir string) *Manager {
+func NewManager(db *gorm.DB, router *gin.RouterGroup, operatorRouter *gin.RouterGroup, adminRouter *gin.RouterGroup, publicRouter *gin.RouterGroup, coreAPI CoreAPI, dataDir string) *Manager {
 	logger := slog.Default().With("module", "plugin")
 	return &Manager{
-		plugins:      make(map[string]Plugin),
-		contexts:     make(map[string]*Context),
-		db:           db,
-		router:       router,
-		adminRouter:  adminRouter,
-		publicRouter: publicRouter,
+		plugins:        make(map[string]Plugin),
+		contexts:       make(map[string]*Context),
+		db:             db,
+		router:         router,
+		operatorRouter: operatorRouter,
+		adminRouter:    adminRouter,
+		publicRouter:   publicRouter,
 		eventBus:     NewEventBus(logger),
 		coreAPI:      coreAPI,
 		dataDir:      dataDir,
@@ -101,6 +103,7 @@ func (m *Manager) InitAll() error {
 	// so the guard must be added before any Group() calls.
 	guard := m.PluginGuardMiddleware()
 	m.router.Use(guard)
+	m.operatorRouter.Use(guard)
 	m.adminRouter.Use(guard)
 	m.publicRouter.Use(guard)
 
@@ -122,14 +125,16 @@ func (m *Manager) InitAll() error {
 
 		// Create a sub-router under /api/plugins/{id}
 		pluginRouter := m.router.Group("/" + id)
+		operatorPluginRouter := m.operatorRouter.Group("/" + id)
 		adminPluginRouter := m.adminRouter.Group("/" + id)
 		publicPluginRouter := m.publicRouter.Group("/" + id)
 
 		ctx := &Context{
-			DB:           m.db,
-			Router:       pluginRouter,
-			AdminRouter:  adminPluginRouter,
-			PublicRouter: publicPluginRouter,
+			DB:             m.db,
+			Router:         pluginRouter,
+			OperatorRouter: operatorPluginRouter,
+			AdminRouter:    adminPluginRouter,
+			PublicRouter:   publicPluginRouter,
 			EventBus:     m.eventBus,
 			Logger:       m.logger.With("plugin", id),
 			DataDir:      pluginDataDir,

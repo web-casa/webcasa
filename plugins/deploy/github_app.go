@@ -68,7 +68,7 @@ func (g *GitHubAppAuth) GetInstallationToken(jwt string, installationID int64) (
 	}
 	defer resp.Body.Close()
 
-	body, _ := io.ReadAll(resp.Body)
+	body, _ := io.ReadAll(io.LimitReader(resp.Body, 10*1024*1024))
 	if resp.StatusCode != http.StatusCreated {
 		return "", fmt.Errorf("GitHub API error (%d): %s", resp.StatusCode, string(body))
 	}

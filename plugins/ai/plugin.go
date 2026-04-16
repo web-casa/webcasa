@@ -82,7 +82,7 @@ func (p *Plugin) Init(ctx *pluginpkg.Context) error {
 	a := ctx.AdminRouter  // admin-only
 
 	// Config (read + admin mutations)
-	r.GET("/config", p.handler.GetConfig)
+	a.GET("/config", p.handler.GetConfig) // admin only — contains API keys
 	r.GET("/presets", p.handler.GetPresets)
 	a.PUT("/config", p.handler.UpdateConfig)
 	a.POST("/config/test", p.handler.TestConnection)

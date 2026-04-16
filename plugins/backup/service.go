@@ -176,11 +176,14 @@ func (s *Service) UpdateConfig(req *UpdateConfigRequest) (*BackupConfig, error) 
 		}
 		updates["cron_expr"] = req.CronExpr
 	}
-	if req.RetainCount > 0 {
-		updates["retain_count"] = req.RetainCount
+	if req.RetainCount != nil {
+		updates["retain_count"] = *req.RetainCount
 	}
-	if req.RetainDays > 0 {
-		updates["retain_days"] = req.RetainDays
+	if req.RetainDays != nil {
+		updates["retain_days"] = *req.RetainDays
+	}
+	if req.RetainMaxSizeMB != nil {
+		updates["retain_max_size_mb"] = *req.RetainMaxSizeMB
 	}
 	if len(req.Scopes) > 0 {
 		validScopes := map[string]bool{"panel": true, "docker": true, "database": true}
@@ -338,7 +341,85 @@ func (s *Service) RunBackup(trigger string) (*BackupSnapshot, error) {
 	s.addLog(snapshot.ID, "info", fmt.Sprintf("Backup completed in %.1fs (snapshot: %s)", duration, snapshotID))
 	s.logger.Info("backup completed", "snapshot", snapshotID, "duration", duration)
 
+	// Enforce retention policy (count, age, total size).
+	s.enforceRetention(cfg)
+
 	return snapshot, nil
+}
+
+// enforceRetention deletes old snapshots based on the retention policy.
+func (s *Service) enforceRetention(cfg *BackupConfig) {
+	var snapshots []BackupSnapshot
+	s.db.Where("status = ?", "completed").Order("created_at DESC").Find(&snapshots)
+	if len(snapshots) == 0 {
+		return
+	}
+
+	toDelete := make(map[uint]bool)
+
+	// 1. Count-based: keep only the latest N.
+	if cfg.RetainCount > 0 && len(snapshots) > cfg.RetainCount {
+		for _, snap := range snapshots[cfg.RetainCount:] {
+			toDelete[snap.ID] = true
+		}
+	}
+
+	// 2. Age-based: delete older than N days.
+	if cfg.RetainDays > 0 {
+		cutoff := time.Now().AddDate(0, 0, -cfg.RetainDays)
+		for _, snap := range snapshots {
+			if snap.CreatedAt.Before(cutoff) {
+				toDelete[snap.ID] = true
+			}
+		}
+	}
+
+	// 3. Size-based: delete oldest until total size is under limit.
+	if cfg.RetainMaxSizeMB > 0 {
+		maxBytes := int64(cfg.RetainMaxSizeMB) * 1024 * 1024
+		var totalSize int64
+		for _, snap := range snapshots {
+			if toDelete[snap.ID] {
+				continue
+			}
+			totalSize += snap.SizeBytes
+		}
+		if totalSize > maxBytes {
+			// Delete from oldest (end of sorted list) until under limit.
+			for i := len(snapshots) - 1; i >= 0 && totalSize > maxBytes; i-- {
+				snap := snapshots[i]
+				if toDelete[snap.ID] {
+					continue
+				}
+				toDelete[snap.ID] = true
+				totalSize -= snap.SizeBytes
+			}
+		}
+	}
+
+	// Execute deletions — remove from both Kopia and DB.
+	// Only delete DB record after Kopia deletion succeeds to avoid orphans.
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
+	defer cancel()
+	deleted := 0
+	for id := range toDelete {
+		var snap BackupSnapshot
+		if s.db.First(&snap, id).Error != nil {
+			continue
+		}
+		if snap.SnapshotID != "" {
+			if err := s.kopia.DeleteSnapshot(ctx, snap.SnapshotID); err != nil {
+				s.logger.Warn("retention: skipping snapshot (Kopia delete failed)", "snapshot_id", snap.SnapshotID, "err", err)
+				continue // keep DB row so it can be retried
+			}
+		}
+		s.db.Where("snapshot_id = ?", id).Delete(&BackupLog{})
+		s.db.Delete(&BackupSnapshot{}, id)
+		deleted++
+	}
+	if deleted > 0 {
+		s.logger.Info("retention policy enforced", "deleted", deleted)
+	}
 }
 
 // RestoreSnapshot restores from a snapshot.

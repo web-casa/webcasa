@@ -138,7 +138,7 @@ func (h *TemplateHandler) Import(c *gin.Context) {
 	file, _, err := c.Request.FormFile("file")
 	if err != nil {
 		// Fallback: try reading raw JSON body
-		body, readErr := io.ReadAll(c.Request.Body)
+		body, readErr := io.ReadAll(io.LimitReader(c.Request.Body, 1024*1024)) // 1MB cap
 		if readErr != nil || len(body) == 0 {
 			c.JSON(http.StatusBadRequest, gin.H{"error": "No file uploaded", "error_key": "error.invalid_request"})
 			return
@@ -154,7 +154,7 @@ func (h *TemplateHandler) Import(c *gin.Context) {
 	}
 	defer file.Close()
 
-	data, err := io.ReadAll(file)
+	data, err := io.ReadAll(io.LimitReader(file, 1024*1024)) // 1MB cap
 	if err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "Failed to read file", "error_key": "error.invalid_request"})
 		return

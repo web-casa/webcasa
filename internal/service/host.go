@@ -3,6 +3,7 @@ package service
 import (
 	"fmt"
 	"log"
+	"strings"
 	"time"
 
 	"github.com/web-casa/webcasa/internal/caddy"
@@ -120,6 +121,19 @@ func (s *HostService) Create(req *model.HostCreateRequest) (*model.Host, error) 
 	s.db.Model(&model.Host{}).Where("domain = ?", req.Domain).Count(&count)
 	if count > 0 {
 		return nil, fmt.Errorf("domain '%s' already exists", req.Domain)
+	}
+
+	// Optional DNS pre-validation: warn if domain doesn't resolve to this server.
+	// Runs in a goroutine to avoid blocking the request on slow DNS lookups.
+	var dnsVerify model.Setting
+	if s.db.Where("key = ?", "dns_verify_on_create").First(&dnsVerify).Error == nil && dnsVerify.Value == "true" {
+		go func(domain string) {
+			dnsChecker := NewDnsCheckService(s.db)
+			dnsResult, _ := dnsChecker.Check(domain)
+			if dnsResult != nil && dnsResult.Status == "mismatched" {
+				log.Printf("DNS warning: domain '%s' does not resolve to this server (records: %v)", domain, dnsResult.ARecords)
+			}
+		}(req.Domain)
 	}
 
 	hostType := stringOrDefault(req.HostType, "proxy")
@@ -516,7 +530,8 @@ func (s *HostService) Toggle(id uint) (*model.Host, error) {
 	if err := s.ApplyConfig(); err != nil {
 		return nil, fmt.Errorf("host toggled but Caddy config failed: %w", err)
 	}
-	return host, nil
+	// Return a fresh read so all associations and *bool fields are properly loaded.
+	return s.Get(id)
 }
 
 // ApplyConfig regenerates the Caddyfile and reloads Caddy
@@ -568,7 +583,7 @@ func (s *HostService) ApplyConfig() error {
 
 	if autoReload {
 		if s.caddyMgr.IsRunning() {
-			if err := s.caddyMgr.Reload(); err != nil {
+			if err := s.caddyMgr.RequestReload(); err != nil {
 				// Rollback: restore old Caddyfile so Caddy stays on the last known-good config.
 				if oldContent != "" {
 					if wErr := s.caddyMgr.WriteCaddyfile(oldContent); wErr != nil {
@@ -936,6 +951,34 @@ func copyBoolPtr(ptr *bool) *bool {
 	}
 	v := *ptr
 	return &v
+}
+
+// GenerateWildcardDomain creates a subdomain under the configured wildcard domain.
+// Returns empty string if wildcard_domain is not configured.
+// Sanitizes appName to be a valid DNS label (lowercase, alphanumeric + hyphens).
+func (s *HostService) GenerateWildcardDomain(appName string) string {
+	var setting model.Setting
+	if s.db.Where("key = ?", "wildcard_domain").First(&setting).Error != nil || setting.Value == "" {
+		return ""
+	}
+	// Sanitize appName as DNS label: lowercase, only [a-z0-9-], max 63 chars.
+	label := strings.Map(func(r rune) rune {
+		if (r >= 'a' && r <= 'z') || (r >= '0' && r <= '9') || r == '-' {
+			return r
+		}
+		if r >= 'A' && r <= 'Z' {
+			return r + 32 // lowercase
+		}
+		return '-'
+	}, appName)
+	if len(label) > 63 {
+		label = label[:63]
+	}
+	label = strings.Trim(label, "-") // trim after truncation to avoid trailing hyphens
+	if label == "" {
+		return ""
+	}
+	return label + "." + setting.Value
 }
 
 // uintPtrOrNil returns nil if the pointer is nil or points to 0 (treat 0 as "no value").

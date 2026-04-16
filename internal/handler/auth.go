@@ -100,6 +100,7 @@ func (h *AuthHandler) Setup(c *gin.Context) {
 	user := model.User{
 		Username: req.Username,
 		Password: hashed,
+		Role:     "owner", // First user is always owner
 	}
 
 	if err := h.db.Create(&user).Error; err != nil {

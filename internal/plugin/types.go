@@ -38,15 +38,16 @@ type Metadata struct {
 
 // Context is the runtime context provided to plugins during Init.
 type Context struct {
-	DB           *gorm.DB         // database connection (use plugin-prefixed tables)
-	Router       *gin.RouterGroup // API route group: /api/plugins/{id}/ (requires JWT)
-	AdminRouter  *gin.RouterGroup // API route group: /api/plugins/{id}/ (requires JWT + admin role)
-	PublicRouter *gin.RouterGroup // public API route group: /api/plugins/{id}/ (no JWT)
-	EventBus     *EventBus        // publish/subscribe event bus
-	Logger       *slog.Logger     // structured logger with plugin ID prefix
-	DataDir      string           // plugin-specific data directory
-	ConfigStore  *ConfigStore     // plugin configuration reader/writer
-	CoreAPI      CoreAPI          // access to core panel functionality
+	DB              *gorm.DB         // database connection (use plugin-prefixed tables)
+	Router          *gin.RouterGroup // API route group: /api/plugins/{id}/ (requires JWT, any role)
+	OperatorRouter  *gin.RouterGroup // API route group: /api/plugins/{id}/ (requires JWT + operator/admin/owner)
+	AdminRouter     *gin.RouterGroup // API route group: /api/plugins/{id}/ (requires JWT + admin/owner)
+	PublicRouter    *gin.RouterGroup // public API route group: /api/plugins/{id}/ (no JWT)
+	EventBus        *EventBus        // publish/subscribe event bus
+	Logger          *slog.Logger     // structured logger with plugin ID prefix
+	DataDir         string           // plugin-specific data directory
+	ConfigStore     *ConfigStore     // plugin configuration reader/writer
+	CoreAPI         CoreAPI          // access to core panel functionality
 }
 
 // CoreAPI exposes core panel functionality to plugins.

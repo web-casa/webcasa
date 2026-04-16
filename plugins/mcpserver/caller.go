@@ -53,7 +53,7 @@ func (c *InternalCaller) Call(method, path string, body interface{}, token strin
 	}
 	defer resp.Body.Close()
 
-	data, err := io.ReadAll(resp.Body)
+	data, err := io.ReadAll(io.LimitReader(resp.Body, 10*1024*1024))
 	if err != nil {
 		return nil, fmt.Errorf("read response: %w", err)
 	}
@@ -111,7 +111,7 @@ func (c *InternalCaller) PostSSE(path string, body interface{}, token string) (s
 	defer resp.Body.Close()
 
 	if resp.StatusCode >= 400 {
-		data, _ := io.ReadAll(resp.Body)
+		data, _ := io.ReadAll(io.LimitReader(resp.Body, 10*1024*1024))
 		return "", fmt.Errorf("API error %d: %s", resp.StatusCode, string(data))
 	}
 

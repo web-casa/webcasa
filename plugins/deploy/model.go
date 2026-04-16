@@ -25,6 +25,9 @@ type Project struct {
 	EnvVars       string    `gorm:"type:text" json:"-"`        // JSON-encoded env vars (encrypted)
 	ErrorMsg      string    `gorm:"type:text" json:"error_msg"`
 
+	// Build type: auto-detect or explicit builder selection
+	BuildType     string `gorm:"size:32;default:''" json:"build_type"` // dockerfile, nixpacks, paketo, railpack, static, auto, "" (legacy)
+
 	// Deploy mode: bare (systemd) or docker (container)
 	DeployMode    string `gorm:"size:16;default:bare" json:"deploy_mode"` // bare | docker
 	DockerImage   string `gorm:"size:255" json:"docker_image,omitempty"` // e.g. webcasa-project-5:3
@@ -32,9 +35,13 @@ type Project struct {
 	ContainerName string `gorm:"size:128" json:"container_name,omitempty"`
 
 	// Health check settings
-	HealthCheckPath    string `gorm:"size:255;default:/" json:"health_check_path"`
-	HealthCheckTimeout int    `gorm:"default:30" json:"health_check_timeout"` // seconds
-	HealthCheckRetries int    `gorm:"default:3" json:"health_check_retries"`
+	HealthCheckPath        string `gorm:"size:255;default:/" json:"health_check_path"`
+	HealthCheckTimeout     int    `gorm:"default:30" json:"health_check_timeout"`      // seconds
+	HealthCheckRetries     int    `gorm:"default:3" json:"health_check_retries"`
+	HealthCheckMethod      string `gorm:"size:8;default:GET" json:"health_check_method"`       // GET, HEAD, POST
+	HealthCheckExpectCode  int    `gorm:"default:0" json:"health_check_expect_code"`            // 0 = any 2xx
+	HealthCheckExpectBody  string `gorm:"size:512" json:"health_check_expect_body"`             // response must contain this text
+	HealthCheckStartPeriod int    `gorm:"default:0" json:"health_check_start_period"`           // seconds to wait before first check
 
 	// Resource limits
 	MemoryLimit  int `gorm:"default:0" json:"memory_limit"`  // MB, 0 = unlimited
@@ -50,6 +57,14 @@ type Project struct {
 	// GitHub OAuth fields (used when auth_method = "github_oauth")
 	GitHubOAuthInstallID uint   `gorm:"default:0" json:"github_oauth_install_id"` // FK to GitHubInstallation
 	GitHubRepoFullName   string `gorm:"size:255" json:"github_repo_full_name"`    // e.g. "owner/repo"
+
+	// Webhook HMAC secret for signature verification
+	WebhookSecret string `gorm:"size:128" json:"-"` // HMAC secret, never exposed
+
+	// Preview deployment settings
+	PreviewEnabled bool   `gorm:"default:false" json:"preview_enabled"`
+	PreviewExpiry  int    `gorm:"default:7" json:"preview_expiry"` // days
+	GitHubToken    string `gorm:"size:512" json:"-"`               // encrypted, for PR comments
 
 	CreatedAt     time.Time `json:"created_at"`
 	UpdatedAt     time.Time `json:"updated_at"`
@@ -81,11 +96,30 @@ type Deployment struct {
 	LogFile         string    `gorm:"size:512" json:"log_file"`
 	Duration        int       `json:"duration"` // seconds
 	DiagnosisResult string    `gorm:"type:text" json:"diagnosis_result,omitempty"` // AI diagnosis of build failure
+	ImageTag        string    `gorm:"size:128" json:"image_tag,omitempty"`          // Docker image tag for rollback
 	CreatedAt       time.Time `json:"created_at"`
 }
 
 func (Deployment) TableName() string {
 	return "plugin_deploy_deployments"
+}
+
+// PreviewDeployment tracks an ephemeral deployment created from a GitHub PR.
+type PreviewDeployment struct {
+	ID            uint      `gorm:"primaryKey" json:"id"`
+	ProjectID     uint      `gorm:"index;not null" json:"project_id"`
+	PRNumber      int       `gorm:"not null" json:"pr_number"`
+	Branch        string    `gorm:"size:128" json:"branch"`
+	Domain        string    `gorm:"size:255" json:"domain"`
+	ContainerName string    `gorm:"size:128" json:"container_name"`
+	HostID        uint      `gorm:"default:0" json:"host_id"`
+	Status        string    `gorm:"size:16;default:running" json:"status"` // running, stopped, error
+	CreatedAt     time.Time `json:"created_at"`
+	ExpiresAt     time.Time `json:"expires_at"`
+}
+
+func (PreviewDeployment) TableName() string {
+	return "plugin_deploy_preview_deployments"
 }
 
 // FrameworkPreset holds auto-detected build configuration for known frameworks.
