@@ -6,6 +6,49 @@
 
 ---
 
+## [0.10.0] - 2026-04-16
+
+### v2.0 Roadmap — 19 Features + RBAC Overhaul
+
+基于 Coolify / CapRover / Dokku / Dokploy 四竞品分析，实施 4 个 Phase 的功能升级。
+
+#### Phase 1: 安全与性能基础
+- **Webhook HMAC 签名验证** — GitHub SHA-256 + GitLab token，加密存储 secret
+- **SSRF 防护** — 4 层 URL 验证 + DNS rebinding 防护 (SafeDialContext) + 重定向禁用
+- **三层配置回退** — Host → Global Settings → 内置默认值
+- **Caddy Reload 合并** — 500ms debounce，fan-out 多调用者
+
+#### Phase 2: 部署可靠性
+- **构建队列合并** — 同项目构建自动合并，超时重入队
+- **容器状态聚合** — 6 级优先级状态机 (degraded/restarting/running/paused/starting/stopped)
+- **健康检查增强** — HTTP method + 预期状态码 + 响应体匹配 + 启动等待期
+- **备份保留策略** — 数量 + 天数 + 总大小三维自动清理
+- **镜像级回滚** — 部署成功时 tag 镜像，回滚秒级切换
+
+#### Phase 3: 用户体验与权限
+- **四级 RBAC** — owner / admin / operator / viewer 角色层级
+- **DNS 解析预验证** — 创建 Host 时异步检查域名指向
+- **通配符子域名** — wildcard_domain 设置 + DNS label 清洗
+- **多构建器** — Dockerfile / Nixpacks / Paketo / Railpack / Static，自动检测
+
+#### Phase 4: 架构扩展
+- **Preview 部署模型** — GitHub PR 临时环境（pending/running/expired 生命周期）
+- **异步任务队列** — Valkey/内存 fallback，bounded worker pool + graceful shutdown
+- **多代理抽象** — ProxyBackend 接口 + CaddyBackend 适配器
+- **通知接口重构** — Notification 接口 + BaseNotification 默认实现
+
+#### 权限系统全面重构
+- 插件框架新增 OperatorRouter（3 级路由：Router / OperatorRouter / AdminRouter）
+- 敏感路由提权：settings / audit / export / certs / users / AI config → adminOnly
+- 操作类路由：deploy build/start/stop + docker container/stack ops + caddy control → operatorOnly
+- Deploy env_vars 对非 admin 用户脱敏
+- Owner 账户保护（密码/角色/删除均需 owner 权限）
+- PluginGuardMiddleware 覆盖所有 4 个路由组
+- 所有 io.ReadAll 加 LimitReader 上限
+- 文件管理器默认根路径改为 /
+
+---
+
 ## [0.9.5] - 2026-03-20
 
 ### Security — 全量安全审查与加固
