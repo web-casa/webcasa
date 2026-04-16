@@ -459,26 +459,25 @@ jobs:
 
       - name: 'Test: File Manager CRUD'
         run: |
-          # File Manager default root_path is /home. Paths in the API are
-          # relative to that root. Use "runner/ci-fm-test" so the absolute
-          # path becomes /home/runner/ci-fm-test (writable by the runner user).
+          # File Manager default root_path is /. Paths in the API are
+          # relative to that root. Use "/tmp/ci-fm-test" for writable test directory.
 
           # mkdir
           curl -sf -X POST http://localhost:$PANEL_PORT/api/plugins/filemanager/mkdir \
             -H "Authorization: Bearer $TOKEN" \
             -H 'Content-Type: application/json' \
-            -d '{"path":"runner/ci-fm-test"}' | jq -e '.status == "ok"' > /dev/null
+            -d '{"path":"tmp/ci-fm-test"}' | jq -e '.status == "ok"' > /dev/null
           echo "  mkdir OK"
 
           # write
           curl -sf -X POST http://localhost:$PANEL_PORT/api/plugins/filemanager/write \
             -H "Authorization: Bearer $TOKEN" \
             -H 'Content-Type: application/json' \
-            -d '{"path":"runner/ci-fm-test/hello.txt","content":"CI Test Content"}' | jq -e '.status == "ok"' > /dev/null
+            -d '{"path":"tmp/ci-fm-test/hello.txt","content":"CI Test Content"}' | jq -e '.status == "ok"' > /dev/null
           echo "  write OK"
 
           # read
-          CONTENT=$(curl -sf "http://localhost:$PANEL_PORT/api/plugins/filemanager/read?path=runner/ci-fm-test/hello.txt" \
+          CONTENT=$(curl -sf "http://localhost:$PANEL_PORT/api/plugins/filemanager/read?path=tmp/ci-fm-test/hello.txt" \
             -H "Authorization: Bearer $TOKEN" | jq -r '.content')
           [ "$CONTENT" = "CI Test Content" ] || exit 1
           echo "  read OK"
@@ -487,11 +486,11 @@ jobs:
           curl -sf -X POST http://localhost:$PANEL_PORT/api/plugins/filemanager/rename \
             -H "Authorization: Bearer $TOKEN" \
             -H 'Content-Type: application/json' \
-            -d '{"old_path":"runner/ci-fm-test/hello.txt","new_path":"runner/ci-fm-test/renamed.txt"}' | jq -e '.status == "ok"' > /dev/null
+            -d '{"old_path":"tmp/ci-fm-test/hello.txt","new_path":"tmp/ci-fm-test/renamed.txt"}' | jq -e '.status == "ok"' > /dev/null
           echo "  rename OK"
 
           # info
-          NAME=$(curl -sf "http://localhost:$PANEL_PORT/api/plugins/filemanager/info?path=runner/ci-fm-test/renamed.txt" \
+          NAME=$(curl -sf "http://localhost:$PANEL_PORT/api/plugins/filemanager/info?path=tmp/ci-fm-test/renamed.txt" \
             -H "Authorization: Bearer $TOKEN" | jq -r '.name')
           [ "$NAME" = "renamed.txt" ] || exit 1
           echo "  info OK"
@@ -500,7 +499,7 @@ jobs:
           curl -sf -X DELETE http://localhost:$PANEL_PORT/api/plugins/filemanager/delete \
             -H "Authorization: Bearer $TOKEN" \
             -H 'Content-Type: application/json' \
-            -d '{"paths":["runner/ci-fm-test"]}' | jq -e '.status == "ok"' > /dev/null
+            -d '{"paths":["tmp/ci-fm-test"]}' | jq -e '.status == "ok"' > /dev/null
           echo "  delete OK"
 
           echo "✅ File Manager CRUD passed"
