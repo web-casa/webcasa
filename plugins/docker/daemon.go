@@ -136,7 +136,16 @@ func WriteDaemonConfigRaw(data []byte) error {
 	return nil
 }
 
-// RestartDockerDaemon restarts the Docker daemon via systemctl.
+// RestartDockerDaemon restarts the container runtime's systemd unit to pick
+// up daemon.json changes. Under Podman (v0.12 default), this restarts
+// podman.socket — /etc/docker/daemon.json itself is ignored by Podman, so
+// the restart mostly serves as a "we tried" signal for future work that
+// translates managed fields into Podman's containers/storage config. Under
+// Docker (legacy), restarts the docker service.
 func RestartDockerDaemon() error {
-	return exec.Command("systemctl", "restart", "docker").Run()
+	unit := DetectRuntime().SystemdUnit()
+	if unit == "" {
+		return fmt.Errorf("no container runtime detected; cannot restart daemon")
+	}
+	return exec.Command("systemctl", "restart", unit).Run()
 }

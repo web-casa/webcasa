@@ -193,8 +193,16 @@ func (p *Plugin) dockerStatus(c *gin.Context) {
 	installed := false
 	version := ""
 
-	// Check if docker binary is installed.
-	if path, err := exec.LookPath("docker"); err == nil && path != "" {
+	// Check if a container runtime is reachable via the docker CLI. Under
+	// v0.12 this is Podman via the podman-docker shim; detecting Podman
+	// directly lets us surface accurate version strings without shelling
+	// out twice.
+	if DetectRuntime() != RuntimeUnknown {
+		installed = true
+		version = RuntimeVersion()
+	} else if path, err := exec.LookPath("docker"); err == nil && path != "" {
+		// Legacy fallback: unknown runtime but docker CLI exists (e.g. a
+		// third-party wrapper). Keep the original behaviour.
 		installed = true
 		if out, err := exec.Command("docker", "--version").Output(); err == nil {
 			version = strings.TrimSpace(string(out))
@@ -260,9 +268,22 @@ func (p *Plugin) installDocker(c *gin.Context) {
 		c.Writer.Flush()
 	}
 
-	// Quick check: if Docker and Compose are already installed and daemon is running,
-	// just reconnect the plugin and skip the EasyDocker script entirely.
+	// Quick check: if the runtime is already installed and reachable, skip
+	// the EasyDocker script entirely. Under v0.12 Podman is pre-installed
+	// by install.sh, so this is the normal path.
 	if p.checkDockerAlreadyReady(writeSSE, writeEvent) {
+		return
+	}
+
+	// EasyDocker only makes sense when real Docker is the target runtime.
+	// If Podman is detected but unreachable we treat it as a configuration
+	// issue (socket not started, permissions) rather than something fixable
+	// by re-running Docker's installer.
+	if DetectRuntime() == RuntimePodman {
+		writeSSE("Podman is installed but the plugin could not reach its socket.")
+		writeSSE("Check: systemctl status podman.socket")
+		writeSSE("Check: groups $USER (WebCasa needs to be in the 'podman' group)")
+		writeEvent("error", "podman installed but unreachable — refusing to run Docker installer under Podman runtime")
 		return
 	}
 
@@ -361,10 +382,18 @@ func (p *Plugin) checkDockerAlreadyReady(writeSSE func(string), writeEvent func(
 
 	// Check daemon is running by trying to connect
 	if !p.tryReconnect() {
-		// Daemon binary exists but isn't running — try to start it
-		writeSSE("Docker is installed but not running. Starting Docker service...")
-		if startErr := exec.Command("systemctl", "start", "docker").Run(); startErr != nil {
-			return false // couldn't start, let EasyDocker handle it
+		// Daemon binary exists but socket isn't reachable — try to start
+		// the runtime's systemd unit. Podman (v0.12 default) uses
+		// podman.socket; Docker (legacy) uses docker. Unknown runtime =
+		// nothing to try.
+		unit := DetectRuntime().SystemdUnit()
+		if unit == "" {
+			return false
+		}
+		writeSSE(fmt.Sprintf("%s is installed but socket is not reachable. Starting %s ...",
+			DetectRuntime(), unit))
+		if startErr := exec.Command("systemctl", "start", unit).Run(); startErr != nil {
+			return false // couldn't start, let EasyDocker handle it (docker path only)
 		}
 		// Wait a moment and retry
 		time.Sleep(2 * time.Second)
