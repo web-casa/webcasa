@@ -15,7 +15,7 @@
 #    --uninstall             Remove WebCasa (keeps data by default)
 #    --purge                 Remove WebCasa and all data
 #    --no-caddy              Skip Caddy installation
-#    --no-docker             Skip Docker group setup
+#    --no-podman             Skip Podman install (expert; WebCasa will fail until Podman is manually set up)
 #    --port PORT             Set panel port (default: 39921)
 #    --from-source           Build from source instead of downloading pre-built binary
 #    --upgrade               Upgrade to latest version (pre-built binary)
@@ -57,7 +57,7 @@ CONFIG_DIR="/etc/webcasa"
 SERVICE_USER="webcasa"
 PANEL_PORT="39921"
 SKIP_CADDY=false
-SKIP_DOCKER_GROUP=false
+SKIP_PODMAN=false
 UNINSTALL=false
 PURGE=false
 NON_INTERACTIVE=false
@@ -192,7 +192,7 @@ parse_args() {
             --uninstall)    UNINSTALL=true; shift ;;
             --purge)        PURGE=true; UNINSTALL=true; shift ;;
             --no-caddy)     SKIP_CADDY=true; shift ;;
-            --no-docker)    SKIP_DOCKER_GROUP=true; shift ;;
+            --no-podman)    SKIP_PODMAN=true; shift ;;
             --port)         PANEL_PORT="$2"; shift 2 ;;
             --from-source)  FROM_SOURCE=true; shift ;;
             --upgrade)      UPGRADE=true; shift ;;
@@ -216,7 +216,7 @@ Options:
   --uninstall      Remove Web.Casa (keeps data)
   --purge          Remove Web.Casa and all data
   --no-caddy       Skip Caddy installation
-  --no-docker      Skip Docker group setup
+  --no-podman      Skip Podman installation (expert mode; manual runtime required)
   --port PORT      Set panel port (default: 39921)
   --from-source              Build from source (requires Go + Node.js)
   --upgrade                  Upgrade to latest version (pre-built binary)
@@ -266,13 +266,44 @@ do_uninstall() {
         rm -rf "$DATA_DIR"
         rm -rf "$LOG_DIR"
         rm -rf "$CONFIG_DIR"
-        # Remove docker group membership
+        # Remove podman group membership (v0.12+); also drop stale docker group
+        # membership in case the user ran an earlier version.
         if id "$SERVICE_USER" &>/dev/null; then
+            gpasswd -d "$SERVICE_USER" podman 2>/dev/null || true
             gpasswd -d "$SERVICE_USER" docker 2>/dev/null || true
         fi
         userdel -r "$SERVICE_USER" 2>/dev/null || true
         groupdel "$SERVICE_USER" 2>/dev/null || true
         rm -f /etc/sudoers.d/webcasa
+        # Our podman.socket drop-in + nodocker marker are WebCasa-specific.
+        # podman / podman-compose packages themselves are left installed for
+        # sysadmins who want to keep using the container runtime.
+        rm -f /etc/systemd/system/podman.socket.d/10-webcasa-group.conf
+        rmdir /etc/systemd/system/podman.socket.d 2>/dev/null || true
+        rm -f /etc/containers/nodocker
+        systemctl daemon-reload 2>/dev/null || true
+
+        # Remove our /var/run/docker.sock symlink ONLY if it still points
+        # at the Podman socket. If the admin later installed Docker CE or
+        # another runtime, the symlink target will have changed — leave it.
+        if [[ -L /var/run/docker.sock ]]; then
+            local _link_target
+            _link_target=$(readlink /var/run/docker.sock)
+            if [[ "$_link_target" == "/run/podman/podman.sock" ]]; then
+                rm -f /var/run/docker.sock
+                info "Removed /var/run/docker.sock symlink"
+            fi
+        fi
+
+        # Restart podman.socket so the removed drop-in is re-evaluated and
+        # the socket returns to its default (root:root) permissions. Without
+        # this, a running socket keeps its custom SocketGroup=podman mode
+        # 0660 until the next reboot or manual restart.
+        if systemctl is-active --quiet podman.socket 2>/dev/null; then
+            systemctl restart podman.socket 2>/dev/null || true
+            info "Restarted podman.socket (defaults restored)"
+        fi
+
         success "Web.Casa completely removed (including data)"
     else
         info "Data preserved at: $DATA_DIR"
@@ -301,6 +332,122 @@ install_deps() {
             ;;
     esac
     success "Dependencies installed"
+}
+
+# ==================== Install Podman ====================
+# v0.12: Podman replaces Docker as the sole container runtime. Both
+# AlmaLinux 9 and 10 ship Podman 5.6 in AppStream, so the install is
+# identical across OS versions. Docker CLI compatibility is preserved via
+# the podman-docker shim; app-store containers that mount /var/run/docker.sock
+# work transparently via a symlink to /run/podman/podman.sock.
+install_podman() {
+    if $SKIP_PODMAN; then
+        warn "Skipping Podman install (--no-podman). WebCasa container/deploy plugins will fail until a runtime is configured manually."
+        return
+    fi
+
+    # Only rhel-family is supported; Debian/Ubuntu path is unmaintained.
+    if [[ "$OS_FAMILY" != "rhel" ]]; then
+        fatal "v0.12 requires an EL9/EL10-family distro (AlmaLinux / Rocky / RHEL / CentOS Stream / Fedora). Detected OS family: $OS_FAMILY"
+    fi
+
+    step "Installing Podman 5.6 from AppStream"
+
+    local PKG_MGR="dnf"
+    if ! command -v dnf &>/dev/null; then
+        PKG_MGR="yum"
+    fi
+
+    # podman / podman-docker ship in AppStream, but podman-compose is only
+    # in EPEL (not yet in RHEL AppStream as of EL10). Enable EPEL first so
+    # the core install transaction succeeds on a minimal image.
+    # Note: `dnf repoquery` returns 0 even when no packages match — check
+    # for non-empty stdout instead of relying on exit status.
+    if ! $PKG_MGR repoquery --quiet podman-compose 2>/dev/null | grep -q .; then
+        info "podman-compose not in base repos; enabling EPEL ..."
+        $PKG_MGR install -y -q epel-release
+    fi
+
+    # Install the core stack in a single transaction:
+    #   podman          — the container engine
+    #   podman-docker   — /usr/bin/docker shim forwarding to podman
+    #   podman-compose  — Python-based Compose v3 reimplementation (EPEL)
+    $PKG_MGR install -y -q podman podman-docker podman-compose
+
+    # The podman RPM does NOT create a `podman` unix group — the rootful
+    # socket defaults to root:root mode 0600, leaving non-root users locked
+    # out. Create the group ourselves + drop-in so the socket becomes
+    # root:podman mode 0660. The WebCasa service (running as webcasa user)
+    # connects via SupplementaryGroups=podman.
+    if ! getent group podman &>/dev/null; then
+        groupadd -r podman || fatal "Failed to create 'podman' group; cannot proceed (check: tail /var/log/messages)"
+    fi
+    # Post-condition: group must exist now, otherwise SocketGroup=podman in
+    # the drop-in below would leave the socket root:root and webcasa locked out.
+    getent group podman &>/dev/null || fatal "'podman' group missing after groupadd; aborting"
+
+    install -d -m 755 /etc/systemd/system/podman.socket.d
+    cat > /etc/systemd/system/podman.socket.d/10-webcasa-group.conf <<'SOCKCONF'
+# Added by WebCasa install.sh — allow the podman group to access the
+# rootful Podman socket so non-root services (webcasa) can use it.
+[Socket]
+SocketMode=0660
+SocketGroup=podman
+SOCKCONF
+    systemctl daemon-reload
+
+    # Silence "Emulate Docker CLI using podman" motd from podman-docker.
+    install -d -m 755 /etc/containers
+    : > /etc/containers/nodocker
+
+    # Enable + restart the system-wide rootful socket. `enable --now` alone
+    # is a no-op on already-running sockets (e.g. re-running install.sh), so
+    # the drop-in above would not re-chgrp an existing socket. `restart`
+    # forces systemd to tear down and re-create the socket with the new
+    # SocketGroup=podman ownership.
+    systemctl enable podman.socket
+    systemctl restart podman.socket
+
+    # Wait up to 10s for the socket file to appear (systemd is async).
+    for _ in $(seq 1 10); do
+        [[ -S /run/podman/podman.sock ]] && break
+        sleep 1
+    done
+    [[ -S /run/podman/podman.sock ]] || fatal "podman.socket failed to start; check: journalctl -u podman.socket"
+
+    # Docker socket compatibility: app-store containers that bind-mount
+    # /var/run/docker.sock (portainer, dockge, dozzle, ...) continue to
+    # work without modification. Decision tree:
+    #   - no entry at all -> create symlink
+    #   - existing symlink pointing at our Podman socket -> leave (idempotent)
+    #   - existing symlink pointing elsewhere (dead or to another target) ->
+    #     leave with a warning; admin has a non-default setup
+    #   - existing regular file/socket -> leave with a warning; don't clobber
+    install -d -m 755 /var/run
+    if [[ -L /var/run/docker.sock ]]; then
+        local _target
+        _target=$(readlink /var/run/docker.sock)
+        if [[ "$_target" == "/run/podman/podman.sock" ]]; then
+            info "/var/run/docker.sock already points at Podman socket"
+        else
+            warn "/var/run/docker.sock is a symlink to $_target; leaving untouched — app-store containers that mount docker.sock may not work"
+        fi
+    elif [[ -e /var/run/docker.sock ]]; then
+        warn "/var/run/docker.sock exists as a non-symlink (real file/socket); leaving untouched"
+    else
+        ln -sf /run/podman/podman.sock /var/run/docker.sock
+        info "Linked /var/run/docker.sock → /run/podman/podman.sock"
+    fi
+
+    # Smoke-test the podman-docker shim. A failure here points at a broken
+    # package install — surface it immediately rather than downstream.
+    if ! docker version --format '{{.Server.Version}}' &>/dev/null; then
+        fatal "podman-docker shim is installed but 'docker version' failed. Investigate 'podman info' and 'systemctl status podman.socket'."
+    fi
+
+    local podman_ver
+    podman_ver=$(podman version --format '{{.Version}}' 2>/dev/null || echo "unknown")
+    success "Podman ${podman_ver} installed and reachable via docker shim"
 }
 
 # ==================== Install Caddy ====================
@@ -590,16 +737,24 @@ setup_user() {
     step "Setting up system user and directories"
 
     if ! id "$SERVICE_USER" &>/dev/null; then
-        useradd --system --no-create-home --shell /usr/sbin/nologin "$SERVICE_USER"
-        info "Created system user: $SERVICE_USER"
+        # Set HOME to $DATA_DIR (already managed below) so Podman / CLI tools
+        # looking for $HOME/.config/containers don't warn about a missing
+        # /home/webcasa. --no-create-home leaves the directory-create step
+        # below in charge of ownership.
+        useradd --system --no-create-home --home-dir "$DATA_DIR" --shell /usr/sbin/nologin "$SERVICE_USER"
+        info "Created system user: $SERVICE_USER (home: $DATA_DIR)"
     else
         info "User $SERVICE_USER already exists"
     fi
 
-    # Add user to docker group if Docker is installed
-    if ! $SKIP_DOCKER_GROUP && getent group docker &>/dev/null; then
-        usermod -aG docker "$SERVICE_USER" 2>/dev/null || true
-        info "Added $SERVICE_USER to docker group"
+    # Add user to podman group so WebCasa can talk to the rootful Podman socket.
+    # Created unconditionally by the podman RPM; the check stays defensive for
+    # environments where Podman is skipped via --no-podman or pre-existing.
+    if getent group podman &>/dev/null; then
+        usermod -aG podman "$SERVICE_USER" 2>/dev/null || true
+        info "Added $SERVICE_USER to podman group"
+    else
+        warn "podman group not present yet — will be added after install_podman runs"
     fi
 
     mkdir -p "$DATA_DIR"/{backups,web/dist}
@@ -692,8 +847,11 @@ Wants=network-online.target
 
 [Service]
 Type=simple
-User=root
-Group=root
+User=${SERVICE_USER}
+Group=${SERVICE_USER}
+# Grant access to /run/podman/podman.sock (owned root:podman) so the Docker
+# Go SDK + podman-docker CLI shim work without the service running as root.
+SupplementaryGroups=podman
 ExecStart=${INSTALL_DIR}/webcasa-server
 WorkingDirectory=${DATA_DIR}
 Restart=on-failure
@@ -702,13 +860,32 @@ LimitNOFILE=65536
 
 # Environment
 EnvironmentFile=-${CONFIG_DIR}/webcasa.env
+# Route all podman/docker CLI invocations (e.g. shell-outs to 'docker compose')
+# to the rootful system socket. Without this the podman-docker shim forks a
+# per-user rootless engine for the webcasa user — which requires subuid/subgid
+# entries that system accounts lack and would run container workloads with
+# different network/storage semantics than the system daemon.
+Environment=CONTAINER_HOST=unix:///run/podman/podman.sock
+Environment=DOCKER_HOST=unix:///run/podman/podman.sock
 
 # Security
+# NoNewPrivileges MUST stay false: WebCasa forks `caddy start` (see
+# internal/caddy/manager.go) which inherits the systemd sandbox. With
+# NoNewPrivileges=1, Linux ignores file capabilities (setcap) on the
+# Caddy binary — Caddy then fails to bind 80/443 even though it has
+# CAP_NET_BIND_SERVICE in its file capabilities. Until the Caddy
+# management path is split into its own hardened unit, keep this off.
 NoNewPrivileges=false
 PrivateTmp=true
 
-# Caddy needs to bind to privileged ports
+# WebCasa itself listens on a non-privileged port ($PANEL_PORT), but it
+# spawns Caddy via exec.Command("caddy", "start", ...). Grant the
+# capability via ambient set so the forked Caddy can bind 80/443 when
+# the server's file caps are lost to NoNewPrivileges interactions
+# elsewhere. This matches the v0.11 behavior and is the minimal cap
+# needed (no CAP_SYS_ADMIN, no CAP_NET_ADMIN, etc.).
 AmbientCapabilities=CAP_NET_BIND_SERVICE
+CapabilityBoundingSet=CAP_NET_BIND_SERVICE
 
 # Logging
 StandardOutput=journal
@@ -893,10 +1070,14 @@ print_summary() {
     echo ""
     echo -e "  ${BOLD}Included Features:${NC}"
     echo -e "    Reverse Proxy  │  File Manager  │  Web Terminal"
-    echo -e "    Docker Mgmt    │  Project Deploy │  AI Assistant"
+    echo -e "    Container Mgmt │  Project Deploy │  AI Assistant"
     echo ""
-    if ! command -v docker &>/dev/null; then
-        echo -e "  ${YELLOW}Note: Docker is not installed. Install Docker to use Docker management features.${NC}"
+    if command -v podman &>/dev/null; then
+        local _ver
+        _ver=$(podman version --format '{{.Version}}' 2>/dev/null || echo "?")
+        echo -e "  ${BOLD}Container Runtime:${NC} Podman ${_ver} (rootful, socket: /run/podman/podman.sock)"
+    elif $SKIP_PODMAN; then
+        echo -e "  ${YELLOW}Note: Podman install skipped (--no-podman). Container / deploy plugins will be unavailable until a runtime is wired up manually.${NC}"
     fi
     echo -e "  ${YELLOW}First visit: create your admin account at the URL above${NC}"
     echo ""
@@ -914,6 +1095,15 @@ do_upgrade() {
         else
             fatal "WebCasa is not installed. Run install.sh without --upgrade first."
         fi
+    fi
+
+    # v0.12+ depends on Podman. If the existing install predates the
+    # Podman migration (e.g. legacy v0.11 box with docker-ce), upgrading
+    # to a v0.12 binary produces a broken service. Detect and require a
+    # fresh install in that case rather than silently leaving the box in
+    # a mixed state.
+    if ! command -v podman &>/dev/null; then
+        fatal "Podman not detected. WebCasa v0.12+ requires Podman as the sole container runtime.\n  Run install.sh without --upgrade to do a full (re)install, or install Podman manually:\n    dnf install -y podman podman-docker podman-compose"
     fi
 
     # Show current version
@@ -1069,6 +1259,7 @@ main() {
     prompt_port
 
     install_deps
+    install_podman
     install_caddy
     setup_user
 
