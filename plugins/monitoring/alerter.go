@@ -9,6 +9,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/web-casa/webcasa/internal/notify"
 	pluginpkg "github.com/web-casa/webcasa/internal/plugin"
 	"gorm.io/gorm"
 )
@@ -171,8 +172,28 @@ func (a *Alerter) sendWebhook(url string, alert *AlertHistory) error {
 		return err
 	}
 
-	client := &http.Client{Timeout: 10 * time.Second}
-	resp, err := client.Post(url, "application/json", bytes.NewReader(body))
+	// SSRF guard: admin-configured webhook URLs can accidentally (or
+	// intentionally) target loopback / metadata endpoints. Validate the
+	// literal URL and also re-validate at dial time via SafeDialContext
+	// to catch DNS rebinding. Mirrors internal/notify/notifier.go.
+	if err := notify.ValidateWebhookURL(url); err != nil {
+		return fmt.Errorf("alert webhook URL blocked: %w", err)
+	}
+
+	client := &http.Client{
+		Timeout: 10 * time.Second,
+		// Redirects to internal IPs would bypass the URL-level SSRF check.
+		CheckRedirect: func(r *http.Request, via []*http.Request) error {
+			return http.ErrUseLastResponse
+		},
+		Transport: &http.Transport{DialContext: notify.SafeDialContext},
+	}
+	req, err := http.NewRequest(http.MethodPost, url, bytes.NewReader(body))
+	if err != nil {
+		return err
+	}
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := client.Do(req)
 	if err != nil {
 		return err
 	}

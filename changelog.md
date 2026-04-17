@@ -91,6 +91,44 @@
 
 ---
 
+## [Unreleased] — v0.11 HIGH-pattern 举一反三审计修复
+
+基于 Phase 1-4 Codex Review 中 HIGH 类问题的模式提取，对整个代码库做一轮系统性搜索，发现并修复 **2 处相同 class 的 SSRF 缺失**。
+
+### 模式识别
+从已修复的 4 个 HIGH 归纳 4 个 pattern：
+1. defer-based cleanup 与 atomic exit decision 冲突 (Phase 1)
+2. TOCTOU: read DB → 异步 I/O → write DB by ID 无 re-read (Phase 4)
+3. 相同操作的安全策略不一致 (Phase 4 SSH)
+4. **用户可控 URL/输入直接喂给 subprocess/outbound 请求无验证** (Phase 4 GitURL SSRF)
+
+### HIGH: `plugins/monitoring/alerter.go` 告警 webhook 无 SSRF 防护
+- **问题**: `sendWebhook(url, ...)` 直接将 admin 配置的 `AlertRule.NotifyURL` 喂给 `http.Client.Post`，无 URL 校验 / 无 CheckRedirect / 无 SafeDialContext。即使 admin-only 配置路径，`http://169.254.169.254/` 等 metadata endpoint 仍可被 (误) 配置
+- **对比**: 同项目 `internal/notify/notifier.go` 对完全相同场景 (webhook 通知) 有完整三层防护 — 这是 pattern 3 (**不一致的安全策略**) 和 pattern 4 (**未验证 URL**) 的 double hit
+- **修复**:
+  - 调用 `notify.ValidateWebhookURL(url)` 做 URL 层拒绝
+  - `http.Client` 添加 `CheckRedirect` 拒绝重定向 (否则通过 302 到内部 IP 绕过 URL 验证)
+  - `Transport: &http.Transport{DialContext: notify.SafeDialContext}` 做 dial 时二次校验 (防 DNS rebinding)
+- **回归测试**:
+  - `TestSendWebhook_SSRFBlocked` 覆盖 127.0.0.1 / localhost / 169.254.169.254 / [::1] / ftp:// 5 种场景
+  - `TestSendWebhook_PrivateRFC1918Allowed` 确认自托管内网 (10.0.0.5) 仍可用
+
+### MEDIUM: `plugins/ai/{client,embedding}.go` 缺少 redirect/dial SSRF 防护
+- **问题**: admin 配置的 LLM `base_url` 若经 302 跳转到内部 IP，客户端透明跟随 — 泄露 Authorization bearer (API key) 及 prompt 内容到本地网络。同 pattern 4 的 defense-in-depth 版本
+- **修复**: 两个客户端的 `http.Client` 添加 `CheckRedirect` + `Transport{DialContext: notify.SafeDialContext}`。因 baseURL 由 admin 信任配置，不加 URL 层 `ValidateWebhookURL` (过度限制合法公共 API endpoint)
+
+### 其他审计结果 (已判定为非 bug)
+- `internal/queue/queue.go`: defer semaphore release 无 state 一致性问题
+- `internal/caddy/manager.go`: reload coalescing 在 lock 内 swap timer 干净
+- `plugins/backup/service.go` UpdateConfig TOCTOU: admin-only 配置更新，影响限于配置短暂不一致 (非数据丢失)，v0.11 暂不处理
+- `internal/versioncheck/checker.go`: URL 硬编码非用户可控，无 SSRF 向量
+
+### 复盘
+- **Pattern 4** 出现 3 次了 (notify original → Phase 4 git poller → 本次 monitoring + AI)。建议 v0.12 建立**项目约定**: 所有面向用户可配 URL 的 outbound HTTP 客户端 MUST 通过共享 helper 创建。考虑在 `internal/notify/` 加 `NewHardenedHTTPClient(timeout)` 或 `internal/httpclient/` 新包
+- 监控/AI/通知三处 webhook 语义几乎相同但各自独立实现 — 未来重构应合并为单一 HardenedWebhookDispatcher
+
+---
+
 ## [Unreleased] — v0.11 Phase 4 审查修复
 
 基于 Codex Review 发现的 5 个问题修复 (3 HIGH + 2 MEDIUM)。F6 (备份保留地板) 本次 review 无发现。
