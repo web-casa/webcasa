@@ -93,10 +93,26 @@ func buildPostgresCommand(cfg *EngineConfig) string {
 	if cfg.LogMinDurationStatement != nil {
 		args = append(args, fmt.Sprintf("-c log_min_duration_statement=%d", *cfg.LogMinDurationStatement))
 	}
+	if cfg.SynchronousCommit != "" {
+		args = append(args, fmt.Sprintf("-c synchronous_commit=%s", cfg.SynchronousCommit))
+	}
+	if cfg.FullPageWrites != nil {
+		args = append(args, fmt.Sprintf("-c full_page_writes=%s", boolToOnOff(*cfg.FullPageWrites)))
+	}
+	if cfg.Fsync != nil {
+		args = append(args, fmt.Sprintf("-c fsync=%s", boolToOnOff(*cfg.Fsync)))
+	}
 	if len(args) == 0 {
 		return ""
 	}
 	return "postgres " + strings.Join(args, " ")
+}
+
+func boolToOnOff(b bool) string {
+	if b {
+		return "on"
+	}
+	return "off"
 }
 
 // buildRedisCommand builds the full command for Redis (including --requirepass).

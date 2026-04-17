@@ -66,6 +66,15 @@ type Project struct {
 	PreviewExpiry  int    `gorm:"default:7" json:"preview_expiry"` // days
 	GitHubToken    string `gorm:"size:512" json:"-"`               // encrypted, for PR comments
 
+	// Git polling — periodic `git ls-remote` to detect new commits without
+	// requiring a webhook. Complements (does not replace) AutoDeploy/webhooks;
+	// SingleFlight in Build() ensures concurrent webhook + poll triggers
+	// collapse into a single build. Disabled by default.
+	GitPollEnabled     bool       `gorm:"default:false" json:"git_poll_enabled"`
+	GitPollIntervalSec int        `gorm:"default:300" json:"git_poll_interval_sec"` // minimum enforced at 60
+	LastDeployedCommit string     `gorm:"size:64" json:"last_deployed_commit"`
+	LastPolledAt       *time.Time `json:"last_polled_at,omitempty"`
+
 	CreatedAt     time.Time `json:"created_at"`
 	UpdatedAt     time.Time `json:"updated_at"`
 

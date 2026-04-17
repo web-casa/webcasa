@@ -1,7 +1,10 @@
 import { useState, useEffect, useCallback, useRef } from 'react'
-import { Box, Flex, Text, Card, Badge, Heading, Button, Separator, Dialog, TextArea, TextField, Tabs } from '@radix-ui/themes'
-import { Container, Play, Square, RefreshCw, Trash2, FileText, Plus, Download, Server, Search, Radio, Upload, X, Loader2, Star, Settings } from 'lucide-react'
+import { Box, Flex, Text, Card, Badge, Heading, Button, Separator, Dialog, TextArea, TextField, Tabs, Callout, Tooltip } from '@radix-ui/themes'
+import { Container, Play, Square, RefreshCw, Trash2, FileText, Plus, Download, Server, Search, Radio, Upload, X, Loader2, Star, Settings, Wand2, Info } from 'lucide-react'
 import { useNavigate } from 'react-router'
+// composerize is lazy-loaded on button click (see convertDockerRun below) so
+// its transitive deps (composeverter, core-js, yargs-parser, deepmerge) do
+// not bloat the main bundle for users who never open the import flow.
 import { dockerAPI } from '../api/index.js'
 import { useTranslation } from 'react-i18next'
 import DockerRequired from '../components/DockerRequired.jsx'
@@ -284,6 +287,11 @@ export default function DockerOverview() {
                                         <Flex align="center" gap="2">
                                             <Text weight="bold" size="3">{c.name || c.id}</Text>
                                             <Badge color={c.state === 'running' ? 'green' : c.state === 'paused' ? 'orange' : 'gray'} variant="soft" size="1">{c.state}</Badge>
+                                            {c.image_status === 'outdated' && (
+                                                <Tooltip content={t('docker.image_outdated_hint')}>
+                                                    <Badge color="amber" variant="soft" size="1">{t('docker.image_outdated')}</Badge>
+                                                </Tooltip>
+                                            )}
                                         </Flex>
                                         <Flex gap="3">
                                             <Text size="1" color="gray">{c.image}</Text>
@@ -375,8 +383,55 @@ function CreateStackDialog({ open, onClose, onCreated }) {
     const [envFile, setEnvFile] = useState('')
     const [autoStart, setAutoStart] = useState(true)
     const [creating, setCreating] = useState(false)
+    const [activeTab, setActiveTab] = useState('compose')
+    const [dockerRunCmd, setDockerRunCmd] = useState('')
+    const [convertError, setConvertError] = useState(false) // boolean: friendly message shown regardless
+    const [converting, setConverting] = useState(false)
     const composeInputRef = useRef(null)
     const envInputRef = useRef(null)
+
+    // Reset transient dialog state whenever the dialog closes so a user who
+    // cancels a failed conversion does not reopen to a stale docker-run tab
+    // with the failing command and a red error banner still visible.
+    useEffect(() => {
+        if (!open) {
+            setActiveTab('compose')
+            setDockerRunCmd('')
+            setConvertError(false)
+            setConverting(false)
+        }
+    }, [open])
+
+    // Track whether the dialog is still open when an async conversion
+    // completes. Without this, a user who closes the dialog during the
+    // first click (while composerize is lazy-loading) would have the
+    // reset-on-close effect fire, then the deferred setComposeFile /
+    // setActiveTab / setConvertError calls from the still-running
+    // promise would reintroduce stale state on next open.
+    const openRef = useRef(open)
+    useEffect(() => { openRef.current = open }, [open])
+
+    // Dynamically import composerize on first click to keep the main bundle
+    // small for users who never touch this feature. Raw parser errors are
+    // logged to the browser console for developer triage; the UI shows an
+    // i18n-friendly message regardless of the underlying failure mode.
+    const convertDockerRun = async () => {
+        if (!dockerRunCmd.trim() || converting) return
+        setConverting(true)
+        setConvertError(false)
+        try {
+            const { dockerRunToCompose } = await import('../utils/composerize.js')
+            const cleaned = dockerRunToCompose(dockerRunCmd)
+            if (!openRef.current) return // dialog closed while loading — drop result
+            setComposeFile(cleaned)
+            setActiveTab('compose')
+        } catch (e) {
+            console.error('composerize conversion failed:', e)
+            if (openRef.current) setConvertError(true)
+        } finally {
+            if (openRef.current) setConverting(false)
+        }
+    }
 
     const handleCreate = async () => {
         if (!name.trim() || !composeFile.trim()) return
@@ -392,6 +447,7 @@ function CreateStackDialog({ open, onClose, onCreated }) {
             onCreated()
             onClose()
             setName(''); setDescription(''); setComposeFile(''); setEnvFile('')
+            setDockerRunCmd(''); setConvertError(false); setActiveTab('compose')
         } catch (e) {
             alert(e.response?.data?.error || e.message)
         } finally { setCreating(false) }
@@ -420,10 +476,11 @@ function CreateStackDialog({ open, onClose, onCreated }) {
                         <TextField.Root placeholder={t('docker.description_placeholder')} value={description} onChange={(e) => setDescription(e.target.value)} />
                     </Box>
 
-                    <Tabs.Root defaultValue="compose">
+                    <Tabs.Root value={activeTab} onValueChange={setActiveTab}>
                         <Tabs.List>
                             <Tabs.Trigger value="compose">docker-compose.yml</Tabs.Trigger>
                             <Tabs.Trigger value="env">.env</Tabs.Trigger>
+                            <Tabs.Trigger value="docker-run">{t('docker.import_docker_run')}</Tabs.Trigger>
                         </Tabs.List>
                         <Box pt="3">
                             <Tabs.Content value="compose">
@@ -453,6 +510,30 @@ function CreateStackDialog({ open, onClose, onCreated }) {
                                     onChange={(e) => setEnvFile(e.target.value)}
                                     style={{ minHeight: 200, fontFamily: 'monospace', fontSize: '0.85rem' }}
                                 />
+                            </Tabs.Content>
+                            <Tabs.Content value="docker-run">
+                                <Callout.Root color="blue" size="1" mb="2">
+                                    <Callout.Icon><Info size={14} /></Callout.Icon>
+                                    <Callout.Text>{t('docker.import_docker_run_hint')}</Callout.Text>
+                                </Callout.Root>
+                                <TextArea
+                                    placeholder={`docker run -d -p 8080:80 -e FOO=bar -v /data:/data nginx:latest`}
+                                    value={dockerRunCmd}
+                                    onChange={(e) => { setDockerRunCmd(e.target.value); if (convertError) setConvertError(false) }}
+                                    style={{ minHeight: 140, fontFamily: 'monospace', fontSize: '0.85rem' }}
+                                />
+                                {convertError && (
+                                    <Callout.Root color="red" size="1" mt="2">
+                                        <Callout.Icon><X size={14} /></Callout.Icon>
+                                        <Callout.Text>{t('docker.import_docker_run_failed')}</Callout.Text>
+                                    </Callout.Root>
+                                )}
+                                <Flex justify="end" mt="2">
+                                    <Button size="2" disabled={!dockerRunCmd.trim() || converting} onClick={convertDockerRun}>
+                                        {converting ? <Loader2 size={14} className="spin" /> : <Wand2 size={14} />}
+                                        {' '}{t('docker.convert_to_compose')}
+                                    </Button>
+                                </Flex>
                             </Tabs.Content>
                         </Box>
                     </Tabs.Root>

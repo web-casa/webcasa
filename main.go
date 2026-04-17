@@ -136,9 +136,9 @@ func main() {
 	api := r.Group("/api")
 
 	// Public routes (no auth required)
-	loginLimiter := auth.NewRateLimiter(5, 900) // 5 attempts per 15 minutes
+	limiters := auth.NewLimiters()
 	totpSvc := service.NewTOTPService(db, cfg)
-	authH := handler.NewAuthHandler(db, cfg, loginLimiter, totpSvc)
+	authH := handler.NewAuthHandler(db, cfg, limiters, totpSvc)
 	api.POST("/auth/login", authH.Login)
 	api.POST("/auth/setup", authH.Setup)
 	api.GET("/auth/need-setup", authH.NeedSetup)

@@ -8,6 +8,8 @@ import (
 	"net/http"
 	"strings"
 	"time"
+
+	"github.com/web-casa/webcasa/internal/notify"
 )
 
 // ErrEmbeddingsNotSupported indicates the API does not support embeddings.
@@ -22,6 +24,10 @@ type EmbeddingClient struct {
 }
 
 // NewEmbeddingClient creates a new embedding client.
+//
+// Same SSRF-hardening as NewLLMClient: refuses redirects and uses
+// SafeDialContext so a DNS-rebound baseURL cannot leak the Authorization
+// header or request body to a loopback / metadata endpoint.
 func NewEmbeddingClient(baseURL, apiKey, model string) *EmbeddingClient {
 	return &EmbeddingClient{
 		baseURL: strings.TrimRight(baseURL, "/"),
@@ -29,6 +35,10 @@ func NewEmbeddingClient(baseURL, apiKey, model string) *EmbeddingClient {
 		model:   model,
 		httpClient: &http.Client{
 			Timeout: 30 * time.Second,
+			CheckRedirect: func(r *http.Request, via []*http.Request) error {
+				return http.ErrUseLastResponse
+			},
+			Transport: &http.Transport{DialContext: notify.SafeDialContext},
 		},
 	}
 }

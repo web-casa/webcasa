@@ -10,6 +10,7 @@ import (
 	"strconv"
 	"strings"
 
+	webhandler "github.com/web-casa/webcasa/internal/handler"
 	"github.com/gin-gonic/gin"
 )
 
@@ -48,7 +49,8 @@ func (h *Handler) ListApps(c *gin.Context) {
 		}
 	}
 
-	c.JSON(http.StatusOK, result)
+	// Large multilingual payload (often 50KB+); gzip when client accepts.
+	webhandler.SuccessGzipped(c, result)
 }
 
 // GetApp returns a single app with full details (including compose and description).

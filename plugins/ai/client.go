@@ -10,6 +10,8 @@ import (
 	"net/http"
 	"strings"
 	"time"
+
+	"github.com/web-casa/webcasa/internal/notify"
 )
 
 // parseSSEDataLine extracts the data payload from an SSE line.
@@ -53,6 +55,13 @@ func (c *LLMClient) anthropicMessagesURL() string {
 }
 
 // NewLLMClient creates a new LLM client.
+//
+// Defense-in-depth: the admin-configured baseURL goes to an external LLM
+// provider. A legitimate endpoint that returns an HTTP redirect to an
+// internal IP would otherwise leak the Authorization bearer (API key)
+// plus any prompt content into the local network. We refuse redirects
+// and dial through SafeDialContext so DNS rebinding of the baseURL host
+// to a loopback/metadata address also fails closed.
 func NewLLMClient(baseURL, apiKey, model, apiFormat string) *LLMClient {
 	if apiFormat == "" {
 		apiFormat = "openai-chat"
@@ -64,6 +73,10 @@ func NewLLMClient(baseURL, apiKey, model, apiFormat string) *LLMClient {
 		apiFormat: apiFormat,
 		httpClient: &http.Client{
 			Timeout: 5 * time.Minute,
+			CheckRedirect: func(r *http.Request, via []*http.Request) error {
+				return http.ErrUseLastResponse
+			},
+			Transport: &http.Transport{DialContext: notify.SafeDialContext},
 		},
 	}
 }

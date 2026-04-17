@@ -12,6 +12,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/web-casa/webcasa/plugins/deploy"
 	"gorm.io/gorm"
 )
 
@@ -41,7 +42,13 @@ func (sm *SourceManager) ListSources() ([]AppSource, error) {
 }
 
 // AddSource creates a new source and triggers initial sync.
+// Rejects the URL up-front if it fails the SSRF policy so a bad URL
+// doesn't create a DB row that the background updater would then
+// attempt to clone every 6 hours.
 func (sm *SourceManager) AddSource(name, url, branch, kind string) (*AppSource, error) {
+	if err := deploy.ValidateGitRemoteTarget(url); err != nil {
+		return nil, fmt.Errorf("source URL blocked: %w", err)
+	}
 	if branch == "" {
 		branch = "main"
 	}
@@ -186,12 +193,22 @@ func (sm *SourceManager) SourceDir(sourceID uint) string {
 }
 
 // gitSync clones or pulls a Git repo with a 5-minute timeout.
+//
+// SSRF-hardened via deploy.ValidateGitRemoteTarget — admin-added source
+// URLs go through the same scheme allowlist + IP blocklist as the git
+// poller, so a malicious / misconfigured source cannot turn into a
+// recurring internal-network probe every 6 hours.
 func (sm *SourceManager) gitSync(ctx context.Context, url, branch, dir string) error {
+	if err := deploy.ValidateGitRemoteTarget(url); err != nil {
+		return fmt.Errorf("source URL blocked: %w", err)
+	}
+
 	ctx, cancel := context.WithTimeout(ctx, 5*time.Minute)
 	defer cancel()
 
 	if _, err := os.Stat(filepath.Join(dir, ".git")); err == nil {
-		// Already cloned — pull
+		// Already cloned — pull. URL was validated at AddSource/clone time
+		// and stored in .git/config; git pull uses that origin.
 		cmd := exec.CommandContext(ctx, "git", "pull", "--ff-only")
 		cmd.Dir = dir
 		output, err := cmd.CombinedOutput()

@@ -31,6 +31,11 @@ type BackupConfig struct {
 	RetainCount     int       `gorm:"default:10" json:"retain_count"`       // keep latest N snapshots (0=unlimited)
 	RetainDays      int       `gorm:"default:30" json:"retain_days"`        // delete snapshots older than N days (0=unlimited)
 	RetainMaxSizeMB int       `gorm:"default:0" json:"retain_max_size_mb"` // max total backup size in MB (0=unlimited)
+	// MinRetainCount is a safety floor: enforceRetention never deletes a
+	// snapshot if doing so would bring the total below this many completed
+	// snapshots, regardless of age/size rules. Protects against a careless
+	// retain_days shrink (e.g. 30 -> 1) wiping all history. 0 means no floor.
+	MinRetainCount  int       `gorm:"default:1" json:"min_retain_count"`
 	Scopes          JSONArray `gorm:"type:text" json:"scopes"` // ["panel", "docker", "database"]
 	RepoPassword    string    `gorm:"size:256" json:"-"`
 	RepoInitialized bool      `gorm:"default:false" json:"repo_initialized"`
@@ -92,6 +97,7 @@ type UpdateConfigRequest struct {
 	RetainCount     *int     `json:"retain_count"`
 	RetainDays      *int     `json:"retain_days"`
 	RetainMaxSizeMB *int     `json:"retain_max_size_mb"`
+	MinRetainCount  *int     `json:"min_retain_count"`
 	Scopes          []string `json:"scopes"`
 	RepoPassword    string   `json:"repo_password"`
 }

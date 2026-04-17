@@ -307,6 +307,7 @@ export const fileManagerAPI = {
 export const databaseAPI = {
     engines: () => api.get('/plugins/database/engines'),
     presets: () => api.get('/plugins/database/presets'),
+    postgresTuningPresets: () => api.get('/plugins/database/presets/postgres-tuning'),
 
     listInstances: () => api.get('/plugins/database/instances'),
     getInstance: (id) => api.get(`/plugins/database/instances/${id}`),

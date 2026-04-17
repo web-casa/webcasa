@@ -3,7 +3,6 @@ package deploy
 import (
 	"context"
 	"crypto/rand"
-	"errors"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
@@ -15,6 +14,7 @@ import (
 
 	"github.com/web-casa/webcasa/internal/crypto"
 	pluginpkg "github.com/web-casa/webcasa/internal/plugin"
+	"golang.org/x/sync/singleflight"
 	"gorm.io/gorm"
 )
 
@@ -41,10 +41,21 @@ type Service struct {
 	mu         sync.RWMutex
 	activeLogs map[uint]*LogWriter
 
-	// Build queue with coalescing: same-project builds replace queued (not running) ones.
-	buildMu      sync.Mutex
-	buildSems    map[uint]chan struct{}
-	buildPending map[uint]bool // tracks projects with queued builds waiting to run
+	// Build dedup: at most 1 build running + at most 1 pending per project.
+	// Build() is always non-blocking. Concurrent callers during an in-flight
+	// build set buildPending[id]=true and receive ErrBuildCoalesced; when the
+	// current build finishes the pending flag triggers exactly one more run
+	// so the latest code is always eventually built.
+	// buildGroup is defense-in-depth (singleflight guarantees no duplicate
+	// runBuildOnce execution for the same projectID even if inflight tracking
+	// is bypassed).
+	buildMu       sync.Mutex
+	buildInflight map[uint]bool
+	buildPending  map[uint]bool
+	buildGroup    singleflight.Group
+
+	// buildRunner lets tests replace runBuildOnce; nil in production.
+	buildRunner func(projectID uint) error
 
 	// GitHub App auth helper
 	ghApp *GitHubAppAuth
@@ -55,6 +66,9 @@ type Service struct {
 
 	// Cron scheduler
 	cron *CronScheduler
+
+	// Git polling scheduler (opt-in per project; see Project.GitPollEnabled).
+	poller *Poller
 }
 
 // NewService creates a new deploy service.
@@ -79,9 +93,9 @@ func NewService(db *gorm.DB, coreAPI pluginpkg.CoreAPI, eventBus *pluginpkg.Even
 		logger:     logger,
 		dataDir:    dataDir,
 		jwtSecret:  jwtSecret,
-		activeLogs:   make(map[uint]*LogWriter),
-		buildSems:    make(map[uint]chan struct{}),
-		buildPending: make(map[uint]bool),
+		activeLogs:    make(map[uint]*LogWriter),
+		buildInflight: make(map[uint]bool),
+		buildPending:  make(map[uint]bool),
 		ghApp:       &GitHubAppAuth{},
 		configStore: configStore,
 		cron:        NewCronScheduler(db, logger, dataDir),
@@ -92,6 +106,10 @@ func NewService(db *gorm.DB, coreAPI pluginpkg.CoreAPI, eventBus *pluginpkg.Even
 
 	// Migrate plaintext deploy keys to encrypted
 	svc.migrateDeployKeys()
+
+	// Build the poller after the service struct is fully initialised so it
+	// can borrow s.db / s.logger / s.GetGitCredentials.
+	svc.poller = NewPoller(svc)
 
 	return svc
 }
@@ -358,61 +376,90 @@ func (s *Service) CloneEnvVars(sourceID, targetID uint) error {
 	return s.db.Model(&Project{}).Where("id = ?", targetID).Update("env_vars", source.EnvVars).Error
 }
 
-// Build triggers a new build for a project (runs in background goroutine).
-// If a build is already running, queues this request. If a build is already
-// queued, the older queued request is replaced (only the latest version builds).
+// IsBuildInflight reports whether a build goroutine is currently running
+// for this project. Used by the git poller to skip triggering a redundant
+// rebuild while an identical build is already in progress — the pre-fix
+// poller path would set buildPending=true, causing the buildLoop to run
+// runBuildOnce a second time for the same commit after the first finished.
+func (s *Service) IsBuildInflight(projectID uint) bool {
+	s.buildMu.Lock()
+	defer s.buildMu.Unlock()
+	return s.buildInflight[projectID]
+}
+
+// Build triggers a build for a project. Always non-blocking.
+//
+// Semantics:
+//   - Returns nil if a fresh build goroutine was started.
+//   - Returns ErrBuildCoalesced if a build is already running for this project;
+//     a follow-up run is scheduled so the latest source is always eventually built.
+//   - Never waits on semaphores or timers; callers (HTTP handlers, webhooks,
+//     cron, event bus) get an immediate response.
+//
+// Dedup is enforced by a buildInflight flag plus singleflight.Group as
+// defense-in-depth against accidental parallel runBuildOnce execution.
 func (s *Service) Build(projectID uint) error {
 	s.buildMu.Lock()
-	sem, ok := s.buildSems[projectID]
-	if !ok {
-		sem = make(chan struct{}, 1)
-		s.buildSems[projectID] = sem
-	}
-
-	// Try to acquire immediately.
-	select {
-	case sem <- struct{}{}:
+	if s.buildInflight[projectID] {
+		if !s.buildPending[projectID] {
+			s.buildPending[projectID] = true
+			s.logger.Info("build coalesced: queued to run after current finishes", "project_id", projectID)
+		}
 		s.buildMu.Unlock()
-		// Acquired — proceed to build.
-	default:
-		// Another build is running. Check if one is already queued.
+		return ErrBuildCoalesced
+	}
+	s.buildInflight[projectID] = true
+	s.buildMu.Unlock()
+
+	go s.buildLoop(projectID)
+	return nil
+}
+
+// buildLoop runs builds for a project until the pending flag is clear.
+// Guarantees at most one runBuildOnce in flight via singleflight.
+//
+// Exit-race guard: the pending flag check and the buildInflight clear MUST
+// happen under a single lock acquisition. A deferred inflight-clear with an
+// intermediate unlock (earlier implementation) left a window where a
+// concurrent Build() could observe inflight=true, set pending=true, and get
+// ErrBuildCoalesced — all AFTER the loop had decided to exit, stranding the
+// pending request until some later unrelated Build() happened to pick it up.
+func (s *Service) buildLoop(projectID uint) {
+	for {
+		key := fmt.Sprintf("%d", projectID)
+		_, err, _ := s.buildGroup.Do(key, func() (interface{}, error) {
+			if s.buildRunner != nil {
+				return nil, s.buildRunner(projectID)
+			}
+			return nil, s.runBuildOnce(projectID)
+		})
+		if err != nil {
+			s.logger.Error("build run failed", "project_id", projectID, "err", err)
+		}
+
+		s.buildMu.Lock()
 		if s.buildPending[projectID] {
+			delete(s.buildPending, projectID)
 			s.buildMu.Unlock()
-			s.logger.Info("build coalesced: replacing queued build with latest", "project_id", projectID)
-			return ErrBuildCoalesced // the queued goroutine will pick up the latest code
+			s.logger.Info("build loop: starting queued rebuild", "project_id", projectID)
+			continue
 		}
-		s.buildPending[projectID] = true
+		// Atomic: clear inflight while still holding the lock so no Build()
+		// can race between "decided to exit" and "inflight visible as false".
+		delete(s.buildInflight, projectID)
 		s.buildMu.Unlock()
-
-		s.logger.Info("build queued, waiting for current build to finish", "project_id", projectID)
-		timer := time.NewTimer(5 * time.Minute)
-		defer timer.Stop()
-		select {
-		case sem <- struct{}{}:
-			s.buildMu.Lock()
-			delete(s.buildPending, projectID)
-			s.buildMu.Unlock()
-		case <-timer.C:
-			s.buildMu.Lock()
-			delete(s.buildPending, projectID)
-			s.buildMu.Unlock()
-			// Re-enqueue asynchronously so coalesced requests are not lost.
-			go func() {
-				if err := s.Build(projectID); err != nil && !errors.Is(err, ErrBuildCoalesced) {
-					s.logger.Error("re-enqueued build failed", "project_id", projectID, "err", err)
-				}
-			}()
-			return fmt.Errorf("build queue timeout: re-enqueued for retry")
-		}
+		return
 	}
+}
 
+// runBuildOnce performs a single end-to-end build for a project synchronously.
+// Must not be called directly; always go through Build() -> buildLoop().
+func (s *Service) runBuildOnce(projectID uint) error {
 	project, err := s.GetProject(projectID)
 	if err != nil {
-		s.releaseBuildLock(projectID)
 		return err
 	}
 
-	// Create deployment record
 	buildNum := project.CurrentBuild + 1
 	deployment := &Deployment{
 		ProjectID: projectID,
@@ -420,60 +467,40 @@ func (s *Service) Build(projectID uint) error {
 		Status:    "building",
 	}
 	if err := s.db.Create(deployment).Error; err != nil {
-		s.releaseBuildLock(projectID)
 		return err
 	}
 
-	// Update project status
 	s.db.Model(&Project{}).Where("id = ?", projectID).Updates(map[string]interface{}{
 		"status":        "building",
 		"current_build": buildNum,
 		"error_msg":     "",
 	})
 
-	// Create log file
 	logDir := s.builder.LogDir(projectID)
 	os.MkdirAll(logDir, 0755)
 	logPath := s.builder.LogPath(projectID, buildNum)
 
 	logWriter, err := NewLogWriter(logPath)
 	if err != nil {
-		s.releaseBuildLock(projectID)
 		return fmt.Errorf("create log writer: %w", err)
 	}
 
-	// Store active log writer
 	s.mu.Lock()
 	s.activeLogs[projectID] = logWriter
 	s.mu.Unlock()
 
-	// Run build in background
-	go s.runBuild(project, deployment, logWriter)
-
+	s.runBuild(project, deployment, logWriter)
 	return nil
 }
 
-// releaseBuildLock releases the per-project build lock.
-func (s *Service) releaseBuildLock(projectID uint) {
-	s.buildMu.Lock()
-	if sem, ok := s.buildSems[projectID]; ok {
-		select {
-		case <-sem:
-			// Released.
-		default:
-		}
-	}
-	s.buildMu.Unlock()
-}
-
-// runBuild executes the full build pipeline in background.
+// runBuild executes the full build pipeline synchronously.
+// Build lifecycle (inflight/pending flags) is owned by buildLoop, not this func.
 func (s *Service) runBuild(project *Project, deployment *Deployment, logWriter *LogWriter) {
 	defer func() {
 		logWriter.Close()
 		s.mu.Lock()
 		delete(s.activeLogs, project.ID)
 		s.mu.Unlock()
-		s.releaseBuildLock(project.ID)
 	}()
 
 	buildTimeout := 30 * time.Minute
@@ -551,6 +578,27 @@ func (s *Service) runBuild(project *Project, deployment *Deployment, logWriter *
 
 	deployment.Status = "success"
 	s.db.Save(deployment)
+
+	// Record the deployed commit on the project so the git poller (and any
+	// downstream tooling) can detect when the remote moves ahead.
+	//
+	// If the builder returned an empty commit (rare: GetCommitHash failure
+	// on a successful build), fall back to inspecting the local checkout
+	// so LastDeployedCommit advances. Without this, the poller would see
+	// every remote SHA as "new" forever and redeploy on every tick after
+	// the configured interval.
+	commit := result.Commit
+	if commit == "" {
+		if local, err := s.git.GetCommitHash(project.ID); err == nil {
+			commit = local
+		} else {
+			s.logger.Warn("build succeeded but commit hash is empty and fallback lookup failed; poller may retrigger",
+				"project_id", project.ID, "err", err)
+		}
+	}
+	if commit != "" {
+		s.db.Model(&Project{}).Where("id = ?", project.ID).Update("last_deployed_commit", commit)
+	}
 
 	// Deploy based on mode
 	if project.DeployMode == "docker" {
@@ -1295,6 +1343,16 @@ func (s *Service) StartCronScheduler() {
 // StopCronScheduler stops the cron scheduler (called from plugin Stop).
 func (s *Service) StopCronScheduler() {
 	s.cron.Stop()
+}
+
+// StartGitPoller kicks off the per-project git polling loop.
+func (s *Service) StartGitPoller() {
+	s.poller.Start()
+}
+
+// StopGitPoller halts the polling loop and waits for in-flight ticks to drain.
+func (s *Service) StopGitPoller() {
+	s.poller.Stop()
 }
 
 // migrateDeployKeys encrypts any plaintext deploy keys found in the database.

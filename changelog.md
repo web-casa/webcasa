@@ -6,6 +6,383 @@
 
 ---
 
+## [Unreleased] — v0.11 Phase 5 "Docker Polish"
+
+### F8: 镜像状态分层缓存 (Portainer Pattern 5，本地对比版)
+- 新增 `plugins/docker/imagestatus.go` — 短 TTL (5s) 缓存 tag→本地 imageID 映射，一次 ListContainers 内多个容器共用同一 tag 只 inspect 1 次
+- `ContainerInfo` 新增字段:
+  - `ImageID` — 容器实际运行的 SHA (docker SDK 已提供，之前未透传)
+  - `ImageStatus` — `"updated"`/`"outdated"`/`"unknown"`，handler 层填充
+- 状态判定纯本地对比 (**零网络依赖**)：容器运行的 `ImageID` 与该 tag 当前本地 SHA 对比：
+  - 不同 = `outdated` (意思: 你 `docker pull` 了新版但没重建容器)
+  - 相同 = `updated`
+  - `nginx@sha256:...` digest 固定 = `unknown` (pinned 不适用)
+  - 空 ImageID / inspect 失败 = `unknown`
+- `PullImage` / `RemoveImage` 后自动 `invalidateImageStatusCache()`，下次 list 立即反映新状态
+- handler 层用 500ms sub-timeout 包裹 annotation，慢 inspect 永不阻塞列表响应
+- 前端 `DockerOverview.jsx` 容器卡片 `state` Badge 旁出现 `amber` 色 "outdated" Badge + 悬浮解释
+- i18n keys (en + zh): `docker.image_outdated`, `docker.image_outdated_hint`
+- 测试: 7 个用例 (compareImageStatus 矩阵 / 缓存 TTL 内去重 / 失败结果缓存 / Invalidate 立即生效 / TTL 过期刷新)
+
+**设计说明**: 原计划通过 registry HEAD 请求对比远程 digest。改为纯本地 `docker pull` 状态对比后：
+1. 零网络、零 registry 认证复杂度、毫秒级响应
+2. 捕获的是更实际的问题 (pull 了新镜像但忘记重建容器)，而非 "registry 上游有新版本"
+3. 若未来需要对比远程 digest，此基础设施已可扩展 (加一个 `remoteDigest` 字段到 cacheEntry，ttl=60s)
+
+---
+
+## [Unreleased] — v0.11 Phase 4 "Automation & Reliability"
+
+### F7: Git polling 自动 redeploy (Portainer Pattern 8)
+- 新增 `plugins/deploy/poller.go` — 后台定时调度器，全局 30s tick 扫描所有启用的项目；per-project 间隔最低 60s (配置低于则自动 clamp)，默认 300s
+- 通过 `git ls-remote --heads <url> <branch>` 零克隆拉取远端 HEAD SHA，对比 `Project.LastDeployedCommit` 变化触发 `Service.Build()` (复用 Phase 1 SingleFlight 去重，webhook + polling 并发只会 build 一次)
+- 支持 3 种 git 认证：SSH key (临时写 0600 key 文件 + `GIT_SSH_COMMAND`)、GitHub App token (HTTPS)、GitHub OAuth token (HTTPS)
+- `Project` model 新增字段：`GitPollEnabled bool`、`GitPollIntervalSec int` (默认 300)、`LastDeployedCommit string`、`LastPolledAt *time.Time`
+- 构建成功流程写入 `LastDeployedCommit = result.Commit` 供下次 polling 比对
+- `UpdateProject` handler 白名单加 `git_poll_enabled`/`git_poll_interval_sec`，interval < 60 自动 clamp，< 0 拒绝
+- Plugin `Start()/Stop()` 挂接 poller 生命周期 (goroutine 优雅停机，close(stop) + <-done 等待 tick 退出)
+- 测试: 4 个用例 (effectivePollInterval 边界矩阵 / shortSHA 长度截断 / Build 触发 / 间隔 gate 生效)
+- **兼容性**: `GitPollEnabled=false` 默认 = 零行为变化；依赖现有 `ErrBuildCoalesced` 和 `SingleFlight` (Phase 1)
+
+### F6: 备份保留安全地板 (基于 Pigsty Pattern 7 启发)
+- 发现现有 `plugins/backup/service.go` 已实现 count/age/size 三层保留 (v0.10.0)，本 Phase 聚焦于**加固而非重复**
+- `BackupConfig` model 新增 `MinRetainCount int` 字段 (默认 1) — 安全地板，保证无论 count/age/size 规则如何激进，最新 N 个快照永远保留
+  - **防止场景**: 用户误操作 `retain_days: 30 → 1` 一次性抹掉全部历史
+- `enforceRetention()` 重写: 先按 count/age/size 计算 `toDelete` 集合，再按 MinRetainCount 反向 unpin 最新的 N 个
+- 每次删除记录结构化日志 `reason=count|age|size`，汇总输出 `by_count=X by_age=Y by_size=Z` 便于审计
+- `UpdateConfigRequest` 新增 `MinRetainCount *int` (负值拒绝)
+- 首次启动默认配置 `MinRetainCount: 1`
+- 测试: 5 个用例 (count-only 兼容 v0.10 / MinFloor 阻止全删 / MinFloor 钉住最新的 / MinFloor=0 退回旧行为 / count+age+size 三层叠加)
+- **兼容性**: 新字段默认 1，既有用户升级后立即获得地板保护 (若之前 retention 策略会删光，升级后最新 1 个仍保留)
+
+---
+
+## [Unreleased] — v0.11 Phase 3 "Database Tuning"
+
+### F1: PostgreSQL 调优预设 (Pigsty Pattern 1)
+- 新增 `plugins/database/presets_postgres.go`：4 个工作负载感知预设
+  - **OLTP** — 事务密集 web 应用 (shared_buffers≈25% RAM, work_mem=4MB, max_connections=100)
+  - **OLAP** — 分析查询 (shared_buffers≈40% RAM, work_mem=64MB, max_connections=50)
+  - **Tiny** — 资源受限 (shared_buffers ≤256MB 上限, max_connections=20, wal_level=minimal)
+  - **Crit** — 强一致性 (OLTP 内存布局 + durability 字段，初始发布时仅内存布局；durability 字段在 Phase 3 审查修复中已实装)
+- 预设根据 Instance.MemoryLimit (`256m`/`1g`/`0.5g`/`512mb`) 动态推算 `EngineConfig`，写入 `Config` JSON
+- `Instance` model 新增 `TuningPreset` 字段 (size:32, default `''`) 记录所选预设供审计 + 未来 memory resize 时重应用
+- `CreateInstanceRequest` 新增 `tuning_preset` 字段 (postgres only)，`resolveTuningPreset()` helper 统一两个创建入口
+- 新 API `GET /api/plugins/database/presets/postgres-tuning` 返回 4 个预设的元数据 (id/name/description/good_for) 供 UI 渲染
+- 前端 `DatabaseInstances.jsx` 创建表单新增「Workload Tuning Preset」下拉 (engine=postgres 时显示)，选中预设时跳过手填 Config (后端推算)，i18n keys: `tuning_preset`, `tuning_preset_custom`
+- 完整测试覆盖: parseMemoryLimitMB 边界 / IsValidPostgresPreset / 4 个预设的内存缩放 / 自定义 fallback / 解析失败的安全降级 / List 元数据完整性 (8 个测试用例)
+- **兼容性**: 现有实例 `tuning_preset=""` 行为完全等价 (走原有 EngineConfig 路径)，无 schema 数据迁移
+
+---
+
+## [Unreleased] — v0.11 Phase 2 "Deploy UX Quick Win"
+
+### F2: docker run → compose 转换器 (Dockge Pattern 3)
+- 新增 `web/src/utils/composerize.js` 包装 `composerize` npm 库 (1.7.5)，导出 `dockerRunToCompose(cmd)` 纯函数
+- 在 Docker Overview 页面 `CreateStackDialog` 新增「从 `docker run` 导入」Tab：
+  - TextArea 粘贴 `docker run ...` 命令
+  - 「转换为 Compose」按钮调用 composerize
+  - 转换成功后自动切换到 compose tab 并填入生成的 YAML
+  - 错误情况显示 Callout 错误消息
+- 自动剥离 composerize 输出的 `name: <your project name>` 占位行 (Stack 名称由独立表单字段管理)
+- 新增 i18n keys (en + zh): `docker.import_docker_run`, `import_docker_run_hint`, `import_docker_run_failed`, `convert_to_compose`
+- Smoke 测试覆盖 4 类常见命令 (env+port+volume+network / 仅镜像 / memory+cpu+restart / 多 port)
+- Bundle 初始增加 ~90KB gzipped 到主 bundle (composerize 内部含 yargs-parser + deepmerge)；**Phase 2 审查修复中改为 lazy import**，主 bundle 净减少 ~90KB，composerize 独立 chunk 首次点击时加载
+
+---
+
+## [Unreleased] — v0.11 最终全量 Codex Review 修复
+
+Pre-release sweep covering cross-phase interactions. Found 3 HIGH + 2 MEDIUM + 2 LOW issues the per-phase reviews missed.
+
+### HIGH: 同 SHA 的 poll 可导致 webhook build 后再跑一次
+- **问题**: webhook 触发 Build(X) 运行中，poller 观察到同一 SHA，调用 Build(X) 被合并为 pending。buildLoop 第一次完成后 pending=true 触发 runBuildOnce **再跑一次同样的 X**。一次 push → 两次相同构建
+- **修复**: Service 新增 `IsBuildInflight(projectID)`；poller 在 trigger Build 前检查，若 inflight 则跳过(下次 tick <= 300s 内自然重试)
+- **回归测试**: `TestPoller_SameSHAInFlight_NoDoubleBuild` 使用 release channel 冻结第一个构建，期间 poller 触发 — 期望 buildCalls=1 (而非 2)
+
+### HIGH: detector.go git clone 无 SSRF 校验
+- **问题**: `POST /api/plugins/deploy/detect` 接受用户 URL 直接 `git clone`。Phase 4 修了 poller 但遗漏同级的 detector
+- **修复**: `DetectFrameworkFromURL` 调用 `validateGitPollTarget` 前置校验
+
+### HIGH: appstore 源 URL 无 SSRF 校验 (每 6h 周期性探测向量)
+- **问题**: admin 添加的 App Store 源 URL 直接 `git clone`/`git pull`，background updater 每 6h 拉取一次。一次恶意 URL 可变成周期性内网探测
+- **修复**:
+  - `plugins/deploy/poller.go` 导出 `ValidateGitRemoteTarget(url)` 公开入口
+  - `plugins/appstore/source.go` `AddSource` 入口 + `gitSync` clone 前双重校验
+  - 校验发生在 DB 记录创建**之前**，阻止坏 URL 写入
+
+### MEDIUM: DockerOverview 异步关闭 race
+- **问题**: `convertDockerRun` 在 composerize lazy-import 期间若用户关闭对话框，Phase 2 修的 `useEffect(!open)` reset 先跑，随后 `await` 返回时 `setComposeFile/setActiveTab/setConvertError` 仍会触发 — stale state 重新注入
+- **修复**: `openRef = useRef(open)` 快照；async 完成路径检查 `openRef.current`，关闭期间结果直接丢弃
+
+### MEDIUM: Poller 测试 bypass pollOne 真实路径
+- **问题**: `TestPoller_TriggersBuildOnNewCommit` 和 `TestPoller_ConfigChangedDuringPoll_SkipsBuild` 都内联重现了 pollOne 的判断逻辑而非调用 pollOne — 修复失效则这两个测试仍绿
+- **修复**: `Poller` 新增 `lsRemoteFn` 注入字段 (生产为 nil)。测试通过 stub 驱动真实 `pollOne()` 端到端，真正 pin 住 TOCTOU 修复
+
+### LOW: composerize.test.mjs 没有 npm script 挂接
+- **修复**: `web/package.json` scripts 新增 `test:composerize`。CI/发布 checklist 可加上 `npm run test:composerize`
+
+### LOW: roadmap/changelog 文档与实际实施不符
+- **修复**:
+  - `docs/06-feature-roadmap-v0.11.md` F8 章节重写，反映最终"纯本地对比"实施而非"分层 + registry digest"计划
+  - `changelog.md` Crit 预设预留声明 / composerize bundle ~25KB 声明更新为 Phase 审查修复后的实际状态
+
+### Codex 核验为干净的项
+- Phase 1 buildLoop 原子 pending 检查 + inflight 清除：正确
+- Phase 5 世代计数器 locking：正确
+- PG 预设 validation 在文件/DB 半创建前失败：正确
+- AutoMigrate 覆盖 deploy/database/backup 的新列：正确
+- 4 个 hardened HTTP client 站点 (notify/poller/monitoring/AI)：一致
+
+### 验证
+- `go test ./... -timeout 120s` 全绿
+- `go test -race` clean on plugins/deploy + plugins/docker + plugins/monitoring
+- `npm run build` 绿
+- `npm run test:composerize` 10/10 pass
+
+---
+
+## [Unreleased] — v0.11 Phase 5 审查修复
+
+基于 Codex Review 发现的 3 个问题修复 (2 MEDIUM + 1 LOW)。
+
+### MEDIUM: PullImage 缓存失效时机错误 — badge 可滞后 5 秒
+- **问题**: `PullImage(ctx, ref)` 返回进度 reader 后立即调用 `invalidateImageStatusCache()`。但拉取**实际发生在 reader 被消费时** — 此时并发 `ListContainers` 能 inspect 到旧 SHA 并缓存它。拉取结束后缓存仍保留旧值直到 cacheTTL (5s) 过期
+- **修复**: 新 `invalidatingReader` 类型包装进度 reader，`Close()` 时触发一次性失效。调用方 `defer rc.Close()` 自然触发在拉取完成之后
+- 同时防 double-close 两次 invalidate (使用 `closed bool` 标志)
+- **回归测试**: `TestInvalidatingReader_InvalidatesOnClose`
+
+### MEDIUM: In-flight resolveTagImageID 可将过期 SHA 写回缓存
+- **问题**: Goroutine A 正在 Inspect (慢) — Goroutine B 完成 PullImage 调用 Invalidate 清空缓存 — A 的 Inspect 返回**pull 前的旧 SHA** — A 把旧 SHA 写回缓存。PullImage 后续 ListContainers 读到旧 SHA，badge 显示"updated"而实际 outdated
+- **修复**: `imageStatusCache` 新增 `gen uint64` 世代计数器。`Invalidate` 增加 gen；`resolveTagImageID` 在 inspect 前 snapshot gen，写回时对比，不一致则丢弃结果 (让下次调用重新 inspect)
+- **回归测试**: `TestImageStatusCache_InvalidateDuringResolve_RejectsStaleWrite` — 用 blocker channel 人为冻结 inspect 中段，期间调用 Invalidate，验证释放后 cache **不含**陈旧 entry
+
+### LOW: context 取消/超时错误污染缓存 5 秒
+- **问题**: handler 的 500ms sub-deadline 过期时，`ImageInspectWithRaw` 返回 `context.DeadlineExceeded`。原代码将空字符串 negative-cache 5 秒 → 后续 ListContainers 看到 "unknown" 即使 Docker socket 正常
+- **修复**: `resolveTagImageID` 检测 `errors.Is(err, context.Canceled)` 和 `errors.Is(err, context.DeadlineExceeded)`，直接返回 "" **不写缓存**，允许下次请求立即重试
+- **回归测试**: `TestImageStatusCache_ContextErrorNotNegativeCached` 验证超时错误后 cache 无条目，follow-up 请求立即 inspect 并缓存正确结果
+
+### 非 bug (Codex 已核验)
+- `ImageInspectWithRaw` 返回 `([]byte, ...)` 非 ReadCloser，无需关闭
+- ImageID 格式双方一致 (均为 `sha256:hex`)，无误报 outdated
+- 500ms timeout 下部分失败降级为 "unknown" 是预期行为
+- 前端只显示 outdated 隐藏 unknown 是设计选择
+- 包级 defaultImageStatusCache 在单 daemon 场景下线程安全；多 daemon 是未来问题
+
+---
+
+## [Unreleased] — v0.11 HIGH-pattern 举一反三审计修复
+
+基于 Phase 1-4 Codex Review 中 HIGH 类问题的模式提取，对整个代码库做一轮系统性搜索，发现并修复 **2 处相同 class 的 SSRF 缺失**。
+
+### 模式识别
+从已修复的 4 个 HIGH 归纳 4 个 pattern：
+1. defer-based cleanup 与 atomic exit decision 冲突 (Phase 1)
+2. TOCTOU: read DB → 异步 I/O → write DB by ID 无 re-read (Phase 4)
+3. 相同操作的安全策略不一致 (Phase 4 SSH)
+4. **用户可控 URL/输入直接喂给 subprocess/outbound 请求无验证** (Phase 4 GitURL SSRF)
+
+### HIGH: `plugins/monitoring/alerter.go` 告警 webhook 无 SSRF 防护
+- **问题**: `sendWebhook(url, ...)` 直接将 admin 配置的 `AlertRule.NotifyURL` 喂给 `http.Client.Post`，无 URL 校验 / 无 CheckRedirect / 无 SafeDialContext。即使 admin-only 配置路径，`http://169.254.169.254/` 等 metadata endpoint 仍可被 (误) 配置
+- **对比**: 同项目 `internal/notify/notifier.go` 对完全相同场景 (webhook 通知) 有完整三层防护 — 这是 pattern 3 (**不一致的安全策略**) 和 pattern 4 (**未验证 URL**) 的 double hit
+- **修复**:
+  - 调用 `notify.ValidateWebhookURL(url)` 做 URL 层拒绝
+  - `http.Client` 添加 `CheckRedirect` 拒绝重定向 (否则通过 302 到内部 IP 绕过 URL 验证)
+  - `Transport: &http.Transport{DialContext: notify.SafeDialContext}` 做 dial 时二次校验 (防 DNS rebinding)
+- **回归测试**:
+  - `TestSendWebhook_SSRFBlocked` 覆盖 127.0.0.1 / localhost / 169.254.169.254 / [::1] / ftp:// 5 种场景
+  - `TestSendWebhook_PrivateRFC1918Allowed` 确认自托管内网 (10.0.0.5) 仍可用
+
+### MEDIUM: `plugins/ai/{client,embedding}.go` 缺少 redirect/dial SSRF 防护
+- **问题**: admin 配置的 LLM `base_url` 若经 302 跳转到内部 IP，客户端透明跟随 — 泄露 Authorization bearer (API key) 及 prompt 内容到本地网络。同 pattern 4 的 defense-in-depth 版本
+- **修复**: 两个客户端的 `http.Client` 添加 `CheckRedirect` + `Transport{DialContext: notify.SafeDialContext}`。因 baseURL 由 admin 信任配置，不加 URL 层 `ValidateWebhookURL` (过度限制合法公共 API endpoint)
+
+### 其他审计结果 (已判定为非 bug)
+- `internal/queue/queue.go`: defer semaphore release 无 state 一致性问题
+- `internal/caddy/manager.go`: reload coalescing 在 lock 内 swap timer 干净
+- `plugins/backup/service.go` UpdateConfig TOCTOU: admin-only 配置更新，影响限于配置短暂不一致 (非数据丢失)，v0.11 暂不处理
+- `internal/versioncheck/checker.go`: URL 硬编码非用户可控，无 SSRF 向量
+
+### 复盘
+- **Pattern 4** 出现 3 次了 (notify original → Phase 4 git poller → 本次 monitoring + AI)。建议 v0.12 建立**项目约定**: 所有面向用户可配 URL 的 outbound HTTP 客户端 MUST 通过共享 helper 创建。考虑在 `internal/notify/` 加 `NewHardenedHTTPClient(timeout)` 或 `internal/httpclient/` 新包
+- 监控/AI/通知三处 webhook 语义几乎相同但各自独立实现 — 未来重构应合并为单一 HardenedWebhookDispatcher
+
+---
+
+## [Unreleased] — v0.11 Phase 4 审查修复
+
+基于 Codex Review 发现的 5 个问题修复 (3 HIGH + 2 MEDIUM)。F6 (备份保留地板) 本次 review 无发现。
+
+### HIGH: Poller TOCTOU — 过时 Project 快照触发错误 Build
+- **问题**: `runOnce` 一次性读完所有启用项目，然后逐个调用 `pollOne` 做 git ls-remote。若用户在网络 I/O 期间禁用 polling 或改 URL，旧配置的结果会触发新配置的 build，并覆盖 `LastPolledAt`
+- **修复**: `pollOne` 在 `svc.Build()` 前 **重新读取** Project。若 `GitPollEnabled=false`、或 `GitURL`/`GitBranch` 已变，跳过本轮触发
+- **回归测试**: `TestPoller_ConfigChangedDuringPoll_SkipsBuild`
+
+### HIGH: Poller SSH 禁用了主机密钥校验 (MITM 窗口)
+- **问题**: `configureGitSSH` 使用 `StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null` — 接受任何 host key，允许 MITM。同项目的 build path (`plugins/deploy/git.go:150`) 使用安全的 `accept-new` + 托管 `~/.ssh/known_hosts`
+- **修复**: 改为 `StrictHostKeyChecking=accept-new -o UserKnownHostsFile=~/.ssh/known_hosts`，与 build path 对齐。保留 `IdentitiesOnly=yes` 避免使用非本次 key
+
+### HIGH: GitURL 未校验 — SSRF 向量
+- **问题**: 项目创建/更新接受任意 `git_url`，poller 直接喂给 git 子进程。恶意用户可配置 `http://169.254.169.254/...` 或 `ssh://127.0.0.1/...` 等 URL 让 WebCasa 每隔 5 分钟探测内部网络
+- **修复**: 新增 `validateGitPollTarget(url string) error`:
+  - scheme 白名单: `https / http / ssh / git`；拒绝 `file://` / `ftp://` 等
+  - 识别 scp-style `git@host:path` 形式
+  - 解析 literal IP 或 DNS — 拒绝 loopback / link-local / metadata endpoint (169.254/16)
+  - **允许 RFC1918 私网** — 自托管 Gitea/GitLab 继续可用
+- **回归测试**: `TestValidateGitPollTarget` 11 个子用例覆盖 public git / 私网 / 被阻止 scheme / 各类被阻止 IP / 空串
+
+### MEDIUM: Poller 串行循环 — 慢 remote 拖垮整轮
+- **问题**: 单 goroutine 顺序执行 `ls-remote`，每个可能阻塞最多 15s。100 项目 + 任一慢 remote → 后续全部延迟。`Stop()` 关闭 stop chan，但 `lsRemoteHead` 使用 `context.Background()` → 关机期间 in-flight 请求继续跑完
+- **修复**:
+  - `Poller` 引入 `ctx/cancel`，替代原 `stop` chan；`Stop()` 通过 `cancel()` 通知所有层级
+  - `lsRemoteHead` 签名加 `ctx context.Context`，子进程和超时都派生自 stop-scoped context
+  - `runOnce` 用 `pollerConcurrency=4` 有界 worker 池并发执行
+  - worker 池 select 同时监听 `p.ctx.Done()`，关机时立即退出
+
+### MEDIUM: runBuild 空 Commit 时 LastDeployedCommit 不更新
+- **问题**: 若 `Builder.Build()` 返回 `Success=true, Commit=""` (例如 `GetCommitHash` 失败但构建完成)，`runBuild` 跳过 `LastDeployedCommit` 更新 → poller 每次轮询都以为 "远端有新 commit"，触发无限 redeploy 循环 (受最小间隔 60s 限制)
+- **修复**: build 成功但 commit 为空时，fallback 读取本地 checkout 的 `git rev-parse HEAD` (`s.git.GetCommitHash(project.ID)`)。仍失败则记警告日志，但不破坏 build 成功语义
+
+### 测试
+- 新增 `TestValidateGitPollTarget` 11 子用例
+- 新增 `TestPoller_ConfigChangedDuringPoll_SkipsBuild`
+- 现有 `TestPoller_TriggersBuildOnNewCommit` / `TestPoller_RespectsInterval` 继续通过
+- `go test -race` 在 plugins/deploy 包通过 (1.8s)
+
+---
+
+## [Unreleased] — v0.11 Phase 3 审查修复
+
+基于 Codex Review 发现的 5 个问题修复 (1 CRITICAL + 1 HIGH + 2 MEDIUM + 1 LOW)：
+
+### CRITICAL: Crit 预设描述与实现不一致 — 虚假安全承诺
+- **问题**: `ListPostgresPresets()` Crit 描述声称 `synchronous_commit=on, full_page_writes=on, fsync=on`，但 `pgCrit()` 未输出任何这些字段 — `EngineConfig` 连字段都没有。用户选 Crit 以为获得强持久性保证，实际拿到的是 OLTP + 更高 work_mem
+- **修复**:
+  - `EngineConfig` 新增 `SynchronousCommit string`, `FullPageWrites *bool`, `Fsync *bool` 三个字段
+  - `compose.go` `buildPostgresCommand()` 输出对应 `-c synchronous_commit=... -c full_page_writes=... -c fsync=...` 参数；新增 `boolToOnOff()` helper
+  - `pgCrit()` 实际设置三个字段
+- **回归测试**:
+  - `TestApplyPostgresPreset_Crit_EmitsDurabilityFields` 断言 Crit 返回的 config 含 3 个 durability 字段
+  - `TestListPostgresPresets_CritDescriptionMatchesImplementation` **meta-test**: 扫描 Crit 描述中承诺的字段，确认实现全部输出。未来如移除任一字段但忘记更新描述，此测试立即失败
+
+### HIGH: Preset 内存地板可产生超过容器限制的设置
+- **问题**: OLTP 有 64MB shared_buffers 下限、OLAP 128MB、Tiny 32MB。容器 `memory_limit=60m` 时 OLTP/OLAP 的 shared_buffers 占比过高 → PG 启动失败或 OOM
+- **修复**:
+  - 移除所有固定下限，`shared_buffers` 严格按百分比计算
+  - 每个预设声明最小内存 (`minMemOLTP=256 / minMemOLAP=512 / minMemCrit=256 / minMemTiny=64`)
+  - `ApplyPostgresPreset` 内存低于最小值时返回描述性错误，**不再 silent fallback**
+  - `PostgresPresetInfo` 新增 `MinMemoryMB` 字段暴露给前端 UI 供客户端预校验
+- **签名变化**: `ApplyPostgresPreset(...) *EngineConfig` → `(*EngineConfig, error)`，`resolveTuningPreset()` 传播错误 → 400 响应
+- **回归测试**: `TestApplyPostgresPreset_BelowMinimumMemoryRejects` 覆盖 4 个预设各自的最小内存拒绝 / `TestApplyPostgresPreset_Tiny_ProportionalNoFloor` 验证 Tiny 按比例缩放
+
+### MEDIUM: 预设选中时 UI 仍显示可编辑 Advanced 字段
+- **问题**: `resolveTuningPreset` 在预设生效时 override `req.Config`，但前端创建表单仍渲染可编辑的 shared_buffers/work_mem/wal_level 字段。用户编辑后 payload 包含 `config`，被前端 `if (!payload.tuning_preset)` 逻辑丢弃 — 用户编辑**静默被忽略**
+- **修复**: `DatabaseInstances.jsx` 高级配置区块条件从 `form.engine` 改为 `form.engine && !(form.engine === 'postgres' && form.tuning_preset)` — 选中 postgres 预设时整个 Advanced 折叠入口隐藏，视觉表达"预设接管调优"
+
+### MEDIUM: 不支持的内存单位静默 fallback 到 512MB
+- **问题**: `1Gi` / `1T` / `1_000m` 全部解析为 0，然后 fallback 到 512MB。K8s 用户发送 `1Gi` 期望 1024MB，实际得到 512MB 预设 — 与 `memory_limit` 指示的容器大小不一致
+- **修复**:
+  - 新增 `parseMemoryLimitMBStrict(s)` 严格模式，支持:
+    - 传统单位: `k/m/g/t` + 可选 `b` 后缀 (`256m`, `1gb`, `2T`)
+    - IEC 二进制单位: `Ki/Mi/Gi/Ti` (`512Mi`, `1Gi`, `2Ti`)
+    - 无后缀默认 MB
+  - 未识别单位 / 负值 / 空串返回 `error`，`ApplyPostgresPreset` 直接传播
+  - 保留兼容性 `parseMemoryLimitMB(s)` (忽略错误，返回 0)
+- **回归测试**: `TestParseMemoryLimitMBStrict` 覆盖 5 good + 5 bad 用例；`TestParseMemoryLimitMB` 扩充 IEC + T 单位
+
+### LOW: 测试覆盖不足
+- **修复**: 上述 4 个修复各自补充回归测试；测试用例数从 8 → 12
+
+---
+
+## [Unreleased] — v0.11 Phase 2 审查修复
+
+基于 Codex Review 发现的 4 个问题修复 (2 MEDIUM + 2 LOW)：
+
+### MEDIUM: composerize 全量打进主 bundle
+- **问题**: composerize + composeverter + yargs-parser@13 + core-js@2 (deprecated) + deepmerge 全部被 eagerly imported，拖累主 bundle ~90KB gzip，哪怕用户从不用这个功能
+- **修复**: `DockerOverview.jsx` 移除顶层 `import { dockerRunToCompose }`，改为点击时 `await import('../utils/composerize.js')` 动态加载
+- **效果**: 主 bundle 从 920KB gzip → 827KB gzip (**-10%**)；composerize 拆为独立 chunk `composerize-*.js` (89KB gzip)，仅首次点击时加载
+- 添加 `converting` 状态 + Loader2 spinner，避免异步加载期间双击重复加载
+
+### MEDIUM: 对话框状态未在关闭时重置
+- **问题**: `activeTab`、`dockerRunCmd`、`convertError` 只在成功创建时重置。用户 cancel 失败的转换后重新打开对话框，会看到停留在 docker-run tab + 旧命令 + 红色错误
+- **修复**: 新增 `useEffect(() => if (!open) ...)` 在 Dialog `open` prop 变 false 时清空所有瞬态状态，覆盖所有关闭路径 (Cancel 按钮 / Escape / 遮罩点击)
+
+### LOW: 向用户直接暴露 composerize 原始错误文本
+- **问题**: `setConvertError(e?.message || String(e))` 把 parser 内部错误 (e.g. "Cannot read property 'tokens' of undefined") 直接显示给用户，既不友好也泄露实现细节
+- **修复**: `convertError` 改为 boolean 标志，UI 只显示 i18n `docker.import_docker_run_failed` 友好文本；原始错误走 `console.error` 供开发者调试
+
+### LOW: 占位行剥离正则无测试守卫
+- **问题**: `/^name: <your project name>\r?\n/m` 依赖 composerize 1.7.x 的精确占位文本。未来版本若变化会静默失败
+- **修复**: 新增 `web/src/utils/composerize.test.mjs` 节点可执行回归测试 (无需 test framework)，覆盖 10 个断言：
+  - 外部 network 触发 comment 时占位剥离
+  - 简单镜像命令占位剥离
+  - env + port + volume + restart 复合命令不丢字段
+  - 空输入 throw
+- CI / 本地用 `node web/src/utils/composerize.test.mjs` 即可运行；失败时立即知晓 composerize 行为变化
+
+---
+
+## [Unreleased] — v0.11 Phase 1 审查修复
+
+基于 Codex Review 发现的 3 个问题 (1 HIGH + 2 MEDIUM) 修复：
+
+### HIGH: buildLoop 退出 race — pending 请求可能被吞掉
+- **问题**: `plugins/deploy/service.go` 的 `buildLoop` 用 `defer` 清 `buildInflight`，在 "pending 检查" 和 "inflight 清除" 之间存在窗口。并发 `Build()` 在窗口内看到 `inflight=true` 设 `pending=true` 然后返回 `ErrBuildCoalesced`，但 loop 已决定退出——pending 标志被孤立，最新 commit 永不部署
+- **修复**: 移除 defer，将 `delete(buildInflight)` 挪到同一把锁下与 pending 检查原子执行
+- **回归测试**: `TestBuild_ExitRace_PendingNotLost` — 50 轮 × 20 并发 Build，`-race` 下验证 `buildPending` 永不泄漏
+
+### MEDIUM: 2FA TempToken 路径仍被 Login 限流器拦截
+- **问题**: `Login()` 在路由到 tempToken 分支前调用 `limiters.Login.Check()`，导致 Login 预算耗尽时 2FA 第二步也被 429 拒绝——违反了 Phase 1 设计中的预算分离意图
+- **修复**: 先 parse body，再按 `TempToken != ""` 分流；TempToken 路径完全跳过 Login bucket，仅由 `handleTempTokenLogin` 入口的 TOTP bucket 门控
+- **回归测试**: `TestLogin_TempTokenPath_NotBlockedByLoginLimiter` 验证 Login 耗尽时 2FA 仍可通过；`TestLogin_PrimaryPath_StillBlockedByLoginLimiter` 验证主凭据路径仍受保护
+
+### MEDIUM: `clientAcceptsGzip` 误读多参数 header
+- **问题**: 旧解析只读 `;` 后的第一个参数块，导致 `gzip;foo=bar;q=0` 和 `gzip;q=0;foo=bar` 被错误识别为接受 gzip，违反 RFC 7231 §5.3.1
+- **修复**: 扫描所有 `;` 分隔的参数查找 `q=`，malformed q 保守拒绝 (返回 false 而非 true)
+- **回归测试**: 5 个新 case 覆盖多参数排列
+
+所有 Phase 1 影响包通过 `go test -race` 验证。
+
+---
+
+## [Unreleased] — v0.11 Phase 1 "Core Infrastructure"
+
+本 Phase 交付 3 个横切基础设施改进，基于 Portainer / Dockge / 1Panel 竞品分析。所有变更 **additive-only**，对 v0.10.0 行为完全兼容。
+
+### F3: SingleFlight 部署去重
+- 替换 `plugins/deploy/service.go` 现有 buildSems/timer 合并逻辑为 `golang.org/x/sync/singleflight.Group` + inflight/pending 双标志
+- **修复**: 旧代码会在第二个并发 Build() 调用处阻塞最多 5 分钟 (webhook handler 可能 504)。新实现 Build() **永不阻塞**，立即返回 nil 或 ErrBuildCoalesced
+- 保留 "队列最新版本" 语义: 并发请求合并为 1 个 pending，current build 完成后再跑 1 次保证最新代码生效
+- 新增 `plugins/deploy/build_dedup_test.go` (3 个测试: 非阻塞 / pending 重跑 / 跨项目独立)
+
+### F4: Gzip 响应压缩 helper
+- 新增 `internal/handler/helper.go` 的 `SuccessGzipped(c, data)` 函数
+- 显式调用非全局中间件，阈值 1KB 以下不压缩 (避免反向开销)
+- Accept-Encoding 协商支持 q-value (q=0 禁用)，fallback 到未压缩响应
+- `sync.Pool` 复用 gzip.Writer 降低分配
+- `plugins/appstore/handler.go` 的 `ListApps` 启用 gzip (典型 50KB+ 多语言 JSON)
+- 新增 `internal/handler/helper_test.go` (4 个测试: 协商矩阵 / 小负载跳过 / 大负载压缩 / 无头裸响应)
+
+### F5: 分层限流器服务
+- 重构 `internal/auth/ratelimit.go` 引入 `Limiters` 场景化预实例化:
+  - **Login**: 5/15min (防暴破，与旧版行为一致)
+  - **TOTP**: 10/5min (允许 2FA 打错纠正，阻止穷举)
+  - **APIRead**: 300/min (仪表盘轮询留余量)
+  - **APIWrite**: 60/min (突变端点上限)
+  - **Default**: 600/min (未标记路由 umbrella)
+- 新增 `RateLimiter.Middleware()` 返回 gin.HandlerFunc (路由挂载式限流)，不自动 RecordFail (语义由 handler 决定)
+- `internal/handler/auth.go` 拆分 Login/Setup → `limiters.Login`；2FA 步骤 → `limiters.TOTP` (打错 2FA 不烧 Login 预算)
+- `handleTempTokenLogin` 新增入口 TOTP.Check，防止 2FA 穷举绕过
+- 新增 `internal/auth/ratelimit_test.go` (5 个测试: 桶独立 / 配置校验 / 中间件通过 / 429 触发 / 不自动 RecordFail)
+
+### Internals
+- 升级 `golang.org/x/sync` v0.10.0 → v0.20.0 (需 singleflight 子包)
+- 无 schema 迁移、无 API 破坏性变更、无权限模型变动
+
+---
+
 ## [0.10.0] - 2026-04-16
 
 ### v2.0 Roadmap — 19 Features + RBAC Overhaul

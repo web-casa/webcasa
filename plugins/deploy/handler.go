@@ -161,6 +161,7 @@ func (h *Handler) UpdateProject(c *gin.Context) {
 		"github_private_key": true, "github_installation_id": true,
 		"github_oauth_install_id": true, "github_repo_full_name": true,
 		"preview_enabled": true, "preview_expiry": true, "github_token": true,
+		"git_poll_enabled": true, "git_poll_interval_sec": true,
 	}
 	filtered := make(map[string]interface{})
 	for k, v := range req {
@@ -176,6 +177,26 @@ func (h *Handler) UpdateProject(c *gin.Context) {
 			c.JSON(http.StatusBadRequest, gin.H{"error": "invalid build_type: must be dockerfile, nixpacks, paketo, railpack, static, auto, or empty"})
 			return
 		}
+	}
+
+	// Clamp git poll interval up to the safety floor; reject obviously bad
+	// values so misconfiguration cannot DOS the remote.
+	if iv, ok := filtered["git_poll_interval_sec"]; ok {
+		var n int
+		switch v := iv.(type) {
+		case float64:
+			n = int(v)
+		case int:
+			n = v
+		}
+		if n < 0 {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "git_poll_interval_sec must be non-negative"})
+			return
+		}
+		if n > 0 && n < MinPollIntervalSec {
+			n = MinPollIntervalSec
+		}
+		filtered["git_poll_interval_sec"] = n
 	}
 
 	// Handle env_vars specially: convert from JSON array to []EnvVar then to JSON string
