@@ -570,8 +570,23 @@ func (s *Service) runBuild(project *Project, deployment *Deployment, logWriter *
 
 	// Record the deployed commit on the project so the git poller (and any
 	// downstream tooling) can detect when the remote moves ahead.
-	if result.Commit != "" {
-		s.db.Model(&Project{}).Where("id = ?", project.ID).Update("last_deployed_commit", result.Commit)
+	//
+	// If the builder returned an empty commit (rare: GetCommitHash failure
+	// on a successful build), fall back to inspecting the local checkout
+	// so LastDeployedCommit advances. Without this, the poller would see
+	// every remote SHA as "new" forever and redeploy on every tick after
+	// the configured interval.
+	commit := result.Commit
+	if commit == "" {
+		if local, err := s.git.GetCommitHash(project.ID); err == nil {
+			commit = local
+		} else {
+			s.logger.Warn("build succeeded but commit hash is empty and fallback lookup failed; poller may retrigger",
+				"project_id", project.ID, "err", err)
+		}
+	}
+	if commit != "" {
+		s.db.Model(&Project{}).Where("id = ?", project.ID).Update("last_deployed_commit", commit)
 	}
 
 	// Deploy based on mode

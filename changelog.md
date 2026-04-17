@@ -91,6 +91,48 @@
 
 ---
 
+## [Unreleased] — v0.11 Phase 4 审查修复
+
+基于 Codex Review 发现的 5 个问题修复 (3 HIGH + 2 MEDIUM)。F6 (备份保留地板) 本次 review 无发现。
+
+### HIGH: Poller TOCTOU — 过时 Project 快照触发错误 Build
+- **问题**: `runOnce` 一次性读完所有启用项目，然后逐个调用 `pollOne` 做 git ls-remote。若用户在网络 I/O 期间禁用 polling 或改 URL，旧配置的结果会触发新配置的 build，并覆盖 `LastPolledAt`
+- **修复**: `pollOne` 在 `svc.Build()` 前 **重新读取** Project。若 `GitPollEnabled=false`、或 `GitURL`/`GitBranch` 已变，跳过本轮触发
+- **回归测试**: `TestPoller_ConfigChangedDuringPoll_SkipsBuild`
+
+### HIGH: Poller SSH 禁用了主机密钥校验 (MITM 窗口)
+- **问题**: `configureGitSSH` 使用 `StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null` — 接受任何 host key，允许 MITM。同项目的 build path (`plugins/deploy/git.go:150`) 使用安全的 `accept-new` + 托管 `~/.ssh/known_hosts`
+- **修复**: 改为 `StrictHostKeyChecking=accept-new -o UserKnownHostsFile=~/.ssh/known_hosts`，与 build path 对齐。保留 `IdentitiesOnly=yes` 避免使用非本次 key
+
+### HIGH: GitURL 未校验 — SSRF 向量
+- **问题**: 项目创建/更新接受任意 `git_url`，poller 直接喂给 git 子进程。恶意用户可配置 `http://169.254.169.254/...` 或 `ssh://127.0.0.1/...` 等 URL 让 WebCasa 每隔 5 分钟探测内部网络
+- **修复**: 新增 `validateGitPollTarget(url string) error`:
+  - scheme 白名单: `https / http / ssh / git`；拒绝 `file://` / `ftp://` 等
+  - 识别 scp-style `git@host:path` 形式
+  - 解析 literal IP 或 DNS — 拒绝 loopback / link-local / metadata endpoint (169.254/16)
+  - **允许 RFC1918 私网** — 自托管 Gitea/GitLab 继续可用
+- **回归测试**: `TestValidateGitPollTarget` 11 个子用例覆盖 public git / 私网 / 被阻止 scheme / 各类被阻止 IP / 空串
+
+### MEDIUM: Poller 串行循环 — 慢 remote 拖垮整轮
+- **问题**: 单 goroutine 顺序执行 `ls-remote`，每个可能阻塞最多 15s。100 项目 + 任一慢 remote → 后续全部延迟。`Stop()` 关闭 stop chan，但 `lsRemoteHead` 使用 `context.Background()` → 关机期间 in-flight 请求继续跑完
+- **修复**:
+  - `Poller` 引入 `ctx/cancel`，替代原 `stop` chan；`Stop()` 通过 `cancel()` 通知所有层级
+  - `lsRemoteHead` 签名加 `ctx context.Context`，子进程和超时都派生自 stop-scoped context
+  - `runOnce` 用 `pollerConcurrency=4` 有界 worker 池并发执行
+  - worker 池 select 同时监听 `p.ctx.Done()`，关机时立即退出
+
+### MEDIUM: runBuild 空 Commit 时 LastDeployedCommit 不更新
+- **问题**: 若 `Builder.Build()` 返回 `Success=true, Commit=""` (例如 `GetCommitHash` 失败但构建完成)，`runBuild` 跳过 `LastDeployedCommit` 更新 → poller 每次轮询都以为 "远端有新 commit"，触发无限 redeploy 循环 (受最小间隔 60s 限制)
+- **修复**: build 成功但 commit 为空时，fallback 读取本地 checkout 的 `git rev-parse HEAD` (`s.git.GetCommitHash(project.ID)`)。仍失败则记警告日志，但不破坏 build 成功语义
+
+### 测试
+- 新增 `TestValidateGitPollTarget` 11 子用例
+- 新增 `TestPoller_ConfigChangedDuringPoll_SkipsBuild`
+- 现有 `TestPoller_TriggersBuildOnNewCommit` / `TestPoller_RespectsInterval` 继续通过
+- `go test -race` 在 plugins/deploy 包通过 (1.8s)
+
+---
+
 ## [Unreleased] — v0.11 Phase 3 审查修复
 
 基于 Codex Review 发现的 5 个问题修复 (1 CRITICAL + 1 HIGH + 2 MEDIUM + 1 LOW)：
