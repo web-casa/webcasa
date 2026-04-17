@@ -202,6 +202,12 @@ func (h *Handler) ListContainers(c *gin.Context) {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
+	// Bound the image-status resolution to a short window so a slow Docker
+	// inspect cannot turn a list request into a 5s wait. Missing statuses
+	// stay "unknown" and surface correctly on the next call once cached.
+	annotateCtx, annotateCancel := context.WithTimeout(ctx, 500*time.Millisecond)
+	h.client.AnnotateImageStatuses(annotateCtx, containers)
+	annotateCancel()
 	c.JSON(http.StatusOK, gin.H{"containers": containers})
 }
 

@@ -713,6 +713,8 @@
         "import_docker_run_hint": "粘贴 `docker run` 命令一键转为 Compose YAML。方便从上游项目 README 复制示例改用 Compose。",
         "import_docker_run_failed": "转换失败",
         "convert_to_compose": "转换为 Compose",
+        "image_outdated": "镜像已过时",
+        "image_outdated_hint": "该 tag 的较新镜像已在本地拉取。请重建此容器以使用最新版本。",
         "name": "名称",
         "image": "镜像",
         "ports": "端口",

@@ -6,6 +6,31 @@
 
 ---
 
+## [Unreleased] — v0.11 Phase 5 "Docker Polish"
+
+### F8: 镜像状态分层缓存 (Portainer Pattern 5，本地对比版)
+- 新增 `plugins/docker/imagestatus.go` — 短 TTL (5s) 缓存 tag→本地 imageID 映射，一次 ListContainers 内多个容器共用同一 tag 只 inspect 1 次
+- `ContainerInfo` 新增字段:
+  - `ImageID` — 容器实际运行的 SHA (docker SDK 已提供，之前未透传)
+  - `ImageStatus` — `"updated"`/`"outdated"`/`"unknown"`，handler 层填充
+- 状态判定纯本地对比 (**零网络依赖**)：容器运行的 `ImageID` 与该 tag 当前本地 SHA 对比：
+  - 不同 = `outdated` (意思: 你 `docker pull` 了新版但没重建容器)
+  - 相同 = `updated`
+  - `nginx@sha256:...` digest 固定 = `unknown` (pinned 不适用)
+  - 空 ImageID / inspect 失败 = `unknown`
+- `PullImage` / `RemoveImage` 后自动 `invalidateImageStatusCache()`，下次 list 立即反映新状态
+- handler 层用 500ms sub-timeout 包裹 annotation，慢 inspect 永不阻塞列表响应
+- 前端 `DockerOverview.jsx` 容器卡片 `state` Badge 旁出现 `amber` 色 "outdated" Badge + 悬浮解释
+- i18n keys (en + zh): `docker.image_outdated`, `docker.image_outdated_hint`
+- 测试: 7 个用例 (compareImageStatus 矩阵 / 缓存 TTL 内去重 / 失败结果缓存 / Invalidate 立即生效 / TTL 过期刷新)
+
+**设计说明**: 原计划通过 registry HEAD 请求对比远程 digest。改为纯本地 `docker pull` 状态对比后：
+1. 零网络、零 registry 认证复杂度、毫秒级响应
+2. 捕获的是更实际的问题 (pull 了新镜像但忘记重建容器)，而非 "registry 上游有新版本"
+3. 若未来需要对比远程 digest，此基础设施已可扩展 (加一个 `remoteDigest` 字段到 cacheEntry，ttl=60s)
+
+---
+
 ## [Unreleased] — v0.11 Phase 4 "Automation & Reliability"
 
 ### F7: Git polling 自动 redeploy (Portainer Pattern 8)

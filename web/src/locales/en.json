@@ -713,6 +713,8 @@
         "import_docker_run_hint": "Paste a `docker run` command and convert it to Compose YAML. Useful for adapting examples from upstream projects' README.",
         "import_docker_run_failed": "Conversion failed",
         "convert_to_compose": "Convert to Compose",
+        "image_outdated": "outdated",
+        "image_outdated_hint": "A newer image for this tag has been pulled locally. Recreate this container to pick up the latest version.",
         "name": "Name",
         "image": "Image",
         "ports": "Ports",

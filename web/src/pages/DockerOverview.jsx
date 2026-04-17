@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback, useRef } from 'react'
-import { Box, Flex, Text, Card, Badge, Heading, Button, Separator, Dialog, TextArea, TextField, Tabs, Callout } from '@radix-ui/themes'
+import { Box, Flex, Text, Card, Badge, Heading, Button, Separator, Dialog, TextArea, TextField, Tabs, Callout, Tooltip } from '@radix-ui/themes'
 import { Container, Play, Square, RefreshCw, Trash2, FileText, Plus, Download, Server, Search, Radio, Upload, X, Loader2, Star, Settings, Wand2, Info } from 'lucide-react'
 import { useNavigate } from 'react-router'
 import { dockerRunToCompose } from '../utils/composerize.js'
@@ -285,6 +285,11 @@ export default function DockerOverview() {
                                         <Flex align="center" gap="2">
                                             <Text weight="bold" size="3">{c.name || c.id}</Text>
                                             <Badge color={c.state === 'running' ? 'green' : c.state === 'paused' ? 'orange' : 'gray'} variant="soft" size="1">{c.state}</Badge>
+                                            {c.image_status === 'outdated' && (
+                                                <Tooltip content={t('docker.image_outdated_hint')}>
+                                                    <Badge color="amber" variant="soft" size="1">{t('docker.image_outdated')}</Badge>
+                                                </Tooltip>
+                                            )}
                                         </Flex>
                                         <Flex gap="3">
                                             <Text size="1" color="gray">{c.image}</Text>

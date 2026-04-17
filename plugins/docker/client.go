@@ -57,6 +57,15 @@ type ContainerInfo struct {
 	ID      string            `json:"id"`
 	Name    string            `json:"name"`
 	Image   string            `json:"image"`
+	// ImageID is the SHA of the image this container is actually running.
+	// Populated by ListContainers; used by image-status resolution to detect
+	// containers running an older image than the latest local pull for the
+	// same tag. Format: "sha256:<hex>".
+	ImageID string            `json:"image_id,omitempty"`
+	// ImageStatus is populated by the docker service layer after calling
+	// ListContainers. Values: "updated", "outdated", "unknown". Never
+	// populated by the Client itself.
+	ImageStatus string        `json:"image_status,omitempty"`
 	State   string            `json:"state"`   // running, exited, paused, etc.
 	Status  string            `json:"status"`  // human-readable, e.g. "Up 2 hours"
 	Created int64             `json:"created"` // unix timestamp
@@ -98,6 +107,7 @@ func (c *Client) ListContainers(ctx context.Context, all bool) ([]ContainerInfo,
 			ID:      ctr.ID[:12],
 			Name:    name,
 			Image:   ctr.Image,
+			ImageID: ctr.ImageID,
 			State:   ctr.State,
 			Status:  ctr.Status,
 			Created: ctr.Created,
@@ -356,13 +366,23 @@ func (c *Client) ListImages(ctx context.Context) ([]ImageInfo, error) {
 }
 
 // PullImage pulls an image. Returns a reader for progress output.
+// The image-status cache is invalidated so subsequent ListContainers calls
+// see the freshly pulled SHA without waiting for cache TTL to expire.
 func (c *Client) PullImage(ctx context.Context, refStr string) (io.ReadCloser, error) {
-	return c.cli.ImagePull(ctx, refStr, image.PullOptions{})
+	rc, err := c.cli.ImagePull(ctx, refStr, image.PullOptions{})
+	if err == nil {
+		c.invalidateImageStatusCache()
+	}
+	return rc, err
 }
 
-// RemoveImage removes an image.
+// RemoveImage removes an image. Invalidates the image-status cache so stale
+// tag→ID mappings don't linger in container list responses.
 func (c *Client) RemoveImage(ctx context.Context, id string) error {
 	_, err := c.cli.ImageRemove(ctx, id, image.RemoveOptions{Force: true, PruneChildren: true})
+	if err == nil {
+		c.invalidateImageStatusCache()
+	}
 	return err
 }
 
