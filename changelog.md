@@ -91,6 +91,35 @@
 
 ---
 
+## [Unreleased] — v0.11 Phase 5 审查修复
+
+基于 Codex Review 发现的 3 个问题修复 (2 MEDIUM + 1 LOW)。
+
+### MEDIUM: PullImage 缓存失效时机错误 — badge 可滞后 5 秒
+- **问题**: `PullImage(ctx, ref)` 返回进度 reader 后立即调用 `invalidateImageStatusCache()`。但拉取**实际发生在 reader 被消费时** — 此时并发 `ListContainers` 能 inspect 到旧 SHA 并缓存它。拉取结束后缓存仍保留旧值直到 cacheTTL (5s) 过期
+- **修复**: 新 `invalidatingReader` 类型包装进度 reader，`Close()` 时触发一次性失效。调用方 `defer rc.Close()` 自然触发在拉取完成之后
+- 同时防 double-close 两次 invalidate (使用 `closed bool` 标志)
+- **回归测试**: `TestInvalidatingReader_InvalidatesOnClose`
+
+### MEDIUM: In-flight resolveTagImageID 可将过期 SHA 写回缓存
+- **问题**: Goroutine A 正在 Inspect (慢) — Goroutine B 完成 PullImage 调用 Invalidate 清空缓存 — A 的 Inspect 返回**pull 前的旧 SHA** — A 把旧 SHA 写回缓存。PullImage 后续 ListContainers 读到旧 SHA，badge 显示"updated"而实际 outdated
+- **修复**: `imageStatusCache` 新增 `gen uint64` 世代计数器。`Invalidate` 增加 gen；`resolveTagImageID` 在 inspect 前 snapshot gen，写回时对比，不一致则丢弃结果 (让下次调用重新 inspect)
+- **回归测试**: `TestImageStatusCache_InvalidateDuringResolve_RejectsStaleWrite` — 用 blocker channel 人为冻结 inspect 中段，期间调用 Invalidate，验证释放后 cache **不含**陈旧 entry
+
+### LOW: context 取消/超时错误污染缓存 5 秒
+- **问题**: handler 的 500ms sub-deadline 过期时，`ImageInspectWithRaw` 返回 `context.DeadlineExceeded`。原代码将空字符串 negative-cache 5 秒 → 后续 ListContainers 看到 "unknown" 即使 Docker socket 正常
+- **修复**: `resolveTagImageID` 检测 `errors.Is(err, context.Canceled)` 和 `errors.Is(err, context.DeadlineExceeded)`，直接返回 "" **不写缓存**，允许下次请求立即重试
+- **回归测试**: `TestImageStatusCache_ContextErrorNotNegativeCached` 验证超时错误后 cache 无条目，follow-up 请求立即 inspect 并缓存正确结果
+
+### 非 bug (Codex 已核验)
+- `ImageInspectWithRaw` 返回 `([]byte, ...)` 非 ReadCloser，无需关闭
+- ImageID 格式双方一致 (均为 `sha256:hex`)，无误报 outdated
+- 500ms timeout 下部分失败降级为 "unknown" 是预期行为
+- 前端只显示 outdated 隐藏 unknown 是设计选择
+- 包级 defaultImageStatusCache 在单 daemon 场景下线程安全；多 daemon 是未来问题
+
+---
+
 ## [Unreleased] — v0.11 HIGH-pattern 举一反三审计修复
 
 基于 Phase 1-4 Codex Review 中 HIGH 类问题的模式提取，对整个代码库做一轮系统性搜索，发现并修复 **2 处相同 class 的 SSRF 缺失**。

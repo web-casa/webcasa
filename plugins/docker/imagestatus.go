@@ -2,6 +2,7 @@ package docker
 
 import (
 	"context"
+	"errors"
 	"strings"
 	"sync"
 	"time"
@@ -20,9 +21,16 @@ const (
 // window so a single ListContainers call doesn't re-query Docker once per
 // container. Entries live cacheTTL; after expiry a fresh ImageInspect is
 // performed on demand (not eagerly refreshed).
+//
+// Generation counter: Invalidate() increments gen. Resolvers snapshot gen
+// before their inspect call and only commit the result if gen is unchanged
+// when they go to write. This prevents an in-flight Inspect that started
+// BEFORE a PullImage/RemoveImage from repopulating the cache with the
+// pre-mutation SHA after Invalidate has already cleared it.
 type imageStatusCache struct {
 	mu      sync.RWMutex
 	entries map[string]cacheEntry
+	gen     uint64
 }
 
 type cacheEntry struct {
@@ -58,6 +66,7 @@ func (c *imageStatusCache) resolveTagImageID(ctx context.Context, cli imageInspe
 	now := time.Now()
 	c.mu.RLock()
 	ent, ok := c.entries[ref]
+	genAtStart := c.gen
 	c.mu.RUnlock()
 	if ok && now.Before(ent.expiresAt) {
 		return ent.imageID
@@ -68,21 +77,34 @@ func (c *imageStatusCache) resolveTagImageID(ctx context.Context, cli imageInspe
 	info, _, err := cli.ImageInspectWithRaw(ctx, ref)
 	if err == nil {
 		id = info.ID
+	} else if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+		// Transient: do NOT negative-cache. The caller's context went away
+		// mid-inspect (e.g. the handler's 500ms sub-deadline expired); the
+		// next list request should retry rather than see "unknown" for
+		// cacheTTL seconds just because one request timed out.
+		return ""
 	}
 
 	c.mu.Lock()
-	c.entries[ref] = cacheEntry{imageID: id, expiresAt: now.Add(cacheTTL)}
+	// Reject stale writes: if the cache was invalidated (generation
+	// incremented) while our inspect was in flight, our result is potentially
+	// pre-mutation. Drop it and let the next call re-inspect.
+	if c.gen == genAtStart {
+		c.entries[ref] = cacheEntry{imageID: id, expiresAt: now.Add(cacheTTL)}
+	}
 	c.mu.Unlock()
 
 	return id
 }
 
-// Invalidate clears all cached entries. Call after a local ImagePull or
-// ImageRemove so subsequent status queries reflect the new state immediately
-// instead of waiting for cacheTTL expiry.
+// Invalidate clears all cached entries and bumps the generation counter.
+// In-flight resolveTagImageID calls that started before this Invalidate
+// will see the counter change and skip their write-back, preventing stale
+// SHAs from being re-introduced after a pull/remove.
 func (c *imageStatusCache) Invalidate() {
 	c.mu.Lock()
 	c.entries = make(map[string]cacheEntry)
+	c.gen++
 	c.mu.Unlock()
 }
 

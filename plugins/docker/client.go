@@ -366,14 +366,39 @@ func (c *Client) ListImages(ctx context.Context) ([]ImageInfo, error) {
 }
 
 // PullImage pulls an image. Returns a reader for progress output.
-// The image-status cache is invalidated so subsequent ListContainers calls
-// see the freshly pulled SHA without waiting for cache TTL to expire.
+//
+// Image-status cache invalidation is deferred to reader Close — ImagePull
+// returns the reader immediately but the pull itself streams as the caller
+// consumes it. Invalidating at return time would race: a concurrent
+// ListContainers would inspect the PRE-pull SHA and cache it, and that
+// stale entry would linger for up to cacheTTL. Invalidating after the
+// reader is fully consumed guarantees the next list sees the new SHA.
 func (c *Client) PullImage(ctx context.Context, refStr string) (io.ReadCloser, error) {
 	rc, err := c.cli.ImagePull(ctx, refStr, image.PullOptions{})
-	if err == nil {
-		c.invalidateImageStatusCache()
+	if err != nil {
+		return nil, err
 	}
-	return rc, err
+	return &invalidatingReader{ReadCloser: rc, onClose: c.invalidateImageStatusCache}, nil
+}
+
+// invalidatingReader wraps an io.ReadCloser and runs onClose exactly once
+// after the underlying reader is closed. Used for PullImage so the image-
+// status cache is invalidated only once the pull stream has drained.
+type invalidatingReader struct {
+	io.ReadCloser
+	onClose func()
+	closed  bool
+}
+
+func (r *invalidatingReader) Close() error {
+	err := r.ReadCloser.Close()
+	if !r.closed {
+		r.closed = true
+		if r.onClose != nil {
+			r.onClose()
+		}
+	}
+	return err
 }
 
 // RemoveImage removes an image. Invalidates the image-status cache so stale
