@@ -205,9 +205,18 @@ FAKESC
     docker exec "$CONTAINER" test -f /etc/systemd/system/webcasa.service && \
         pass "Systemd service file" || fail "Systemd service file missing"
 
-    # Verify systemd service runs as root (Pro requirement)
-    docker exec "$CONTAINER" grep -q "User=root" /etc/systemd/system/webcasa.service && \
-        pass "Service runs as root" || fail "Service not running as root"
+    # v0.12: service runs as the dedicated `webcasa` user (not root).
+    docker exec "$CONTAINER" grep -q "^User=webcasa$" /etc/systemd/system/webcasa.service && \
+        pass "Service runs as webcasa user" || fail "Service User= is not webcasa"
+
+    # v0.12: webcasa service must carry SupplementaryGroups=podman so the
+    # process can reach /run/podman/podman.sock once the host starts it.
+    docker exec "$CONTAINER" grep -q "^SupplementaryGroups=podman$" /etc/systemd/system/webcasa.service && \
+        pass "Service has SupplementaryGroups=podman" || fail "SupplementaryGroups=podman missing"
+
+    # v0.12: AmbientCapabilities so forked Caddy can bind 80/443 as non-root.
+    docker exec "$CONTAINER" grep -q "^AmbientCapabilities=CAP_NET_BIND_SERVICE$" /etc/systemd/system/webcasa.service && \
+        pass "AmbientCapabilities=CAP_NET_BIND_SERVICE present" || fail "AmbientCapabilities missing"
 
     # Verify no ProtectHome (Pro requirement: file manager needs /home access)
     if docker exec "$CONTAINER" grep -q "ProtectHome" /etc/systemd/system/webcasa.service 2>/dev/null; then
