@@ -91,6 +91,29 @@
 
 ---
 
+## [Unreleased] — v0.11 Phase 1 审查修复
+
+基于 Codex Review 发现的 3 个问题 (1 HIGH + 2 MEDIUM) 修复：
+
+### HIGH: buildLoop 退出 race — pending 请求可能被吞掉
+- **问题**: `plugins/deploy/service.go` 的 `buildLoop` 用 `defer` 清 `buildInflight`，在 "pending 检查" 和 "inflight 清除" 之间存在窗口。并发 `Build()` 在窗口内看到 `inflight=true` 设 `pending=true` 然后返回 `ErrBuildCoalesced`，但 loop 已决定退出——pending 标志被孤立，最新 commit 永不部署
+- **修复**: 移除 defer，将 `delete(buildInflight)` 挪到同一把锁下与 pending 检查原子执行
+- **回归测试**: `TestBuild_ExitRace_PendingNotLost` — 50 轮 × 20 并发 Build，`-race` 下验证 `buildPending` 永不泄漏
+
+### MEDIUM: 2FA TempToken 路径仍被 Login 限流器拦截
+- **问题**: `Login()` 在路由到 tempToken 分支前调用 `limiters.Login.Check()`，导致 Login 预算耗尽时 2FA 第二步也被 429 拒绝——违反了 Phase 1 设计中的预算分离意图
+- **修复**: 先 parse body，再按 `TempToken != ""` 分流；TempToken 路径完全跳过 Login bucket，仅由 `handleTempTokenLogin` 入口的 TOTP bucket 门控
+- **回归测试**: `TestLogin_TempTokenPath_NotBlockedByLoginLimiter` 验证 Login 耗尽时 2FA 仍可通过；`TestLogin_PrimaryPath_StillBlockedByLoginLimiter` 验证主凭据路径仍受保护
+
+### MEDIUM: `clientAcceptsGzip` 误读多参数 header
+- **问题**: 旧解析只读 `;` 后的第一个参数块，导致 `gzip;foo=bar;q=0` 和 `gzip;q=0;foo=bar` 被错误识别为接受 gzip，违反 RFC 7231 §5.3.1
+- **修复**: 扫描所有 `;` 分隔的参数查找 `q=`，malformed q 保守拒绝 (返回 false 而非 true)
+- **回归测试**: 5 个新 case 覆盖多参数排列
+
+所有 Phase 1 影响包通过 `go test -race` 验证。
+
+---
+
 ## [Unreleased] — v0.11 Phase 1 "Core Infrastructure"
 
 本 Phase 交付 3 个横切基础设施改进，基于 Portainer / Dockge / 1Panel 竞品分析。所有变更 **additive-only**，对 v0.10.0 行为完全兼容。

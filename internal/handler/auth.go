@@ -128,25 +128,30 @@ func (h *AuthHandler) Setup(c *gin.Context) {
 func (h *AuthHandler) Login(c *gin.Context) {
 	ip := c.ClientIP()
 
-	// Rate limit check
-	allowed, waitSec := h.limiters.Login.Check(ip)
-	if !allowed {
-		c.JSON(http.StatusTooManyRequests, gin.H{
-			"error":       "Too many login attempts",
-			"retry_after": waitSec,
-		})
-		return
-	}
-
+	// Parse body first so we can route temp-token requests through the TOTP
+	// limiter instead of the stricter Login bucket. Gating the 2FA second
+	// step with Login.Check would lock out a user whose primary-creds budget
+	// is exhausted on the same IP, even for legitimate 2FA retries.
 	var req loginRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
 	}
 
-	// Handle 2FA verification with temp_token
+	// 2FA verification path: gated solely by limiters.TOTP (see
+	// handleTempTokenLogin). Skip the Login bucket entirely.
 	if req.TempToken != "" {
 		h.handleTempTokenLogin(c, ip, req)
+		return
+	}
+
+	// Primary credentials path: Login bucket applies (5/15min).
+	allowed, waitSec := h.limiters.Login.Check(ip)
+	if !allowed {
+		c.JSON(http.StatusTooManyRequests, gin.H{
+			"error":       "Too many login attempts",
+			"retry_after": waitSec,
+		})
 		return
 	}
 

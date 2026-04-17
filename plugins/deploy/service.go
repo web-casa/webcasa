@@ -406,13 +406,14 @@ func (s *Service) Build(projectID uint) error {
 
 // buildLoop runs builds for a project until the pending flag is clear.
 // Guarantees at most one runBuildOnce in flight via singleflight.
+//
+// Exit-race guard: the pending flag check and the buildInflight clear MUST
+// happen under a single lock acquisition. A deferred inflight-clear with an
+// intermediate unlock (earlier implementation) left a window where a
+// concurrent Build() could observe inflight=true, set pending=true, and get
+// ErrBuildCoalesced — all AFTER the loop had decided to exit, stranding the
+// pending request until some later unrelated Build() happened to pick it up.
 func (s *Service) buildLoop(projectID uint) {
-	defer func() {
-		s.buildMu.Lock()
-		delete(s.buildInflight, projectID)
-		s.buildMu.Unlock()
-	}()
-
 	for {
 		key := fmt.Sprintf("%d", projectID)
 		_, err, _ := s.buildGroup.Do(key, func() (interface{}, error) {
@@ -432,6 +433,9 @@ func (s *Service) buildLoop(projectID uint) {
 			s.logger.Info("build loop: starting queued rebuild", "project_id", projectID)
 			continue
 		}
+		// Atomic: clear inflight while still holding the lock so no Build()
+		// can race between "decided to exit" and "inflight visible as false".
+		delete(s.buildInflight, projectID)
 		s.buildMu.Unlock()
 		return
 	}

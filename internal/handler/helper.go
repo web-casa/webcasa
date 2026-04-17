@@ -68,29 +68,38 @@ func SuccessGzipped(c *gin.Context, data interface{}) {
 	c.Data(http.StatusOK, "application/json; charset=utf-8", buf.Bytes())
 }
 
-// clientAcceptsGzip returns true if the Accept-Encoding header advertises gzip
-// with a nonzero q-value. Tolerates whitespace, case, and ordered preferences.
+// clientAcceptsGzip returns true if the Accept-Encoding header advertises
+// gzip with a non-zero q-value. RFC 7231 §5.3.1 allows multiple semicolon-
+// separated parameters per encoding; earlier versions of this parser only
+// read the first parameter blob and could mis-classify headers like
+// `gzip;foo=bar;q=0` (extra param before q) or `gzip;q=0;x=y` (q followed
+// by another param) as accepted. This implementation scans all parameters,
+// honours any q=, and treats malformed q values conservatively as refused.
 func clientAcceptsGzip(acceptEncoding string) bool {
 	if acceptEncoding == "" {
 		return false
 	}
 	for _, part := range strings.Split(acceptEncoding, ",") {
 		part = strings.TrimSpace(part)
-		name, params, _ := strings.Cut(part, ";")
+		name, paramStr, _ := strings.Cut(part, ";")
 		if !strings.EqualFold(strings.TrimSpace(name), "gzip") {
 			continue
 		}
-		params = strings.TrimSpace(params)
-		if params == "" {
-			return true
-		}
-		if !strings.HasPrefix(strings.ToLower(params), "q=") {
-			return true
-		}
-		val := strings.TrimSpace(params[2:])
-		q, err := strconv.ParseFloat(val, 64)
-		if err != nil {
-			return true
+
+		q := 1.0 // default when no q param is supplied
+		for _, p := range strings.Split(paramStr, ";") {
+			p = strings.TrimSpace(p)
+			if len(p) < 2 || !strings.EqualFold(p[:2], "q=") {
+				continue
+			}
+			v, err := strconv.ParseFloat(strings.TrimSpace(p[2:]), 64)
+			if err != nil {
+				// Malformed q — refuse conservatively. Misbehaving clients
+				// that cannot accept gzip would rather we served raw than
+				// corrupt.
+				return false
+			}
+			q = v
 		}
 		return q > 0
 	}

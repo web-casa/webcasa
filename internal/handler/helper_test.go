@@ -35,6 +35,13 @@ func TestClientAcceptsGzip(t *testing.T) {
 		{"br, deflate", false},
 		{"gzip ; q = 0.5", true},
 		{"identity;q=1, gzip;q=0.8", true},
+		// Multi-param headers (RFC 7231 §5.3.1). Earlier parser only read
+		// the first parameter blob and returned true for these.
+		{"gzip;foo=bar;q=0", false},
+		{"gzip;q=0;foo=bar", false},
+		{"gzip;foo=bar", true},
+		{"gzip;q=garbage", false}, // malformed q refused conservatively
+		{"gzip;q=1.0;unexpected=x", true},
 	}
 	for _, tc := range cases {
 		if got := clientAcceptsGzip(tc.header); got != tc.want {

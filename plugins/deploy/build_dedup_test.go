@@ -156,6 +156,55 @@ func TestBuild_ParallelProjectsIndependent(t *testing.T) {
 	}
 }
 
+// TestBuild_ExitRace_PendingNotLost is a regression test for the Codex-flagged
+// HIGH finding: buildLoop used to clear buildInflight via defer AFTER
+// releasing the lock around the pending check, leaving a window where a
+// concurrent Build() could set buildPending=true and get ErrBuildCoalesced
+// while the loop had already decided to exit. The pending flag would then
+// sit stranded until some later Build() happened to wake it up.
+//
+// The fix moves the inflight clear under the same lock as the pending check
+// (no defer). This test drives the loop through many tight start/finish
+// cycles under parallel pressure and asserts buildPending stays empty after
+// the system quiesces.
+func TestBuild_ExitRace_PendingNotLost(t *testing.T) {
+	s := newTestService()
+
+	var runs atomic.Int32
+	s.buildRunner = func(projectID uint) error {
+		runs.Add(1)
+		// Tiny sleep makes the check-vs-clear race window observable. Keep
+		// short so the test finishes quickly even under -race.
+		time.Sleep(1 * time.Millisecond)
+		return nil
+	}
+
+	// Drive many cycles; each iteration kicks off a short burst of
+	// concurrent Build() calls, waits for the system to quiesce, then
+	// checks the pending flag. With the pre-fix code this reliably strands
+	// pending=true after a few iterations on -race builds.
+	for cycle := 0; cycle < 50; cycle++ {
+		var wg sync.WaitGroup
+		for i := 0; i < 20; i++ {
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+				_ = s.Build(1)
+			}()
+		}
+		wg.Wait()
+
+		waitInflightClear(t, s, 1, 2*time.Second)
+
+		s.buildMu.Lock()
+		leaked := s.buildPending[1]
+		s.buildMu.Unlock()
+		if leaked {
+			t.Fatalf("regression at cycle %d: buildPending[1]=true after buildInflight cleared — coalesced request stranded", cycle)
+		}
+	}
+}
+
 func waitInflightClear(t *testing.T, s *Service, projectID uint, timeout time.Duration) {
 	t.Helper()
 	deadline := time.Now().Add(timeout)
