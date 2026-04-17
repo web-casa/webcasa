@@ -6,6 +6,32 @@
 
 ---
 
+## [Unreleased] — v0.11 Phase 4 "Automation & Reliability"
+
+### F7: Git polling 自动 redeploy (Portainer Pattern 8)
+- 新增 `plugins/deploy/poller.go` — 后台定时调度器，全局 30s tick 扫描所有启用的项目；per-project 间隔最低 60s (配置低于则自动 clamp)，默认 300s
+- 通过 `git ls-remote --heads <url> <branch>` 零克隆拉取远端 HEAD SHA，对比 `Project.LastDeployedCommit` 变化触发 `Service.Build()` (复用 Phase 1 SingleFlight 去重，webhook + polling 并发只会 build 一次)
+- 支持 3 种 git 认证：SSH key (临时写 0600 key 文件 + `GIT_SSH_COMMAND`)、GitHub App token (HTTPS)、GitHub OAuth token (HTTPS)
+- `Project` model 新增字段：`GitPollEnabled bool`、`GitPollIntervalSec int` (默认 300)、`LastDeployedCommit string`、`LastPolledAt *time.Time`
+- 构建成功流程写入 `LastDeployedCommit = result.Commit` 供下次 polling 比对
+- `UpdateProject` handler 白名单加 `git_poll_enabled`/`git_poll_interval_sec`，interval < 60 自动 clamp，< 0 拒绝
+- Plugin `Start()/Stop()` 挂接 poller 生命周期 (goroutine 优雅停机，close(stop) + <-done 等待 tick 退出)
+- 测试: 4 个用例 (effectivePollInterval 边界矩阵 / shortSHA 长度截断 / Build 触发 / 间隔 gate 生效)
+- **兼容性**: `GitPollEnabled=false` 默认 = 零行为变化；依赖现有 `ErrBuildCoalesced` 和 `SingleFlight` (Phase 1)
+
+### F6: 备份保留安全地板 (基于 Pigsty Pattern 7 启发)
+- 发现现有 `plugins/backup/service.go` 已实现 count/age/size 三层保留 (v0.10.0)，本 Phase 聚焦于**加固而非重复**
+- `BackupConfig` model 新增 `MinRetainCount int` 字段 (默认 1) — 安全地板，保证无论 count/age/size 规则如何激进，最新 N 个快照永远保留
+  - **防止场景**: 用户误操作 `retain_days: 30 → 1` 一次性抹掉全部历史
+- `enforceRetention()` 重写: 先按 count/age/size 计算 `toDelete` 集合，再按 MinRetainCount 反向 unpin 最新的 N 个
+- 每次删除记录结构化日志 `reason=count|age|size`，汇总输出 `by_count=X by_age=Y by_size=Z` 便于审计
+- `UpdateConfigRequest` 新增 `MinRetainCount *int` (负值拒绝)
+- 首次启动默认配置 `MinRetainCount: 1`
+- 测试: 5 个用例 (count-only 兼容 v0.10 / MinFloor 阻止全删 / MinFloor 钉住最新的 / MinFloor=0 退回旧行为 / count+age+size 三层叠加)
+- **兼容性**: 新字段默认 1，既有用户升级后立即获得地板保护 (若之前 retention 策略会删光，升级后最新 1 个仍保留)
+
+---
+
 ## [Unreleased] — v0.11 Phase 3 "Database Tuning"
 
 ### F1: PostgreSQL 调优预设 (Pigsty Pattern 1)

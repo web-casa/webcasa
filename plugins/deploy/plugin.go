@@ -146,14 +146,16 @@ func (p *Plugin) Init(ctx *pluginpkg.Context) error {
 	return nil
 }
 
-// Start is called after Init. Starts the cron scheduler.
+// Start is called after Init. Starts the cron scheduler and git poller.
 func (p *Plugin) Start() error {
 	p.svc.StartCronScheduler()
+	p.svc.StartGitPoller()
 	return nil
 }
 
 // Stop cleans up resources.
 func (p *Plugin) Stop() error {
+	p.svc.StopGitPoller()
 	p.svc.StopCronScheduler()
 	return nil
 }

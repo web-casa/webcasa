@@ -66,6 +66,9 @@ type Service struct {
 
 	// Cron scheduler
 	cron *CronScheduler
+
+	// Git polling scheduler (opt-in per project; see Project.GitPollEnabled).
+	poller *Poller
 }
 
 // NewService creates a new deploy service.
@@ -103,6 +106,10 @@ func NewService(db *gorm.DB, coreAPI pluginpkg.CoreAPI, eventBus *pluginpkg.Even
 
 	// Migrate plaintext deploy keys to encrypted
 	svc.migrateDeployKeys()
+
+	// Build the poller after the service struct is fully initialised so it
+	// can borrow s.db / s.logger / s.GetGitCredentials.
+	svc.poller = NewPoller(svc)
 
 	return svc
 }
@@ -556,6 +563,12 @@ func (s *Service) runBuild(project *Project, deployment *Deployment, logWriter *
 
 	deployment.Status = "success"
 	s.db.Save(deployment)
+
+	// Record the deployed commit on the project so the git poller (and any
+	// downstream tooling) can detect when the remote moves ahead.
+	if result.Commit != "" {
+		s.db.Model(&Project{}).Where("id = ?", project.ID).Update("last_deployed_commit", result.Commit)
+	}
 
 	// Deploy based on mode
 	if project.DeployMode == "docker" {
@@ -1300,6 +1313,16 @@ func (s *Service) StartCronScheduler() {
 // StopCronScheduler stops the cron scheduler (called from plugin Stop).
 func (s *Service) StopCronScheduler() {
 	s.cron.Stop()
+}
+
+// StartGitPoller kicks off the per-project git polling loop.
+func (s *Service) StartGitPoller() {
+	s.poller.Start()
+}
+
+// StopGitPoller halts the polling loop and waits for in-flight ticks to drain.
+func (s *Service) StopGitPoller() {
+	s.poller.Stop()
 }
 
 // migrateDeployKeys encrypts any plaintext deploy keys found in the database.

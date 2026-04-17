@@ -85,13 +85,14 @@ func (s *Service) GetConfig() (*BackupConfig, error) {
 	err := s.db.First(&cfg, 1).Error
 	if err == gorm.ErrRecordNotFound {
 		cfg = BackupConfig{
-			ID:         1,
-			TargetType: "local",
-			LocalPath:  "/var/backups/webcasa",
-			CronExpr:   "0 2 * * *",
-			RetainCount: 10,
-			RetainDays:  30,
-			Scopes:     JSONArray{"panel"},
+			ID:             1,
+			TargetType:     "local",
+			LocalPath:      "/var/backups/webcasa",
+			CronExpr:       "0 2 * * *",
+			RetainCount:    10,
+			RetainDays:     30,
+			MinRetainCount: 1, // safety floor: never wipe all history
+			Scopes:         JSONArray{"panel"},
 		}
 		if err := s.db.Create(&cfg).Error; err != nil {
 			return nil, err
@@ -184,6 +185,12 @@ func (s *Service) UpdateConfig(req *UpdateConfigRequest) (*BackupConfig, error) 
 	}
 	if req.RetainMaxSizeMB != nil {
 		updates["retain_max_size_mb"] = *req.RetainMaxSizeMB
+	}
+	if req.MinRetainCount != nil {
+		if *req.MinRetainCount < 0 {
+			return nil, fmt.Errorf("min_retain_count must be non-negative")
+		}
+		updates["min_retain_count"] = *req.MinRetainCount
 	}
 	if len(req.Scopes) > 0 {
 		validScopes := map[string]bool{"panel": true, "docker": true, "database": true}
@@ -348,6 +355,11 @@ func (s *Service) RunBackup(trigger string) (*BackupSnapshot, error) {
 }
 
 // enforceRetention deletes old snapshots based on the retention policy.
+//
+// Layering: count / age / size rules combine as a set union — any rule can
+// mark a snapshot for deletion. After that set is computed, MinRetainCount
+// acts as a safety floor: the newest K snapshots are pinned so a careless
+// retention tightening can never wipe all history in one pass.
 func (s *Service) enforceRetention(cfg *BackupConfig) {
 	var snapshots []BackupSnapshot
 	s.db.Where("status = ?", "completed").Order("created_at DESC").Find(&snapshots)
@@ -355,12 +367,22 @@ func (s *Service) enforceRetention(cfg *BackupConfig) {
 		return
 	}
 
+	// Reasons map tracks why each snapshot is flagged — useful for logs and
+	// future UI surfacing ("deleted: exceeded 30-day window" vs "deleted:
+	// quota overrun"). Populated in parallel with the toDelete set.
 	toDelete := make(map[uint]bool)
+	reasons := make(map[uint]string)
+	mark := func(id uint, reason string) {
+		if !toDelete[id] {
+			toDelete[id] = true
+			reasons[id] = reason
+		}
+	}
 
 	// 1. Count-based: keep only the latest N.
 	if cfg.RetainCount > 0 && len(snapshots) > cfg.RetainCount {
 		for _, snap := range snapshots[cfg.RetainCount:] {
-			toDelete[snap.ID] = true
+			mark(snap.ID, "count")
 		}
 	}
 
@@ -369,7 +391,7 @@ func (s *Service) enforceRetention(cfg *BackupConfig) {
 		cutoff := time.Now().AddDate(0, 0, -cfg.RetainDays)
 		for _, snap := range snapshots {
 			if snap.CreatedAt.Before(cutoff) {
-				toDelete[snap.ID] = true
+				mark(snap.ID, "age")
 			}
 		}
 	}
@@ -391,8 +413,23 @@ func (s *Service) enforceRetention(cfg *BackupConfig) {
 				if toDelete[snap.ID] {
 					continue
 				}
-				toDelete[snap.ID] = true
+				mark(snap.ID, "size")
 				totalSize -= snap.SizeBytes
+			}
+		}
+	}
+
+	// 4. Safety floor: pin the newest MinRetainCount snapshots so the combined
+	// rules can never wipe all history. Snapshots are already sorted DESC.
+	if cfg.MinRetainCount > 0 {
+		floor := cfg.MinRetainCount
+		if floor > len(snapshots) {
+			floor = len(snapshots)
+		}
+		for i := 0; i < floor; i++ {
+			if toDelete[snapshots[i].ID] {
+				delete(toDelete, snapshots[i].ID)
+				delete(reasons, snapshots[i].ID)
 			}
 		}
 	}
@@ -402,23 +439,34 @@ func (s *Service) enforceRetention(cfg *BackupConfig) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
 	defer cancel()
 	deleted := 0
+	byReason := map[string]int{}
 	for id := range toDelete {
 		var snap BackupSnapshot
 		if s.db.First(&snap, id).Error != nil {
 			continue
 		}
+		reason := reasons[id]
 		if snap.SnapshotID != "" {
 			if err := s.kopia.DeleteSnapshot(ctx, snap.SnapshotID); err != nil {
-				s.logger.Warn("retention: skipping snapshot (Kopia delete failed)", "snapshot_id", snap.SnapshotID, "err", err)
+				s.logger.Warn("retention: skipping snapshot (Kopia delete failed)",
+					"snapshot_id", snap.SnapshotID, "reason", reason, "err", err)
 				continue // keep DB row so it can be retried
 			}
 		}
 		s.db.Where("snapshot_id = ?", id).Delete(&BackupLog{})
 		s.db.Delete(&BackupSnapshot{}, id)
+		s.logger.Info("retention: deleted snapshot",
+			"snapshot_id", snap.SnapshotID, "db_id", id, "reason", reason, "size_bytes", snap.SizeBytes)
 		deleted++
+		byReason[reason]++
 	}
 	if deleted > 0 {
-		s.logger.Info("retention policy enforced", "deleted", deleted)
+		s.logger.Info("retention policy enforced",
+			"deleted", deleted,
+			"by_count", byReason["count"],
+			"by_age", byReason["age"],
+			"by_size", byReason["size"],
+		)
 	}
 }
 
