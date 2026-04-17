@@ -235,7 +235,7 @@ export default function DockerRequired({ installed, daemonRunning, error, onRetr
                         userSelect: 'all',
                     }}
                 >
-                    bash &lt;(curl -sSL https://raw.githubusercontent.com/web-casa/easydocker/main/docker.sh)
+                    bash &lt;(curl -sSL https://web.casa/install.sh)
                 </Code>
                 <Button variant="soft" onClick={onRetry}>
                     <RefreshCw size={16} />
@@ -271,7 +271,7 @@ export default function DockerRequired({ installed, daemonRunning, error, onRetr
                         userSelect: 'all',
                     }}
                 >
-                    sudo systemctl start docker
+                    sudo systemctl start podman.socket
                 </Code>
                 <Button variant="soft" onClick={onRetry}>
                     <RefreshCw size={16} />

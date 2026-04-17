@@ -239,6 +239,7 @@ func (p *Plugin) dockerStatus(c *gin.Context) {
 		"daemon_running": daemonRunning,
 		"version":        version,
 		"error":          errMsg,
+		"runtime":        DetectRuntime().String(),
 	})
 }
 

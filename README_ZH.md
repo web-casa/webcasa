@@ -20,7 +20,7 @@
 ## 产品形态
 
 - **Lite** — Caddy 反向代理管理面板（开箱即用）
-- **Full** — Lite + 12 个插件扩展（Docker / 项目部署 / AI 助手 / 数据库 / 文件管理 / 备份 / 监控 / 应用商店 / MCP / 防火墙 / 定时任务 / PHP）
+- **Full** — Lite + 12 个插件扩展（容器 (Podman) / 项目部署 / AI 助手 / 数据库 / 文件管理 / 备份 / 监控 / 应用商店 / MCP / 防火墙 / 定时任务 / PHP）
 - **Full** 指开启全部插件功能的完整形态
 - 用户可按需启用插件，从 Lite 渐进升级到 Full
 
@@ -46,14 +46,14 @@
 
 | 插件 | 功能 |
 |------|------|
-| **Docker** | Docker & Compose 管理，容器/镜像/网络/卷，Daemon 配置 |
+| **容器** | 基于 Podman 的容器与 Compose 管理（镜像/网络/卷），通过 `podman-docker` 兼容 Docker CLI |
 | **项目部署** | Git 源码部署（Node.js/Go/PHP/Python），自动检测框架，零停机部署 |
 | **AI 助手** | 67+ 工具的 AI 聊天，NLOps 自然语言运维，故障自愈，每日巡检 |
 | **数据库** | MySQL / PostgreSQL / MariaDB / Redis 实例管理，SQL 浏览器 |
 | **文件管理** | 文件浏览器、在线编辑器、Web 终端（PTY） |
-| **备份** | 通过 Kopia 备份面板数据 / Docker 卷 / 数据库（本地/S3/WebDAV/SFTP） |
+| **备份** | 通过 Kopia 备份面板数据 / 容器卷 / 数据库（本地/S3/WebDAV/SFTP） |
 | **系统监控** | 实时系统指标、历史图表、阈值告警 |
-| **应用商店** | 一键 Docker 应用安装、项目模板市场 |
+| **应用商店** | 一键部署容器化应用，内置项目模板市场 |
 | **MCP 服务** | MCP 协议服务，用于 AI IDE 集成（Cursor / Windsurf / Claude Code） |
 | **防火墙** | firewalld 规则管理 |
 | **定时任务** | 通用定时任务管理（Cron 表达式 + Shell 命令） |
@@ -84,6 +84,8 @@ curl -fsSL https://raw.githubusercontent.com/web-casa/webcasa/main/install.sh | 
 ```
 
 安装完成后访问 `http://YOUR_IP:39921`，首次访问会引导创建管理员账户。
+
+> **容器运行时：** v0.12 会自动安装 **Podman 5.6**（AppStream）+ `podman-docker` 兼容层 + `podman-compose`（EPEL）。面板通过 rootful Podman socket 通信，原有 `docker` / `docker-compose` 命令和镜像保持可用。
 
 **自定义选项：**
 

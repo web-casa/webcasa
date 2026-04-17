@@ -20,7 +20,7 @@ Reverse proxy management powered by [Caddy](https://caddyserver.com) with plugin
 ## Product Tiers
 
 - **Lite** — Caddy reverse proxy management out of the box
-- **Full** — Lite plus 12 plugin extensions (Docker / Project Deployment / AI Assistant / Database / File Manager / Backup / Monitoring / App Store / MCP / Firewall / Cron Jobs / PHP)
+- **Full** — Lite plus 12 plugin extensions (Containers (Podman) / Project Deployment / AI Assistant / Database / File Manager / Backup / Monitoring / App Store / MCP / Firewall / Cron Jobs / PHP)
 - **Full** means the complete edition with all plugin features enabled
 - Enable plugins as needed and scale from Lite to Full progressively
 
@@ -46,14 +46,14 @@ Reverse proxy management powered by [Caddy](https://caddyserver.com) with plugin
 
 | Plugin | Description |
 |------|------|
-| **Docker** | Docker and Compose management for containers, images, networks, volumes, and daemon settings |
+| **Containers** | Podman-based container and Compose management for containers, images, networks, and volumes (Docker-compatible CLI via `podman-docker`) |
 | **Project Deployment** | Git-based source deployment for Node.js/Go/PHP/Python with framework detection and zero-downtime release |
 | **AI Assistant** | AI chat with 67+ tools, natural-language ops, self-healing, and daily inspections |
 | **Database** | MySQL / PostgreSQL / MariaDB / Redis instance management with SQL browser |
 | **File Manager** | File browser, online editor, and PTY web terminal |
-| **Backup** | Backup panel data / Docker volumes / databases via Kopia (local/S3/WebDAV/SFTP) |
+| **Backup** | Backup panel data / container volumes / databases via Kopia (local/S3/WebDAV/SFTP) |
 | **Monitoring** | Real-time system metrics, historical charts, and threshold alerts |
-| **App Store** | One-click Docker app installs and project template marketplace |
+| **App Store** | One-click containerised app installs and project template marketplace |
 | **MCP Server** | MCP protocol service for AI IDE integrations (Cursor / Windsurf / Claude Code) |
 | **Firewall** | firewalld rule management |
 | **Cron Jobs** | General-purpose scheduled task management with cron expressions and shell commands |
@@ -84,6 +84,8 @@ curl -fsSL https://raw.githubusercontent.com/web-casa/webcasa/main/install.sh | 
 ```
 
 After installation, open `http://YOUR_IP:39921`. On first access, the panel will guide you through creating an administrator account.
+
+> **Container runtime:** v0.12 installs **Podman 5.6** (AppStream) with the `podman-docker` shim plus `podman-compose` (EPEL). The panel talks to the rootful Podman socket; existing `docker`/`docker-compose` commands and images keep working unchanged.
 
 **Custom options:**
 
