@@ -2,16 +2,24 @@ package auth
 
 import (
 	"math"
+	"net/http"
+	"strconv"
 	"sync"
 	"time"
+
+	"github.com/gin-gonic/gin"
 )
 
 // ============ Rate Limiter ============
 
-// RateLimiter tracks login attempts per IP
+// RateLimiter tracks request counts per client (IP) within a sliding window.
+// Exponential backoff applies: after each failure, the next attempt must wait
+// 2^(n-1) seconds. Callers explicitly record failures via RecordFail so that
+// unauthenticated/anonymous endpoints can rate-limit without penalising
+// legitimate successful requests.
 type RateLimiter struct {
-	mu       sync.Mutex
-	attempts map[string]*attemptInfo
+	mu          sync.Mutex
+	attempts    map[string]*attemptInfo
 	maxAttempts int
 	windowSecs  int
 }
@@ -101,5 +109,60 @@ func (rl *RateLimiter) cleanup() {
 		if info.firstAt.Before(cutoff) {
 			delete(rl.attempts, ip)
 		}
+	}
+}
+
+// Middleware returns a gin.HandlerFunc that rate-limits requests by client IP.
+// On exceed, responds 429 with a Retry-After header. Does NOT call RecordFail;
+// that is the handler's responsibility (a failed login is different from a
+// rate-limited anonymous GET).
+func (rl *RateLimiter) Middleware() gin.HandlerFunc {
+	return func(c *gin.Context) {
+		ip := c.ClientIP()
+		allowed, waitSec := rl.Check(ip)
+		if !allowed {
+			c.Header("Retry-After", strconv.Itoa(waitSec))
+			c.AbortWithStatusJSON(http.StatusTooManyRequests, gin.H{
+				"error":       "Too many requests",
+				"retry_after": waitSec,
+			})
+			return
+		}
+		c.Next()
+	}
+}
+
+// ============ Scenario Limiters ============
+
+// Limiters bundles the scenario-specific rate limiters instantiated at startup.
+// Each limiter is tuned for its call site:
+//   - Login guards the credential-check path (brute-force resistance).
+//   - TOTP guards the 2FA verification path (slower iteration).
+//   - APIRead is a generous ceiling for GET endpoints.
+//   - APIWrite is stricter for mutating endpoints.
+//   - Default is an umbrella fallback for any route that does not opt into a
+//     specific bucket.
+type Limiters struct {
+	Login    *RateLimiter
+	TOTP     *RateLimiter
+	APIRead  *RateLimiter
+	APIWrite *RateLimiter
+	Default  *RateLimiter
+}
+
+// NewLimiters constructs the standard set with production-tuned thresholds:
+//
+//	Login:    5 per 15 min   (matches pre-v0.11 behaviour — brute-force resistant)
+//	TOTP:     10 per 5 min   (allows legitimate typo recovery, blocks guessing)
+//	APIRead:  300 per min    (dashboard polling headroom)
+//	APIWrite: 60 per min     (mutation ceiling per IP)
+//	Default:  600 per min    (umbrella for unlabelled routes)
+func NewLimiters() *Limiters {
+	return &Limiters{
+		Login:    NewRateLimiter(5, 900),
+		TOTP:     NewRateLimiter(10, 300),
+		APIRead:  NewRateLimiter(300, 60),
+		APIWrite: NewRateLimiter(60, 60),
+		Default:  NewRateLimiter(600, 60),
 	}
 }

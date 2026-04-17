@@ -12,17 +12,21 @@ import (
 	"gorm.io/gorm"
 )
 
-// AuthHandler manages authentication endpoints
+// AuthHandler manages authentication endpoints.
+// Uses scenario-specific limiters from auth.Limiters for each code path:
+// login + setup go through limiters.Login; 2FA temp-token handling uses
+// limiters.TOTP so successful primary credential checks don't burn the
+// stricter login budget.
 type AuthHandler struct {
 	db       *gorm.DB
 	cfg      *config.Config
-	limiter  *auth.RateLimiter
+	limiters *auth.Limiters
 	totpSvc  *service.TOTPService
 }
 
-// NewAuthHandler creates a new AuthHandler
-func NewAuthHandler(db *gorm.DB, cfg *config.Config, limiter *auth.RateLimiter, totpSvc *service.TOTPService) *AuthHandler {
-	return &AuthHandler{db: db, cfg: cfg, limiter: limiter, totpSvc: totpSvc}
+// NewAuthHandler creates a new AuthHandler.
+func NewAuthHandler(db *gorm.DB, cfg *config.Config, limiters *auth.Limiters, totpSvc *service.TOTPService) *AuthHandler {
+	return &AuthHandler{db: db, cfg: cfg, limiters: limiters, totpSvc: totpSvc}
 }
 
 type loginRequest struct {
@@ -55,7 +59,7 @@ func (h *AuthHandler) Setup(c *gin.Context) {
 	ip := c.ClientIP()
 
 	// Rate limit: reuse the login limiter to prevent brute-force setup attempts.
-	allowed, waitSec := h.limiter.Check(ip)
+	allowed, waitSec := h.limiters.Login.Check(ip)
 	if !allowed {
 		c.JSON(http.StatusTooManyRequests, gin.H{
 			"error":       "Too many attempts",
@@ -73,20 +77,20 @@ func (h *AuthHandler) Setup(c *gin.Context) {
 
 	var req setupRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
-		h.limiter.RecordFail(ip)
+		h.limiters.Login.RecordFail(ip)
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
 	}
 
 	// Verify ALTCHA PoW challenge to prevent automated takeover.
 	if req.Altcha == "" {
-		h.limiter.RecordFail(ip)
+		h.limiters.Login.RecordFail(ip)
 		c.JSON(http.StatusBadRequest, gin.H{"error": "Please complete security verification first"})
 		return
 	}
 	ok, err := auth.VerifyAltchaSolution(req.Altcha, h.cfg.JWTSecret)
 	if err != nil || !ok {
-		h.limiter.RecordFail(ip)
+		h.limiters.Login.RecordFail(ip)
 		c.JSON(http.StatusBadRequest, gin.H{"error": "Verification failed, please try again"})
 		return
 	}
@@ -108,7 +112,7 @@ func (h *AuthHandler) Setup(c *gin.Context) {
 		return
 	}
 
-	h.limiter.RecordSuccess(ip)
+	h.limiters.Login.RecordSuccess(ip)
 	token, _ := auth.GenerateToken(user.ID, user.Username, h.cfg.JWTSecret)
 	c.JSON(http.StatusOK, gin.H{
 		"message": "Admin user created successfully",
@@ -125,7 +129,7 @@ func (h *AuthHandler) Login(c *gin.Context) {
 	ip := c.ClientIP()
 
 	// Rate limit check
-	allowed, waitSec := h.limiter.Check(ip)
+	allowed, waitSec := h.limiters.Login.Check(ip)
 	if !allowed {
 		c.JSON(http.StatusTooManyRequests, gin.H{
 			"error":       "Too many login attempts",
@@ -148,26 +152,26 @@ func (h *AuthHandler) Login(c *gin.Context) {
 
 	// Verify ALTCHA PoW challenge
 	if req.Altcha == "" {
-		h.limiter.RecordFail(ip)
+		h.limiters.Login.RecordFail(ip)
 		c.JSON(http.StatusBadRequest, gin.H{"error": "Please complete security verification first"})
 		return
 	}
 	ok, err := auth.VerifyAltchaSolution(req.Altcha, h.cfg.JWTSecret)
 	if err != nil || !ok {
-		h.limiter.RecordFail(ip)
+		h.limiters.Login.RecordFail(ip)
 		c.JSON(http.StatusBadRequest, gin.H{"error": "Verification failed, please try again"})
 		return
 	}
 
 	var user model.User
 	if err := h.db.Where("username = ?", req.Username).First(&user).Error; err != nil {
-		h.limiter.RecordFail(ip)
+		h.limiters.Login.RecordFail(ip)
 		c.JSON(http.StatusUnauthorized, gin.H{"error": "Invalid credentials"})
 		return
 	}
 
 	if !auth.CheckPassword(user.Password, req.Password) {
-		h.limiter.RecordFail(ip)
+		h.limiters.Login.RecordFail(ip)
 		c.JSON(http.StatusUnauthorized, gin.H{"error": "Invalid credentials"})
 		return
 	}
@@ -181,7 +185,7 @@ func (h *AuthHandler) Login(c *gin.Context) {
 				c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to generate temp token"})
 				return
 			}
-			h.limiter.RecordSuccess(ip)
+			h.limiters.Login.RecordSuccess(ip)
 			c.JSON(http.StatusOK, gin.H{
 				"requires_2fa": true,
 				"temp_token":   tempToken,
@@ -192,7 +196,7 @@ func (h *AuthHandler) Login(c *gin.Context) {
 		// 2FA enabled and code provided — validate
 		valid, err := h.totpSvc.ValidateLogin(user.ID, req.TOTPCode)
 		if err != nil || !valid {
-			h.limiter.RecordFail(ip)
+			h.limiters.Login.RecordFail(ip)
 			c.JSON(http.StatusUnauthorized, gin.H{
 				"error":     "Invalid TOTP code",
 				"error_key": "error.invalid_totp",
@@ -207,7 +211,7 @@ func (h *AuthHandler) Login(c *gin.Context) {
 		return
 	}
 
-	h.limiter.RecordSuccess(ip)
+	h.limiters.Login.RecordSuccess(ip)
 	c.JSON(http.StatusOK, gin.H{
 		"token": token,
 		"user": gin.H{
@@ -217,12 +221,24 @@ func (h *AuthHandler) Login(c *gin.Context) {
 	})
 }
 
-// handleTempTokenLogin handles the second step of 2FA login using a temp token
+// handleTempTokenLogin handles the second step of 2FA login using a temp token.
+// Uses the dedicated TOTP limiter (10/5min) so a user mistyping their 2FA code
+// does not burn through the stricter primary-login budget. Enforces TOTP.Check
+// at entry so repeated wrong codes actually hit the 10/5min ceiling (Login
+// limiter is not incremented by TOTP failures).
 func (h *AuthHandler) handleTempTokenLogin(c *gin.Context, ip string, req loginRequest) {
+	if allowed, waitSec := h.limiters.TOTP.Check(ip); !allowed {
+		c.JSON(http.StatusTooManyRequests, gin.H{
+			"error":       "Too many 2FA attempts",
+			"retry_after": waitSec,
+		})
+		return
+	}
+
 	// Parse and validate the temp token
 	claims, err := auth.ParseToken(req.TempToken, h.cfg.JWTSecret)
 	if err != nil {
-		h.limiter.RecordFail(ip)
+		h.limiters.TOTP.RecordFail(ip)
 		c.JSON(http.StatusUnauthorized, gin.H{
 			"error":     "Temp token expired or invalid",
 			"error_key": "error.temp_token_expired",
@@ -231,7 +247,7 @@ func (h *AuthHandler) handleTempTokenLogin(c *gin.Context, ip string, req loginR
 	}
 
 	if !claims.Pending2FA {
-		h.limiter.RecordFail(ip)
+		h.limiters.TOTP.RecordFail(ip)
 		c.JSON(http.StatusUnauthorized, gin.H{
 			"error":     "Invalid token type",
 			"error_key": "error.invalid_token",
@@ -250,7 +266,7 @@ func (h *AuthHandler) handleTempTokenLogin(c *gin.Context, ip string, req loginR
 	// Validate the TOTP code or recovery code
 	valid, err := h.totpSvc.ValidateLogin(claims.UserID, req.TOTPCode)
 	if err != nil || !valid {
-		h.limiter.RecordFail(ip)
+		h.limiters.TOTP.RecordFail(ip)
 		c.JSON(http.StatusUnauthorized, gin.H{
 			"error":     "Invalid TOTP code",
 			"error_key": "error.invalid_totp",
@@ -265,7 +281,8 @@ func (h *AuthHandler) handleTempTokenLogin(c *gin.Context, ip string, req loginR
 		return
 	}
 
-	h.limiter.RecordSuccess(ip)
+	h.limiters.TOTP.RecordSuccess(ip)
+	h.limiters.Login.RecordSuccess(ip)
 	c.JSON(http.StatusOK, gin.H{
 		"token": token,
 		"user": gin.H{

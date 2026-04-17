@@ -6,6 +6,42 @@
 
 ---
 
+## [Unreleased] — v0.11 Phase 1 "Core Infrastructure"
+
+本 Phase 交付 3 个横切基础设施改进，基于 Portainer / Dockge / 1Panel 竞品分析。所有变更 **additive-only**，对 v0.10.0 行为完全兼容。
+
+### F3: SingleFlight 部署去重
+- 替换 `plugins/deploy/service.go` 现有 buildSems/timer 合并逻辑为 `golang.org/x/sync/singleflight.Group` + inflight/pending 双标志
+- **修复**: 旧代码会在第二个并发 Build() 调用处阻塞最多 5 分钟 (webhook handler 可能 504)。新实现 Build() **永不阻塞**，立即返回 nil 或 ErrBuildCoalesced
+- 保留 "队列最新版本" 语义: 并发请求合并为 1 个 pending，current build 完成后再跑 1 次保证最新代码生效
+- 新增 `plugins/deploy/build_dedup_test.go` (3 个测试: 非阻塞 / pending 重跑 / 跨项目独立)
+
+### F4: Gzip 响应压缩 helper
+- 新增 `internal/handler/helper.go` 的 `SuccessGzipped(c, data)` 函数
+- 显式调用非全局中间件，阈值 1KB 以下不压缩 (避免反向开销)
+- Accept-Encoding 协商支持 q-value (q=0 禁用)，fallback 到未压缩响应
+- `sync.Pool` 复用 gzip.Writer 降低分配
+- `plugins/appstore/handler.go` 的 `ListApps` 启用 gzip (典型 50KB+ 多语言 JSON)
+- 新增 `internal/handler/helper_test.go` (4 个测试: 协商矩阵 / 小负载跳过 / 大负载压缩 / 无头裸响应)
+
+### F5: 分层限流器服务
+- 重构 `internal/auth/ratelimit.go` 引入 `Limiters` 场景化预实例化:
+  - **Login**: 5/15min (防暴破，与旧版行为一致)
+  - **TOTP**: 10/5min (允许 2FA 打错纠正，阻止穷举)
+  - **APIRead**: 300/min (仪表盘轮询留余量)
+  - **APIWrite**: 60/min (突变端点上限)
+  - **Default**: 600/min (未标记路由 umbrella)
+- 新增 `RateLimiter.Middleware()` 返回 gin.HandlerFunc (路由挂载式限流)，不自动 RecordFail (语义由 handler 决定)
+- `internal/handler/auth.go` 拆分 Login/Setup → `limiters.Login`；2FA 步骤 → `limiters.TOTP` (打错 2FA 不烧 Login 预算)
+- `handleTempTokenLogin` 新增入口 TOTP.Check，防止 2FA 穷举绕过
+- 新增 `internal/auth/ratelimit_test.go` (5 个测试: 桶独立 / 配置校验 / 中间件通过 / 429 触发 / 不自动 RecordFail)
+
+### Internals
+- 升级 `golang.org/x/sync` v0.10.0 → v0.20.0 (需 singleflight 子包)
+- 无 schema 迁移、无 API 破坏性变更、无权限模型变动
+
+---
+
 ## [0.10.0] - 2026-04-16
 
 ### v2.0 Roadmap — 19 Features + RBAC Overhaul
