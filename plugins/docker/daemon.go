@@ -136,7 +136,31 @@ func WriteDaemonConfigRaw(data []byte) error {
 	return nil
 }
 
-// RestartDockerDaemon restarts the Docker daemon via systemctl.
+// ErrDaemonConfigNotSupportedOnPodman is returned when the UI attempts to
+// apply /etc/docker/daemon.json changes on a host where Podman is the
+// active runtime. Podman reads its configuration from
+// /etc/containers/containers.conf and /etc/containers/registries.conf;
+// /etc/docker/daemon.json is silently ignored. Rather than pretend a
+// restart applied the config, surface this to the UI so the admin
+// isn't misled.
+var ErrDaemonConfigNotSupportedOnPodman = fmt.Errorf("daemon.json is Docker-specific and has no effect under Podman — edit /etc/containers/containers.conf and /etc/containers/registries.conf instead; a dedicated Podman config UI is planned for a future phase")
+
+// RestartDockerDaemon restarts the container runtime so daemon.json changes
+// take effect. Docker hosts: standard `systemctl restart docker`. Podman
+// hosts: refuse with ErrDaemonConfigNotSupportedOnPodman — the daemon.json
+// UI has no effect on Podman, and pretending otherwise makes the panel
+// lie to the admin about the applied config. Callers should check for the
+// sentinel error and render a Podman-specific explanation.
+//
+// When the runtime is Unknown (neither binary present), returns a generic
+// error so the admin can install a runtime via the install flow.
 func RestartDockerDaemon() error {
-	return exec.Command("systemctl", "restart", "docker").Run()
+	switch DetectRuntime() {
+	case RuntimeDocker:
+		return exec.Command("systemctl", "restart", "docker").Run()
+	case RuntimePodman:
+		return ErrDaemonConfigNotSupportedOnPodman
+	default:
+		return fmt.Errorf("no container runtime detected; cannot restart daemon")
+	}
 }

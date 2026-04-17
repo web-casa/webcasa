@@ -193,8 +193,16 @@ func (p *Plugin) dockerStatus(c *gin.Context) {
 	installed := false
 	version := ""
 
-	// Check if docker binary is installed.
-	if path, err := exec.LookPath("docker"); err == nil && path != "" {
+	// Check if a container runtime is reachable via the docker CLI. Under
+	// v0.12 this is Podman via the podman-docker shim; detecting Podman
+	// directly lets us surface accurate version strings without shelling
+	// out twice.
+	if DetectRuntime() != RuntimeUnknown {
+		installed = true
+		version = RuntimeVersion()
+	} else if path, err := exec.LookPath("docker"); err == nil && path != "" {
+		// Legacy fallback: unknown runtime but docker CLI exists (e.g. a
+		// third-party wrapper). Keep the original behaviour.
 		installed = true
 		if out, err := exec.Command("docker", "--version").Output(); err == nil {
 			version = strings.TrimSpace(string(out))
@@ -260,9 +268,22 @@ func (p *Plugin) installDocker(c *gin.Context) {
 		c.Writer.Flush()
 	}
 
-	// Quick check: if Docker and Compose are already installed and daemon is running,
-	// just reconnect the plugin and skip the EasyDocker script entirely.
+	// Quick check: if the runtime is already installed and reachable, skip
+	// the EasyDocker script entirely. Under v0.12 Podman is pre-installed
+	// by install.sh, so this is the normal path.
 	if p.checkDockerAlreadyReady(writeSSE, writeEvent) {
+		return
+	}
+
+	// EasyDocker only makes sense when real Docker is the target runtime.
+	// If Podman is detected but unreachable we treat it as a configuration
+	// issue (socket not started, permissions) rather than something fixable
+	// by re-running Docker's installer.
+	if DetectRuntime() == RuntimePodman {
+		writeSSE("Podman is installed but the plugin could not reach its socket.")
+		writeSSE("Check: systemctl status podman.socket")
+		writeSSE("Check: groups $USER (WebCasa needs to be in the 'podman' group)")
+		writeEvent("error", "podman installed but unreachable — refusing to run Docker installer under Podman runtime")
 		return
 	}
 
@@ -342,47 +363,94 @@ func (p *Plugin) installDocker(c *gin.Context) {
 	writeEvent("done", "ok")
 }
 
-// checkDockerAlreadyReady checks if Docker and Docker Compose are already
-// installed and the daemon is running. If so, it reconnects the plugin and
-// returns true (the caller should return immediately). This avoids running
-// the EasyDocker script unnecessarily.
+// checkDockerAlreadyReady reports whether a usable container runtime is
+// already reachable and returns true so the caller skips running the
+// EasyDocker installer. The readiness check is runtime-aware:
+//   - Podman (v0.12 default): require the `podman` binary + the Go SDK
+//     reaching the socket. The `docker` CLI and `docker compose` are
+//     NOT required because users with `podman-docker` removed (or a
+//     fresh admin who only ran `dnf install podman`) still have a
+//     working runtime.
+//   - Docker (legacy): require `docker` binary + `docker compose version`
+//     + SDK connection, matching pre-Phase-2 behaviour.
+//   - Unknown: fall through to the caller, which will decide whether
+//     the EasyDocker installer is appropriate.
+//
+// If the runtime is detected but the socket is unreachable, a bounded
+// retry loop attempts to start the runtime's systemd unit and waits
+// with exponential backoff so a transient socket flap doesn't become
+// a hard user-visible failure. Only after all retries are exhausted
+// does the function return false.
 func (p *Plugin) checkDockerAlreadyReady(writeSSE func(string), writeEvent func(string, string)) bool {
-	// Check docker binary
-	dockerPath, err := exec.LookPath("docker")
-	if err != nil || dockerPath == "" {
-		return false
-	}
+	runtime := DetectRuntime()
 
-	// Check docker compose (plugin mode: "docker compose version")
-	composeOut, err := exec.Command("docker", "compose", "version").CombinedOutput()
-	if err != nil {
-		return false
-	}
-
-	// Check daemon is running by trying to connect
-	if !p.tryReconnect() {
-		// Daemon binary exists but isn't running — try to start it
-		writeSSE("Docker is installed but not running. Starting Docker service...")
-		if startErr := exec.Command("systemctl", "start", "docker").Run(); startErr != nil {
-			return false // couldn't start, let EasyDocker handle it
-		}
-		// Wait a moment and retry
-		time.Sleep(2 * time.Second)
-		if !p.tryReconnect() {
+	// Runtime-specific binary / CLI check
+	switch runtime {
+	case RuntimePodman:
+		// podman binary is the authoritative marker — podman-docker shim is
+		// optional (compose operations go through podman-compose directly
+		// or through the shim-forwarded `docker compose` when present).
+		if _, err := exec.LookPath("podman"); err != nil {
 			return false
 		}
+	case RuntimeDocker:
+		// docker binary + compose plugin both required for stack operations.
+		if _, err := exec.LookPath("docker"); err != nil {
+			return false
+		}
+		if _, err := exec.Command("docker", "compose", "version").CombinedOutput(); err != nil {
+			return false
+		}
+	case RuntimeUnknown:
+		return false
 	}
 
-	// Docker + Compose are installed and daemon is running
-	dockerVer := ""
-	if out, err := exec.Command("docker", "--version").Output(); err == nil {
-		dockerVer = strings.TrimSpace(string(out))
+	// Daemon / socket reachability check via Go SDK
+	if !p.tryReconnect() {
+		// Runtime binary exists but socket isn't reachable — try bounded
+		// retries with exponential backoff. Covers podman.socket / docker
+		// startup lag and transient socket restarts after drop-in changes.
+		unit := runtime.SystemdUnit()
+		if unit == "" {
+			return false
+		}
+		writeSSE(fmt.Sprintf("%s is installed but socket is not reachable. Attempting to start %s ...",
+			runtime, unit))
+
+		backoffs := []time.Duration{1 * time.Second, 2 * time.Second, 4 * time.Second}
+		var lastStartErr error
+		for attempt, delay := range backoffs {
+			out, startErr := exec.Command("systemctl", "start", unit).CombinedOutput()
+			if startErr != nil {
+				lastStartErr = fmt.Errorf("systemctl start %s: %s: %w", unit, strings.TrimSpace(string(out)), startErr)
+			}
+			time.Sleep(delay)
+			if p.tryReconnect() {
+				writeSSE(fmt.Sprintf("%s socket reachable after %d attempt(s)", runtime, attempt+1))
+				goto connected
+			}
+		}
+		if lastStartErr != nil {
+			writeSSE(fmt.Sprintf("systemctl could not start %s: %v", unit, lastStartErr))
+		}
+		return false
 	}
+connected:
+
+	// Best-effort runtime + compose version lines for the SSE stream.
+	// Missing compose is a soft failure — app-store stacks still work if
+	// only one of the compose implementations is present.
+	runtimeVer := RuntimeVersion()
+	composeOut, _ := exec.Command("docker", "compose", "version").CombinedOutput()
 	composeVer := strings.TrimSpace(string(composeOut))
 
-	writeSSE("Docker is already installed and running!")
-	writeSSE(fmt.Sprintf("  %s", dockerVer))
-	writeSSE(fmt.Sprintf("  %s", composeVer))
+	writeSSE(fmt.Sprintf("%s is already installed and running!", runtime))
+	if runtimeVer != "" {
+		writeSSE(fmt.Sprintf("  %s", runtimeVer))
+	}
+	if composeVer != "" {
+		writeSSE(fmt.Sprintf("  %s", composeVer))
+	}
 	writeSSE("No installation needed.")
 	writeEvent("done", "ok")
 	return true
