@@ -6,6 +6,22 @@
 
 ---
 
+## [Unreleased] — v0.11 Phase 2 "Deploy UX Quick Win"
+
+### F2: docker run → compose 转换器 (Dockge Pattern 3)
+- 新增 `web/src/utils/composerize.js` 包装 `composerize` npm 库 (1.7.5)，导出 `dockerRunToCompose(cmd)` 纯函数
+- 在 Docker Overview 页面 `CreateStackDialog` 新增「从 `docker run` 导入」Tab：
+  - TextArea 粘贴 `docker run ...` 命令
+  - 「转换为 Compose」按钮调用 composerize
+  - 转换成功后自动切换到 compose tab 并填入生成的 YAML
+  - 错误情况显示 Callout 错误消息
+- 自动剥离 composerize 输出的 `name: <your project name>` 占位行 (Stack 名称由独立表单字段管理)
+- 新增 i18n keys (en + zh): `docker.import_docker_run`, `import_docker_run_hint`, `import_docker_run_failed`, `convert_to_compose`
+- Smoke 测试覆盖 4 类常见命令 (env+port+volume+network / 仅镜像 / memory+cpu+restart / 多 port)
+- Bundle 增加 ~25KB gzipped (composerize 内部含 yargs-parser + deepmerge)，无后端改动
+
+---
+
 ## [Unreleased] — v0.11 Phase 1 "Core Infrastructure"
 
 本 Phase 交付 3 个横切基础设施改进，基于 Portainer / Dockge / 1Panel 竞品分析。所有变更 **additive-only**，对 v0.10.0 行为完全兼容。

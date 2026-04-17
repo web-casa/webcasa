@@ -1,7 +1,8 @@
 import { useState, useEffect, useCallback, useRef } from 'react'
-import { Box, Flex, Text, Card, Badge, Heading, Button, Separator, Dialog, TextArea, TextField, Tabs } from '@radix-ui/themes'
-import { Container, Play, Square, RefreshCw, Trash2, FileText, Plus, Download, Server, Search, Radio, Upload, X, Loader2, Star, Settings } from 'lucide-react'
+import { Box, Flex, Text, Card, Badge, Heading, Button, Separator, Dialog, TextArea, TextField, Tabs, Callout } from '@radix-ui/themes'
+import { Container, Play, Square, RefreshCw, Trash2, FileText, Plus, Download, Server, Search, Radio, Upload, X, Loader2, Star, Settings, Wand2, Info } from 'lucide-react'
 import { useNavigate } from 'react-router'
+import { dockerRunToCompose } from '../utils/composerize.js'
 import { dockerAPI } from '../api/index.js'
 import { useTranslation } from 'react-i18next'
 import DockerRequired from '../components/DockerRequired.jsx'
@@ -375,8 +376,23 @@ function CreateStackDialog({ open, onClose, onCreated }) {
     const [envFile, setEnvFile] = useState('')
     const [autoStart, setAutoStart] = useState(true)
     const [creating, setCreating] = useState(false)
+    const [activeTab, setActiveTab] = useState('compose')
+    const [dockerRunCmd, setDockerRunCmd] = useState('')
+    const [convertError, setConvertError] = useState('')
     const composeInputRef = useRef(null)
     const envInputRef = useRef(null)
+
+    const convertDockerRun = () => {
+        if (!dockerRunCmd.trim()) return
+        setConvertError('')
+        try {
+            const cleaned = dockerRunToCompose(dockerRunCmd)
+            setComposeFile(cleaned)
+            setActiveTab('compose')
+        } catch (e) {
+            setConvertError(e?.message || String(e))
+        }
+    }
 
     const handleCreate = async () => {
         if (!name.trim() || !composeFile.trim()) return
@@ -392,6 +408,7 @@ function CreateStackDialog({ open, onClose, onCreated }) {
             onCreated()
             onClose()
             setName(''); setDescription(''); setComposeFile(''); setEnvFile('')
+            setDockerRunCmd(''); setConvertError(''); setActiveTab('compose')
         } catch (e) {
             alert(e.response?.data?.error || e.message)
         } finally { setCreating(false) }
@@ -420,10 +437,11 @@ function CreateStackDialog({ open, onClose, onCreated }) {
                         <TextField.Root placeholder={t('docker.description_placeholder')} value={description} onChange={(e) => setDescription(e.target.value)} />
                     </Box>
 
-                    <Tabs.Root defaultValue="compose">
+                    <Tabs.Root value={activeTab} onValueChange={setActiveTab}>
                         <Tabs.List>
                             <Tabs.Trigger value="compose">docker-compose.yml</Tabs.Trigger>
                             <Tabs.Trigger value="env">.env</Tabs.Trigger>
+                            <Tabs.Trigger value="docker-run">{t('docker.import_docker_run')}</Tabs.Trigger>
                         </Tabs.List>
                         <Box pt="3">
                             <Tabs.Content value="compose">
@@ -453,6 +471,29 @@ function CreateStackDialog({ open, onClose, onCreated }) {
                                     onChange={(e) => setEnvFile(e.target.value)}
                                     style={{ minHeight: 200, fontFamily: 'monospace', fontSize: '0.85rem' }}
                                 />
+                            </Tabs.Content>
+                            <Tabs.Content value="docker-run">
+                                <Callout.Root color="blue" size="1" mb="2">
+                                    <Callout.Icon><Info size={14} /></Callout.Icon>
+                                    <Callout.Text>{t('docker.import_docker_run_hint')}</Callout.Text>
+                                </Callout.Root>
+                                <TextArea
+                                    placeholder={`docker run -d -p 8080:80 -e FOO=bar -v /data:/data nginx:latest`}
+                                    value={dockerRunCmd}
+                                    onChange={(e) => { setDockerRunCmd(e.target.value); if (convertError) setConvertError('') }}
+                                    style={{ minHeight: 140, fontFamily: 'monospace', fontSize: '0.85rem' }}
+                                />
+                                {convertError && (
+                                    <Callout.Root color="red" size="1" mt="2">
+                                        <Callout.Icon><X size={14} /></Callout.Icon>
+                                        <Callout.Text>{t('docker.import_docker_run_failed')}: {convertError}</Callout.Text>
+                                    </Callout.Root>
+                                )}
+                                <Flex justify="end" mt="2">
+                                    <Button size="2" disabled={!dockerRunCmd.trim()} onClick={convertDockerRun}>
+                                        <Wand2 size={14} /> {t('docker.convert_to_compose')}
+                                    </Button>
+                                </Flex>
                             </Tabs.Content>
                         </Box>
                     </Tabs.Root>
