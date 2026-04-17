@@ -394,26 +394,37 @@ install_podman() {
 SocketMode=0660
 SocketGroup=podman
 SOCKCONF
-    systemctl daemon-reload
 
     # Silence "Emulate Docker CLI using podman" motd from podman-docker.
     install -d -m 755 /etc/containers
     : > /etc/containers/nodocker
 
-    # Enable + restart the system-wide rootful socket. `enable --now` alone
-    # is a no-op on already-running sockets (e.g. re-running install.sh), so
-    # the drop-in above would not re-chgrp an existing socket. `restart`
-    # forces systemd to tear down and re-create the socket with the new
-    # SocketGroup=podman ownership.
-    systemctl enable podman.socket
-    systemctl restart podman.socket
+    # Container-install detection: install.sh is exercised inside a plain
+    # Docker container by scripts/test-install.sh (no PID 1 = systemd, no
+    # /run/systemd/system). In that case skip every systemctl call — the
+    # drop-in + group + package files are on disk and will apply as soon
+    # as the host boots real systemd. Real installs on a VM/bare-metal
+    # always have /run/systemd/system.
+    if [[ -d /run/systemd/system ]]; then
+        systemctl daemon-reload
 
-    # Wait up to 10s for the socket file to appear (systemd is async).
-    for _ in $(seq 1 10); do
-        [[ -S /run/podman/podman.sock ]] && break
-        sleep 1
-    done
-    [[ -S /run/podman/podman.sock ]] || fatal "podman.socket failed to start; check: journalctl -u podman.socket"
+        # Enable + restart the system-wide rootful socket. `enable --now`
+        # alone is a no-op on already-running sockets (e.g. re-running
+        # install.sh), so the drop-in above would not re-chgrp an existing
+        # socket. `restart` forces systemd to tear down and re-create the
+        # socket with the new SocketGroup=podman ownership.
+        systemctl enable podman.socket
+        systemctl restart podman.socket
+
+        # Wait up to 10s for the socket file to appear (systemd is async).
+        for _ in $(seq 1 10); do
+            [[ -S /run/podman/podman.sock ]] && break
+            sleep 1
+        done
+        [[ -S /run/podman/podman.sock ]] || fatal "podman.socket failed to start; check: journalctl -u podman.socket"
+    else
+        info "No systemd detected (containerised install?); skipping podman.socket enable and socket-ready wait"
+    fi
 
     # Docker socket compatibility: app-store containers that bind-mount
     # /var/run/docker.sock (portainer, dockge, dozzle, ...) continue to
@@ -439,15 +450,19 @@ SOCKCONF
         info "Linked /var/run/docker.sock → /run/podman/podman.sock"
     fi
 
-    # Smoke-test the podman-docker shim. A failure here points at a broken
-    # package install — surface it immediately rather than downstream.
-    if ! docker version --format '{{.Server.Version}}' &>/dev/null; then
-        fatal "podman-docker shim is installed but 'docker version' failed. Investigate 'podman info' and 'systemctl status podman.socket'."
+    # Smoke-test the podman-docker shim against a LIVE server — only
+    # meaningful when systemd is running the socket. Containerised installs
+    # (no /run/systemd/system) still have the packages + group + drop-in on
+    # disk; just skip the liveness probe.
+    if [[ -d /run/systemd/system ]]; then
+        if ! docker version --format '{{.Server.Version}}' &>/dev/null; then
+            fatal "podman-docker shim is installed but 'docker version' failed. Investigate 'podman info' and 'systemctl status podman.socket'."
+        fi
     fi
 
     local podman_ver
     podman_ver=$(podman version --format '{{.Version}}' 2>/dev/null || echo "unknown")
-    success "Podman ${podman_ver} installed and reachable via docker shim"
+    success "Podman ${podman_ver} installed"
 }
 
 # ==================== Install Caddy ====================
