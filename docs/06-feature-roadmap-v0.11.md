@@ -101,12 +101,17 @@
 
 **目标**: 容器管理体验精细化，v0.11 收尾
 
-- F8 镜像状态分层缓存 (3 天) — `plugins/docker/imagestatus.go` 双层缓存 + 容器列表响应加字段 + UI 红点
+- F8 镜像状态缓存 (3 天) — `plugins/docker/imagestatus.go` 本地 tag→imageID 5s TTL 缓存 + 容器列表响应加字段 + UI 红点
 
-**Phase 里程碑**:
-- 100 容器列表响应 <500ms
-- `docker pull nginx:latest` 后老容器标记 `outdated`
-- Registry 超时不阻塞主响应，5s HTTP 超时 + 失败 60s 负缓存防风暴
+**Phase 里程碑** (最终实施版):
+- 100 容器列表响应 <500ms (handler 500ms sub-timeout 保底)
+- `docker pull nginx:latest` 后容器显示 `outdated` (progress stream Close 时缓存失效)
+- **纯本地对比**: 容器运行的 ImageID vs 当前 tag 的本地 imageID，**无 registry 调用** (零网络/零认证复杂度)
+
+**实施实际范围** (相对原计划的调整):
+- 原计划"分层缓存 24h 本地 + 5s 远程 registry digest"调整为**仅本地对比 + 5s tag→ID 缓存**
+- 动机: 本地对比已捕获最常见问题 (pulled 新镜像但忘记 recreate 容器)；registry 查询需私有 registry 认证 + rate limit 处理，对 v0.11 scope 过大
+- 未来 registry 对比可作为可选 enhancement 在现有缓存基础上加一列远程 digest，TTL 60s，不影响 v0.11 架构
 
 **Feature branch**: `feat/v0.11-phase5-image-status`
 
@@ -300,26 +305,32 @@ Week 4: ▓░███▓▓▓░░░░░░░░░░░░░░  P4 e
 
 ---
 
-### F8: 镜像状态分层缓存 (Portainer Pattern 5)
+### F8: 镜像状态缓存 (Portainer Pattern 5，本地对比版)
 
 **工作量**: 3 天 | **影响插件**: `plugins/docker/`
 
-**范围**:
+**范围** (最终实施版):
 - 新增 `plugins/docker/imagestatus.go`:
-  - 本地镜像 digest 缓存 (24 小时 TTL)
-  - 远程 registry digest 缓存 (5 秒 TTL)
-  - Goroutine-safe (`sync.Map` 或 `hashicorp/golang-lru`)
-- 容器列表响应新增可选字段 `imageStatus: "updated"|"outdated"|"error"|"unknown"`
-- 对比逻辑:
-  - 从 registry HEAD 请求获取 `Docker-Content-Digest`
-  - 对比容器当前镜像 digest
-  - 一致 = `updated`, 不一致 = `outdated`, 拉取失败 = `error`
-- UI: 容器列表"状态"列显示红点指示过时镜像
+  - tag→本地 imageID 5s TTL 缓存 (`sync.RWMutex` + `map[string]cacheEntry`)
+  - 世代计数器防止 in-flight resolve 写回陈旧 SHA (Phase 5 Codex fix)
+  - context.Canceled/DeadlineExceeded 不 negative-cache (Phase 5 Codex fix)
+- 容器列表响应新增可选字段 `ImageID` + `ImageStatus: "updated"|"outdated"|"unknown"`
+- **纯本地对比逻辑** (无 registry 调用):
+  - 容器运行的 `ImageID` vs 当前 tag 在本地 Docker 中的 ImageID
+  - 一致 = `updated`, 不一致 = `outdated`, tag 不在本地 / digest-pinned = `unknown`
+- `PullImage` 返回的进度 reader 被 `invalidatingReader` 包装,`Close()` 时触发缓存失效,保证拉取完成后下次 list 立即反映新 SHA (Phase 5 Codex fix)
+- UI: 容器列表 state badge 旁的 amber `outdated` 徽标 + Tooltip
+
+**范围调整说明**:
+- 原计划的"分层缓存 24h 本地 + 5s 远程 registry digest"调整为**仅本地对比**
+- **动机**: 本地对比已捕获最常见场景 (admin `docker pull` 了新镜像但忘记 recreate 容器);registry 查询引入私有 registry 认证 + rate-limit 处理 + 多架构 digest 判定,对 v0.11 scope 过大
+- 本地对比零网络/零 registry 认证复杂度/毫秒级响应
+- 未来 registry 对比可在现有缓存上加一列远程 digest (TTL 60s),不影响 v0.11 架构
 
 **兼容性**:
-- 响应字段新增，旧前端忽略该字段 = 行为等价
-- 缓存未命中时不阻塞主响应 (异步填充)
-- 首次冷启动 5 秒内 `imageStatus="unknown"` (缓存填充中)
+- 响应字段新增 `omitempty`，旧前端忽略 = 行为等价
+- handler 500ms sub-timeout 包裹 annotation,慢 inspect 降级为 `"unknown"` 不阻塞列表
+- 包级 `defaultImageStatusCache` 单 daemon 场景线程安全;多 daemon 支持为 v0.12+ 工作
 
 **验收**:
 - 单元测试: 缓存 TTL 生效 (24h 后刷新本地 digest)

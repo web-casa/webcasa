@@ -43,7 +43,13 @@ func DetectFramework(dir string) FrameworkPreset {
 // DetectFrameworkFromURL clones a repo temporarily and detects the framework.
 // This is used by the "detect" API endpoint before a project is created.
 // A 60-second timeout prevents resource abuse from slow/malicious repositories.
+// SSRF-hardened: rejects loopback/link-local/metadata-endpoint hosts before
+// invoking git clone. Mirrors the git-poll target validation policy.
 func DetectFrameworkFromURL(gitURL, branch string) (FrameworkPreset, error) {
+	if err := validateGitPollTarget(gitURL); err != nil {
+		return frameworkPresets["custom"], fmt.Errorf("detect: %w", err)
+	}
+
 	tmpDir, err := os.MkdirTemp("", "detect_*")
 	if err != nil {
 		return frameworkPresets["custom"], err

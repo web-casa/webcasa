@@ -376,6 +376,17 @@ func (s *Service) CloneEnvVars(sourceID, targetID uint) error {
 	return s.db.Model(&Project{}).Where("id = ?", targetID).Update("env_vars", source.EnvVars).Error
 }
 
+// IsBuildInflight reports whether a build goroutine is currently running
+// for this project. Used by the git poller to skip triggering a redundant
+// rebuild while an identical build is already in progress — the pre-fix
+// poller path would set buildPending=true, causing the buildLoop to run
+// runBuildOnce a second time for the same commit after the first finished.
+func (s *Service) IsBuildInflight(projectID uint) bool {
+	s.buildMu.Lock()
+	defer s.buildMu.Unlock()
+	return s.buildInflight[projectID]
+}
+
 // Build triggers a build for a project. Always non-blocking.
 //
 // Semantics:

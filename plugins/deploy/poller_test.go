@@ -1,6 +1,7 @@
 package deploy
 
 import (
+	"context"
 	"io"
 	"log/slog"
 	"sync"
@@ -113,13 +114,13 @@ func TestShortSHA(t *testing.T) {
 	}
 }
 
-// TestPoller_TriggersBuildOnNewCommit verifies the poller invokes Build
-// when the remote commit differs from the project's LastDeployedCommit.
+// TestPoller_TriggersBuildOnNewCommit drives pollOne end-to-end via an
+// injected lsRemoteFn stub and asserts Build is invoked once when the
+// remote commit differs from LastDeployedCommit.
 func TestPoller_TriggersBuildOnNewCommit(t *testing.T) {
 	db := openPollerTestDB(t)
 	svc := newPollerTestService(t, db)
 
-	// Track Build() invocations without running real pipelines.
 	var buildCalls atomic.Int32
 	svc.buildRunner = func(projectID uint) error {
 		buildCalls.Add(1)
@@ -138,21 +139,15 @@ func TestPoller_TriggersBuildOnNewCommit(t *testing.T) {
 	}
 
 	poller := NewPoller(svc)
-
-	// Stub the network call — return a fresh SHA.
-	// We can't monkey-patch lsRemoteHead directly, so we invoke pollOne's
-	// decision logic through a small wrapper: inline the "new commit?"
-	// check by calling Build directly (the poll itself is a network op
-	// we'd cover in an integration test, not a unit test).
-	_ = poller
-	fakeNewSHA := "newsha"
-	if fakeNewSHA != pr.LastDeployedCommit {
-		if err := svc.Build(pr.ID); err != nil {
-			t.Fatalf("Build: %v", err)
-		}
+	poller.lsRemoteFn = func(_ context.Context, _ *Project, _ string) (string, error) {
+		return "newsha", nil
 	}
 
-	// Let the buildLoop goroutine consume the work.
+	// Drive the real pollOne path — this exercises the re-read guard,
+	// inflight check, and Build() call.
+	poller.pollOne(&pr)
+
+	// Wait for the buildLoop goroutine to consume the queued work.
 	deadline := time.Now().Add(1 * time.Second)
 	for time.Now().Before(deadline) {
 		if buildCalls.Load() >= 1 {
@@ -164,20 +159,15 @@ func TestPoller_TriggersBuildOnNewCommit(t *testing.T) {
 		t.Fatalf("expected 1 build, got %d", buildCalls.Load())
 	}
 
-	// Drain the build goroutine before test exit.
 	waitInflightClear(t, svc, pr.ID, 2*time.Second)
 }
 
-// TestPoller_ConfigChangedDuringPoll_SkipsBuild is a regression test for
-// the Codex-flagged HIGH TOCTOU finding: if a user disables polling or
-// rotates the remote URL while the poller is mid-ls-remote, the result of
-// the old URL must not trigger a build (or overwrite LastDeployedCommit)
-// for the new configuration.
-//
-// We cannot easily inject a real mid-poll config change through the
-// scheduler, so this test drives pollOne's post-I/O re-read path directly
-// via Build() semantics: after we simulate a "new commit" decision, we
-// flip GitPollEnabled to false and verify no build is kicked off.
+// TestPoller_ConfigChangedDuringPoll_SkipsBuild drives pollOne end-to-end
+// with an lsRemoteFn stub that simulates ~lengthy network I/O. During that
+// I/O the test flips GitPollEnabled to false, simulating a concurrent
+// UpdateProject. pollOne's re-read guard must detect the config change
+// and skip the Build() trigger. Regression test for the Codex-flagged
+// HIGH TOCTOU finding.
 func TestPoller_ConfigChangedDuringPoll_SkipsBuild(t *testing.T) {
 	db := openPollerTestDB(t)
 	svc := newPollerTestService(t, db)
@@ -199,25 +189,71 @@ func TestPoller_ConfigChangedDuringPoll_SkipsBuild(t *testing.T) {
 		t.Fatalf("create: %v", err)
 	}
 
-	// Simulate the post-I/O state: caller just observed "newsha" from the
-	// remote. Before the build trigger, the user disables polling.
-	db.Model(&Project{}).Where("id = ?", pr.ID).Update("git_poll_enabled", false)
-
-	// The production pollOne would re-fetch here and see GitPollEnabled=false,
-	// so the Build() call is suppressed. Verify by re-reading and branching
-	// the same way pollOne does before the svc.Build() call.
-	var fresh Project
-	if err := db.First(&fresh, pr.ID).Error; err != nil {
-		t.Fatalf("refetch: %v", err)
-	}
-	if fresh.GitPollEnabled {
-		_ = svc.Build(pr.ID)
+	poller := NewPoller(svc)
+	poller.lsRemoteFn = func(_ context.Context, _ *Project, _ string) (string, error) {
+		// Simulate concurrent config change during the "network" call.
+		db.Model(&Project{}).Where("id = ?", pr.ID).Update("git_poll_enabled", false)
+		return "newsha", nil
 	}
 
-	// Wait briefly for any spurious build goroutine to fire.
+	poller.pollOne(&pr)
+
+	// Wait briefly for any spurious build goroutine.
 	time.Sleep(100 * time.Millisecond)
 	if buildCalls.Load() != 0 {
-		t.Fatalf("build should NOT have been triggered after config change, got %d calls", buildCalls.Load())
+		t.Fatalf("build should NOT have been triggered after concurrent GitPollEnabled flip; got %d calls", buildCalls.Load())
+	}
+}
+
+// TestPoller_SameSHAInFlight_NoDoubleBuild is a regression test for the
+// final-sweep HIGH finding: a poller observing a commit SHA that matches
+// what's currently being built by a webhook/manual trigger must NOT queue
+// a buildPending run. Without the IsBuildInflight guard the pre-fix code
+// would turn one user push into two identical builds.
+func TestPoller_SameSHAInFlight_NoDoubleBuild(t *testing.T) {
+	db := openPollerTestDB(t)
+	svc := newPollerTestService(t, db)
+
+	var buildCalls atomic.Int32
+	release := make(chan struct{})
+	svc.buildRunner = func(projectID uint) error {
+		buildCalls.Add(1)
+		<-release
+		return nil
+	}
+
+	pr := Project{
+		Name:               "same-sha",
+		GitURL:             "https://example.invalid/repo.git",
+		GitBranch:          "main",
+		GitPollEnabled:     true,
+		LastDeployedCommit: "oldsha",
+	}
+	if err := db.Create(&pr).Error; err != nil {
+		t.Fatalf("create: %v", err)
+	}
+
+	// Simulate webhook-triggered build in flight.
+	if err := svc.Build(pr.ID); err != nil {
+		t.Fatalf("seed Build: %v", err)
+	}
+
+	// Poller fires during the in-flight build and observes the same SHA.
+	poller := NewPoller(svc)
+	poller.lsRemoteFn = func(_ context.Context, _ *Project, _ string) (string, error) {
+		return "pending-build-sha", nil
+	}
+	poller.pollOne(&pr)
+
+	// Release the first build so buildLoop finishes.
+	release <- struct{}{}
+
+	// Drain the build goroutine. If the regression is back, a second
+	// runBuildOnce fires here (stranded buildPending) and buildCalls == 2.
+	waitInflightClear(t, svc, pr.ID, 2*time.Second)
+
+	if got := buildCalls.Load(); got != 1 {
+		t.Fatalf("expected exactly 1 build (poller should have deferred to in-flight), got %d", got)
 	}
 }
 

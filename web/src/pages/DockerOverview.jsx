@@ -402,6 +402,15 @@ function CreateStackDialog({ open, onClose, onCreated }) {
         }
     }, [open])
 
+    // Track whether the dialog is still open when an async conversion
+    // completes. Without this, a user who closes the dialog during the
+    // first click (while composerize is lazy-loading) would have the
+    // reset-on-close effect fire, then the deferred setComposeFile /
+    // setActiveTab / setConvertError calls from the still-running
+    // promise would reintroduce stale state on next open.
+    const openRef = useRef(open)
+    useEffect(() => { openRef.current = open }, [open])
+
     // Dynamically import composerize on first click to keep the main bundle
     // small for users who never touch this feature. Raw parser errors are
     // logged to the browser console for developer triage; the UI shows an
@@ -413,13 +422,14 @@ function CreateStackDialog({ open, onClose, onCreated }) {
         try {
             const { dockerRunToCompose } = await import('../utils/composerize.js')
             const cleaned = dockerRunToCompose(dockerRunCmd)
+            if (!openRef.current) return // dialog closed while loading — drop result
             setComposeFile(cleaned)
             setActiveTab('compose')
         } catch (e) {
             console.error('composerize conversion failed:', e)
-            setConvertError(true)
+            if (openRef.current) setConvertError(true)
         } finally {
-            setConverting(false)
+            if (openRef.current) setConverting(false)
         }
     }
 

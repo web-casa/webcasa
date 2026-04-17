@@ -64,7 +64,7 @@
   - **OLTP** — 事务密集 web 应用 (shared_buffers≈25% RAM, work_mem=4MB, max_connections=100)
   - **OLAP** — 分析查询 (shared_buffers≈40% RAM, work_mem=64MB, max_connections=50)
   - **Tiny** — 资源受限 (shared_buffers ≤256MB 上限, max_connections=20, wal_level=minimal)
-  - **Crit** — 强一致性 (与 OLTP 同内存布局，预留 v0.12 启用 sync_commit/full_page_writes)
+  - **Crit** — 强一致性 (OLTP 内存布局 + durability 字段，初始发布时仅内存布局；durability 字段在 Phase 3 审查修复中已实装)
 - 预设根据 Instance.MemoryLimit (`256m`/`1g`/`0.5g`/`512mb`) 动态推算 `EngineConfig`，写入 `Config` JSON
 - `Instance` model 新增 `TuningPreset` 字段 (size:32, default `''`) 记录所选预设供审计 + 未来 memory resize 时重应用
 - `CreateInstanceRequest` 新增 `tuning_preset` 字段 (postgres only)，`resolveTuningPreset()` helper 统一两个创建入口
@@ -87,7 +87,58 @@
 - 自动剥离 composerize 输出的 `name: <your project name>` 占位行 (Stack 名称由独立表单字段管理)
 - 新增 i18n keys (en + zh): `docker.import_docker_run`, `import_docker_run_hint`, `import_docker_run_failed`, `convert_to_compose`
 - Smoke 测试覆盖 4 类常见命令 (env+port+volume+network / 仅镜像 / memory+cpu+restart / 多 port)
-- Bundle 增加 ~25KB gzipped (composerize 内部含 yargs-parser + deepmerge)，无后端改动
+- Bundle 初始增加 ~90KB gzipped 到主 bundle (composerize 内部含 yargs-parser + deepmerge)；**Phase 2 审查修复中改为 lazy import**，主 bundle 净减少 ~90KB，composerize 独立 chunk 首次点击时加载
+
+---
+
+## [Unreleased] — v0.11 最终全量 Codex Review 修复
+
+Pre-release sweep covering cross-phase interactions. Found 3 HIGH + 2 MEDIUM + 2 LOW issues the per-phase reviews missed.
+
+### HIGH: 同 SHA 的 poll 可导致 webhook build 后再跑一次
+- **问题**: webhook 触发 Build(X) 运行中，poller 观察到同一 SHA，调用 Build(X) 被合并为 pending。buildLoop 第一次完成后 pending=true 触发 runBuildOnce **再跑一次同样的 X**。一次 push → 两次相同构建
+- **修复**: Service 新增 `IsBuildInflight(projectID)`；poller 在 trigger Build 前检查，若 inflight 则跳过(下次 tick <= 300s 内自然重试)
+- **回归测试**: `TestPoller_SameSHAInFlight_NoDoubleBuild` 使用 release channel 冻结第一个构建，期间 poller 触发 — 期望 buildCalls=1 (而非 2)
+
+### HIGH: detector.go git clone 无 SSRF 校验
+- **问题**: `POST /api/plugins/deploy/detect` 接受用户 URL 直接 `git clone`。Phase 4 修了 poller 但遗漏同级的 detector
+- **修复**: `DetectFrameworkFromURL` 调用 `validateGitPollTarget` 前置校验
+
+### HIGH: appstore 源 URL 无 SSRF 校验 (每 6h 周期性探测向量)
+- **问题**: admin 添加的 App Store 源 URL 直接 `git clone`/`git pull`，background updater 每 6h 拉取一次。一次恶意 URL 可变成周期性内网探测
+- **修复**:
+  - `plugins/deploy/poller.go` 导出 `ValidateGitRemoteTarget(url)` 公开入口
+  - `plugins/appstore/source.go` `AddSource` 入口 + `gitSync` clone 前双重校验
+  - 校验发生在 DB 记录创建**之前**，阻止坏 URL 写入
+
+### MEDIUM: DockerOverview 异步关闭 race
+- **问题**: `convertDockerRun` 在 composerize lazy-import 期间若用户关闭对话框，Phase 2 修的 `useEffect(!open)` reset 先跑，随后 `await` 返回时 `setComposeFile/setActiveTab/setConvertError` 仍会触发 — stale state 重新注入
+- **修复**: `openRef = useRef(open)` 快照；async 完成路径检查 `openRef.current`，关闭期间结果直接丢弃
+
+### MEDIUM: Poller 测试 bypass pollOne 真实路径
+- **问题**: `TestPoller_TriggersBuildOnNewCommit` 和 `TestPoller_ConfigChangedDuringPoll_SkipsBuild` 都内联重现了 pollOne 的判断逻辑而非调用 pollOne — 修复失效则这两个测试仍绿
+- **修复**: `Poller` 新增 `lsRemoteFn` 注入字段 (生产为 nil)。测试通过 stub 驱动真实 `pollOne()` 端到端，真正 pin 住 TOCTOU 修复
+
+### LOW: composerize.test.mjs 没有 npm script 挂接
+- **修复**: `web/package.json` scripts 新增 `test:composerize`。CI/发布 checklist 可加上 `npm run test:composerize`
+
+### LOW: roadmap/changelog 文档与实际实施不符
+- **修复**:
+  - `docs/06-feature-roadmap-v0.11.md` F8 章节重写，反映最终"纯本地对比"实施而非"分层 + registry digest"计划
+  - `changelog.md` Crit 预设预留声明 / composerize bundle ~25KB 声明更新为 Phase 审查修复后的实际状态
+
+### Codex 核验为干净的项
+- Phase 1 buildLoop 原子 pending 检查 + inflight 清除：正确
+- Phase 5 世代计数器 locking：正确
+- PG 预设 validation 在文件/DB 半创建前失败：正确
+- AutoMigrate 覆盖 deploy/database/backup 的新列：正确
+- 4 个 hardened HTTP client 站点 (notify/poller/monitoring/AI)：一致
+
+### 验证
+- `go test ./... -timeout 120s` 全绿
+- `go test -race` clean on plugins/deploy + plugins/docker + plugins/monitoring
+- `npm run build` 绿
+- `npm run test:composerize` 10/10 pass
 
 ---
 

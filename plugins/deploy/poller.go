@@ -72,6 +72,10 @@ type Poller struct {
 	ctx    context.Context
 	cancel context.CancelFunc
 	done   chan struct{}
+
+	// lsRemoteFn lets tests stub out the network call. In production this
+	// is nil and pollOne uses the real lsRemoteHead method.
+	lsRemoteFn func(ctx context.Context, pr *Project, branch string) (string, error)
 }
 
 // NewPoller wires a Poller around the given Service.
@@ -176,7 +180,11 @@ func (p *Poller) pollOne(pr *Project) {
 		branch = "main"
 	}
 
-	commit, err := p.lsRemoteHead(p.ctx, pr, branch)
+	lsRemote := p.lsRemoteHead
+	if p.lsRemoteFn != nil {
+		lsRemote = p.lsRemoteFn
+	}
+	commit, err := lsRemote(p.ctx, pr, branch)
 	if err != nil {
 		p.logger.Warn("git poll: ls-remote failed", "project_id", pr.ID, "err", err)
 		return
@@ -203,6 +211,19 @@ func (p *Poller) pollOne(pr *Project) {
 		return
 	}
 	if commit == fresh.LastDeployedCommit {
+		return
+	}
+
+	// Skip if a build is already in flight for this project. The running
+	// build (webhook-initiated or manual) will itself pull the latest
+	// source, so forcing a follow-up via buildPending here would produce
+	// a redundant second build for the same (or newer) commit. Trade-off:
+	// if a truly newer commit arrives during the current build, the next
+	// poller tick (<= GitPollIntervalSec) picks it up — acceptable
+	// latency vs doubling build cost on every webhook+poll overlap.
+	if p.svc.IsBuildInflight(pr.ID) {
+		p.logger.Debug("git poll: build already in flight, deferring to next tick",
+			"project_id", pr.ID)
 		return
 	}
 
@@ -290,6 +311,15 @@ func shortSHA(sha string) string {
 		return sha[:8]
 	}
 	return sha
+}
+
+// ValidateGitRemoteTarget is the exported entry point for cross-package
+// SSRF validation of Git remote URLs. Other plugins (appstore source sync,
+// framework detector) call this so they apply the same scheme allowlist +
+// IP blocklist policy as the poller. Delegates to the internal
+// implementation.
+func ValidateGitRemoteTarget(target string) error {
+	return validateGitPollTarget(target)
 }
 
 // validateGitPollTarget rejects Git URLs that would let a malicious project
