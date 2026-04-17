@@ -1173,6 +1173,8 @@
         "preset": "Preset",
         "preset_development": "Development",
         "preset_production": "Production",
+        "tuning_preset": "Workload Tuning Preset",
+        "tuning_preset_custom": "Custom (no auto-tuning)",
         "innodb_buffer_pool": "InnoDB Buffer Pool Size",
         "max_connections": "Max Connections",
         "character_set": "Character Set",

@@ -1173,6 +1173,8 @@
         "preset": "预设",
         "preset_development": "开发环境",
         "preset_production": "生产环境",
+        "tuning_preset": "工作负载调优预设",
+        "tuning_preset_custom": "自定义 (不自动调优)",
         "innodb_buffer_pool": "InnoDB 缓冲池大小",
         "max_connections": "最大连接数",
         "character_set": "字符集",

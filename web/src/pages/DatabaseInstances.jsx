@@ -32,6 +32,7 @@ export default function DatabaseInstances() {
     const [instances, setInstances] = useState([])
     const [engines, setEngines] = useState([])
     const [presets, setPresets] = useState({})
+    const [pgTuningPresets, setPgTuningPresets] = useState([])
     const [loading, setLoading] = useState(true)
     const [dialogOpen, setDialogOpen] = useState(false)
     const [actionLoading, setActionLoading] = useState(null)
@@ -45,6 +46,7 @@ export default function DatabaseInstances() {
         port: '',
         memory_limit: '0.5',
         auto_start: true,
+        tuning_preset: '',
         config: {},
     })
     const [creating, setCreating] = useState(false)
@@ -57,14 +59,16 @@ export default function DatabaseInstances() {
 
     const fetchData = useCallback(async () => {
         try {
-            const [instRes, engRes, presetRes] = await Promise.allSettled([
+            const [instRes, engRes, presetRes, pgTuneRes] = await Promise.allSettled([
                 databaseAPI.listInstances(),
                 databaseAPI.engines(),
                 databaseAPI.presets(),
+                databaseAPI.postgresTuningPresets(),
             ])
             if (instRes.status === 'fulfilled') setInstances(instRes.value.data?.instances || [])
             if (engRes.status === 'fulfilled') setEngines(engRes.value.data?.engines || [])
             if (presetRes.status === 'fulfilled') setPresets(presetRes.value.data?.presets || {})
+            if (pgTuneRes.status === 'fulfilled') setPgTuningPresets(pgTuneRes.value.data?.presets || [])
         } catch { /* ignore */ } finally { setLoading(false) }
     }, [])
 
@@ -137,6 +141,7 @@ export default function DatabaseInstances() {
             port: '',
             memory_limit: '0.5',
             auto_start: true,
+            tuning_preset: '',
             config: {},
         })
         setShowAdvanced(false)
@@ -155,7 +160,12 @@ export default function DatabaseInstances() {
             memory_limit: form.memory_limit ? form.memory_limit + 'g' : '',
             auto_start: form.auto_start,
         }
-        if (Object.keys(form.config).length > 0) {
+        if (form.engine === 'postgres' && form.tuning_preset) {
+            payload.tuning_preset = form.tuning_preset
+        }
+        // Skip explicit config when a tuning preset is selected — backend
+        // computes it server-side from the preset + memory budget.
+        if (Object.keys(form.config).length > 0 && !payload.tuning_preset) {
             payload.config = form.config
         }
 
@@ -590,6 +600,36 @@ export default function DatabaseInstances() {
                                 <Text size="2" color="gray">GB</Text>
                             </Flex>
                         </Box>
+
+                        {/* PostgreSQL workload tuning preset (postgres only).
+                            Backend resolves the EngineConfig from the chosen
+                            preset + the memory_limit field, so users don't
+                            need to touch advanced settings to get a sensible
+                            shared_buffers/work_mem layout. */}
+                        {form.engine === 'postgres' && pgTuningPresets.length > 0 && (
+                            <Box>
+                                <Text size="2" weight="bold" mb="1" style={{ display: 'block' }}>
+                                    {t('database.tuning_preset')}
+                                </Text>
+                                <Select.Root
+                                    value={form.tuning_preset || 'custom'}
+                                    onValueChange={(v) => setForm((f) => ({ ...f, tuning_preset: v === 'custom' ? '' : v }))}
+                                >
+                                    <Select.Trigger style={{ width: '100%' }} />
+                                    <Select.Content>
+                                        <Select.Item value="custom">{t('database.tuning_preset_custom')}</Select.Item>
+                                        {pgTuningPresets.map((p) => (
+                                            <Select.Item key={p.id} value={p.id}>{p.name}</Select.Item>
+                                        ))}
+                                    </Select.Content>
+                                </Select.Root>
+                                {form.tuning_preset && (
+                                    <Text size="1" color="gray" mt="1" style={{ display: 'block' }}>
+                                        {pgTuningPresets.find((p) => p.id === form.tuning_preset)?.description}
+                                    </Text>
+                                )}
+                            </Box>
+                        )}
 
                         {/* Advanced Configuration — Collapsible */}
                         {form.engine && (

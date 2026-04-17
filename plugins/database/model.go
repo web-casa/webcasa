@@ -141,6 +141,11 @@ type Instance struct {
 	DataDir       string     `gorm:"size:512" json:"data_dir"`
 	ContainerName string     `gorm:"size:128" json:"container_name"`
 	MemoryLimit   string     `gorm:"size:32;default:0.5g" json:"memory_limit"`
+	// TuningPreset records which workload-aware preset was applied at creation
+	// (postgres only for v0.11). Empty/unset means the user supplied raw Config
+	// directly. Stored for audit and possible re-application after a memory
+	// resize. See plugins/database/presets_postgres.go for available presets.
+	TuningPreset  string     `gorm:"size:16;default:''" json:"tuning_preset"`
 	Config        string     `gorm:"type:text" json:"config"`
 	CreatedAt     time.Time  `json:"created_at"`
 	UpdatedAt     time.Time  `json:"updated_at"`
@@ -185,6 +190,10 @@ type CreateInstanceRequest struct {
 	RootPassword string     `json:"root_password"`
 	MemoryLimit  string        `json:"memory_limit"`
 	AutoStart    bool          `json:"auto_start"`
+	// TuningPreset, when non-empty, runs the named workload-aware preset (see
+	// presets_postgres.go) against MemoryLimit and overwrites Config with the
+	// derived EngineConfig. Currently postgres only; ignored for other engines.
+	TuningPreset string        `json:"tuning_preset,omitempty"`
 	Config       *EngineConfig `json:"config,omitempty"`
 }
 

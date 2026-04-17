@@ -6,6 +6,24 @@
 
 ---
 
+## [Unreleased] — v0.11 Phase 3 "Database Tuning"
+
+### F1: PostgreSQL 调优预设 (Pigsty Pattern 1)
+- 新增 `plugins/database/presets_postgres.go`：4 个工作负载感知预设
+  - **OLTP** — 事务密集 web 应用 (shared_buffers≈25% RAM, work_mem=4MB, max_connections=100)
+  - **OLAP** — 分析查询 (shared_buffers≈40% RAM, work_mem=64MB, max_connections=50)
+  - **Tiny** — 资源受限 (shared_buffers ≤256MB 上限, max_connections=20, wal_level=minimal)
+  - **Crit** — 强一致性 (与 OLTP 同内存布局，预留 v0.12 启用 sync_commit/full_page_writes)
+- 预设根据 Instance.MemoryLimit (`256m`/`1g`/`0.5g`/`512mb`) 动态推算 `EngineConfig`，写入 `Config` JSON
+- `Instance` model 新增 `TuningPreset` 字段 (size:32, default `''`) 记录所选预设供审计 + 未来 memory resize 时重应用
+- `CreateInstanceRequest` 新增 `tuning_preset` 字段 (postgres only)，`resolveTuningPreset()` helper 统一两个创建入口
+- 新 API `GET /api/plugins/database/presets/postgres-tuning` 返回 4 个预设的元数据 (id/name/description/good_for) 供 UI 渲染
+- 前端 `DatabaseInstances.jsx` 创建表单新增「Workload Tuning Preset」下拉 (engine=postgres 时显示)，选中预设时跳过手填 Config (后端推算)，i18n keys: `tuning_preset`, `tuning_preset_custom`
+- 完整测试覆盖: parseMemoryLimitMB 边界 / IsValidPostgresPreset / 4 个预设的内存缩放 / 自定义 fallback / 解析失败的安全降级 / List 元数据完整性 (8 个测试用例)
+- **兼容性**: 现有实例 `tuning_preset=""` 行为完全等价 (走原有 EngineConfig 路径)，无 schema 数据迁移
+
+---
+
 ## [Unreleased] — v0.11 Phase 2 "Deploy UX Quick Win"
 
 ### F2: docker run → compose 转换器 (Dockge Pattern 3)

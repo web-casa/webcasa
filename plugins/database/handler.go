@@ -35,6 +35,14 @@ func (h *Handler) GetPresets(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"presets": EnginePresets})
 }
 
+// GetPostgresTuningPresets returns metadata for workload-aware PostgreSQL
+// presets (oltp/olap/tiny/crit). The actual EngineConfig values are derived
+// at instance creation time based on MemoryLimit, so the response only
+// describes the available choices for UI rendering.
+func (h *Handler) GetPostgresTuningPresets(c *gin.Context) {
+	c.JSON(http.StatusOK, gin.H{"presets": ListPostgresPresets()})
+}
+
 // ── Instances ──
 
 // ListInstances returns all instances.

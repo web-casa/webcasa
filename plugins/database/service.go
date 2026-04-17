@@ -118,10 +118,16 @@ func (s *Service) CreateInstance(req *CreateInstanceRequest) (*Instance, error) 
 
 	containerName := "webcasa-db-" + safeName
 
+	// Apply postgres workload preset (no-op for other engines or empty preset).
+	cfg, presetID, err := resolveTuningPreset(req, memLimit)
+	if err != nil {
+		return nil, err
+	}
+
 	// Serialize engine config to JSON.
 	var configJSON string
-	if req.Config != nil {
-		if data, err := json.Marshal(req.Config); err == nil {
+	if cfg != nil {
+		if data, err := json.Marshal(cfg); err == nil {
 			configJSON = string(data)
 		}
 	}
@@ -136,6 +142,7 @@ func (s *Service) CreateInstance(req *CreateInstanceRequest) (*Instance, error) 
 		DataDir:       filepath.Join(s.dataDir, "instances", sanitizeName(req.Name)),
 		ContainerName: containerName,
 		MemoryLimit:   memLimit,
+		TuningPreset:  presetID,
 		Config:        configJSON,
 	}
 
@@ -237,9 +244,14 @@ func (s *Service) CreateInstanceStream(req *CreateInstanceRequest, progressCb fu
 
 	containerName := "webcasa-db-" + safeName
 
+	cfg, presetID, err := resolveTuningPreset(req, memLimit)
+	if err != nil {
+		return nil, err
+	}
+
 	var configJSON string
-	if req.Config != nil {
-		if data, err := json.Marshal(req.Config); err == nil {
+	if cfg != nil {
+		if data, err := json.Marshal(cfg); err == nil {
 			configJSON = string(data)
 		}
 	}
@@ -254,6 +266,7 @@ func (s *Service) CreateInstanceStream(req *CreateInstanceRequest, progressCb fu
 		DataDir:       filepath.Join(s.dataDir, "instances", sanitizeName(req.Name)),
 		ContainerName: containerName,
 		MemoryLimit:   memLimit,
+		TuningPreset:  presetID,
 		Config:        configJSON,
 	}
 
@@ -848,6 +861,28 @@ func (s *Service) runComposeOutput(dir string, args ...string) (string, error) {
 		return "", fmt.Errorf("docker compose %s: %s", args[0], strings.TrimSpace(string(output)))
 	}
 	return string(output), nil
+}
+
+// resolveTuningPreset returns the EngineConfig + recorded preset ID for an
+// instance creation request. For PostgreSQL with a non-empty TuningPreset,
+// the preset is applied against the memory budget and overrides any
+// user-supplied Config. For other engines or empty preset, the user-supplied
+// Config (if any) is returned unchanged with an empty preset ID.
+func resolveTuningPreset(req *CreateInstanceRequest, memLimit string) (*EngineConfig, string, error) {
+	preset := strings.TrimSpace(req.TuningPreset)
+	if preset == "" {
+		return req.Config, "", nil
+	}
+	if req.Engine != EnginePostgres {
+		// Silently ignore preset for non-postgres engines (forward compat: a
+		// future MySQL/Redis preset set could populate this branch instead).
+		return req.Config, "", nil
+	}
+	if !IsValidPostgresPreset(preset) {
+		return nil, "", fmt.Errorf("unknown postgres tuning preset %q (valid: oltp, olap, tiny, crit)", preset)
+	}
+	cfg := ApplyPostgresPreset(PostgresTuningPreset(preset), memLimit, req.Config)
+	return cfg, preset, nil
 }
 
 // sanitizeName converts a name to a filesystem-safe string.
