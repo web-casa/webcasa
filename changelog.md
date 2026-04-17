@@ -91,6 +91,35 @@
 
 ---
 
+## [Unreleased] — v0.11 Phase 2 审查修复
+
+基于 Codex Review 发现的 4 个问题修复 (2 MEDIUM + 2 LOW)：
+
+### MEDIUM: composerize 全量打进主 bundle
+- **问题**: composerize + composeverter + yargs-parser@13 + core-js@2 (deprecated) + deepmerge 全部被 eagerly imported，拖累主 bundle ~90KB gzip，哪怕用户从不用这个功能
+- **修复**: `DockerOverview.jsx` 移除顶层 `import { dockerRunToCompose }`，改为点击时 `await import('../utils/composerize.js')` 动态加载
+- **效果**: 主 bundle 从 920KB gzip → 827KB gzip (**-10%**)；composerize 拆为独立 chunk `composerize-*.js` (89KB gzip)，仅首次点击时加载
+- 添加 `converting` 状态 + Loader2 spinner，避免异步加载期间双击重复加载
+
+### MEDIUM: 对话框状态未在关闭时重置
+- **问题**: `activeTab`、`dockerRunCmd`、`convertError` 只在成功创建时重置。用户 cancel 失败的转换后重新打开对话框，会看到停留在 docker-run tab + 旧命令 + 红色错误
+- **修复**: 新增 `useEffect(() => if (!open) ...)` 在 Dialog `open` prop 变 false 时清空所有瞬态状态，覆盖所有关闭路径 (Cancel 按钮 / Escape / 遮罩点击)
+
+### LOW: 向用户直接暴露 composerize 原始错误文本
+- **问题**: `setConvertError(e?.message || String(e))` 把 parser 内部错误 (e.g. "Cannot read property 'tokens' of undefined") 直接显示给用户，既不友好也泄露实现细节
+- **修复**: `convertError` 改为 boolean 标志，UI 只显示 i18n `docker.import_docker_run_failed` 友好文本；原始错误走 `console.error` 供开发者调试
+
+### LOW: 占位行剥离正则无测试守卫
+- **问题**: `/^name: <your project name>\r?\n/m` 依赖 composerize 1.7.x 的精确占位文本。未来版本若变化会静默失败
+- **修复**: 新增 `web/src/utils/composerize.test.mjs` 节点可执行回归测试 (无需 test framework)，覆盖 10 个断言：
+  - 外部 network 触发 comment 时占位剥离
+  - 简单镜像命令占位剥离
+  - env + port + volume + restart 复合命令不丢字段
+  - 空输入 throw
+- CI / 本地用 `node web/src/utils/composerize.test.mjs` 即可运行；失败时立即知晓 composerize 行为变化
+
+---
+
 ## [Unreleased] — v0.11 Phase 1 审查修复
 
 基于 Codex Review 发现的 3 个问题 (1 HIGH + 2 MEDIUM) 修复：
