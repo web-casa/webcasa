@@ -72,12 +72,6 @@ func DetectRuntime() Runtime {
 	return runtimeCache
 }
 
-// ResetRuntimeForTesting clears the detection cache. Test-only.
-func ResetRuntimeForTesting() {
-	runtimeOnce = sync.Once{}
-	runtimeCache = RuntimeUnknown
-}
-
 // RuntimeVersion returns a one-line human-readable version string for the
 // detected runtime, e.g. "podman version 5.6.0" or "Docker version 24.0.7".
 // Used in dockerStatus responses and install-flow messaging.

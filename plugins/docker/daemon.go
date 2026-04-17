@@ -136,16 +136,31 @@ func WriteDaemonConfigRaw(data []byte) error {
 	return nil
 }
 
-// RestartDockerDaemon restarts the container runtime's systemd unit to pick
-// up daemon.json changes. Under Podman (v0.12 default), this restarts
-// podman.socket — /etc/docker/daemon.json itself is ignored by Podman, so
-// the restart mostly serves as a "we tried" signal for future work that
-// translates managed fields into Podman's containers/storage config. Under
-// Docker (legacy), restarts the docker service.
+// ErrDaemonConfigNotSupportedOnPodman is returned when the UI attempts to
+// apply /etc/docker/daemon.json changes on a host where Podman is the
+// active runtime. Podman reads its configuration from
+// /etc/containers/containers.conf and /etc/containers/registries.conf;
+// /etc/docker/daemon.json is silently ignored. Rather than pretend a
+// restart applied the config, surface this to the UI so the admin
+// isn't misled.
+var ErrDaemonConfigNotSupportedOnPodman = fmt.Errorf("daemon.json is Docker-specific and has no effect under Podman — edit /etc/containers/containers.conf and /etc/containers/registries.conf instead; a dedicated Podman config UI is planned for a future phase")
+
+// RestartDockerDaemon restarts the container runtime so daemon.json changes
+// take effect. Docker hosts: standard `systemctl restart docker`. Podman
+// hosts: refuse with ErrDaemonConfigNotSupportedOnPodman — the daemon.json
+// UI has no effect on Podman, and pretending otherwise makes the panel
+// lie to the admin about the applied config. Callers should check for the
+// sentinel error and render a Podman-specific explanation.
+//
+// When the runtime is Unknown (neither binary present), returns a generic
+// error so the admin can install a runtime via the install flow.
 func RestartDockerDaemon() error {
-	unit := DetectRuntime().SystemdUnit()
-	if unit == "" {
+	switch DetectRuntime() {
+	case RuntimeDocker:
+		return exec.Command("systemctl", "restart", "docker").Run()
+	case RuntimePodman:
+		return ErrDaemonConfigNotSupportedOnPodman
+	default:
 		return fmt.Errorf("no container runtime detected; cannot restart daemon")
 	}
-	return exec.Command("systemctl", "restart", unit).Run()
 }

@@ -171,27 +171,37 @@ create_service_user() {
 
 ## WebCasa 代码改动
 
-### Must-change (必须)
+### 已在 Phase 2 交付 (commit 8467225 + review fixes)
 
 | 文件 | 改动 |
 |------|------|
-| `plugins/docker/plugin.go:357` | `docker compose version` 输出 parser 放宽接受 `Podman Compose` 字符串 |
-| `web/src/components/DockerRequired.jsx` | 组件名保留，文案改为 "Podman is required" |
+| `plugins/docker/runtime.go` (新) | `Runtime` enum + `DetectRuntime()` + `SystemdUnit()` + `RuntimeVersion()` |
+| `plugins/docker/daemon.go` | `RestartDockerDaemon` 在 Podman 下返回 `ErrDaemonConfigNotSupportedOnPodman` 哨兵错误 |
+| `plugins/docker/plugin.go` | `checkDockerAlreadyReady` runtime-aware，带 3 次指数退避重试 |
+| `plugins/docker/plugin.go` | `installDocker` 在 Podman 主机拒绝运行 EasyDocker |
+| `plugins/docker/plugin.go` | `dockerStatus` 优先使用 `RuntimeVersion()` |
+
+### Phase 3 (UI + 品牌 — 待做)
+
+| 文件 | 改动 |
+|------|------|
+| `web/src/components/DockerRequired.jsx` | 文案改为 "Podman is required" (组件名保留) |
 | `web/src/locales/en.json` / `zh.json` | `docker.*` i18n keys 文案更新 (key 名保留避免破坏) |
 | `README.md` | "Docker" → "Podman 5.6 (auto-installed from AppStream)" |
-| `install.sh` | 详见上节 |
+| daemon-config UI | 识别 `ErrDaemonConfigNotSupportedOnPodman` 并渲染 Podman 特定说明页 |
 
-### Might-change (视 VPS 验证决定)
+### Phase 4 候选 (视 app store 测试决定)
 
 | 文件 | 可能改动 |
 |------|---------|
-| `plugins/docker/client.go:NewClient` | 如果 Podman socket 路径不是 `/var/run/docker.sock` 硬编码场景，加 `WEBCASA_DOCKER_SOCKET` env 覆盖 |
-| `plugins/docker/service.go` | 如果 `podman compose logs --follow` 输出格式与 Docker 有差异，调整 parser |
-| `plugins/database/service.go` | PG/MySQL/Redis 的 docker compose 命令路径同上 |
+| `plugins/docker/client.go:NewClient` | 若发现 Podman socket 路径非 `/var/run/docker.sock`，加 `WEBCASA_DOCKER_SOCKET` env override |
+| `plugins/docker/service.go` | 若 `podman compose logs --follow` 输出格式与 Docker 有差异，调整 parser |
+| `plugins/database/service.go` | PG/MySQL/Redis compose 调用路径同上 |
 
 ### 不改
 
 - `plugins/docker/imagestatus.go` — 本地 SHA 对比，podman 行为等价
+- `plugins/docker/plugin.go` ID 保留 `docker` (内部标识符；DB 表名 + 路由前缀 + 前端 key 向后兼容)
 - Go Docker SDK 调用 — 自动协商，无需改
 - app store compose 文件 — symlink 透明
 - 端点路径 / API 契约 — 全部保留
