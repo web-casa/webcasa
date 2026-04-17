@@ -881,7 +881,10 @@ func resolveTuningPreset(req *CreateInstanceRequest, memLimit string) (*EngineCo
 	if !IsValidPostgresPreset(preset) {
 		return nil, "", fmt.Errorf("unknown postgres tuning preset %q (valid: oltp, olap, tiny, crit)", preset)
 	}
-	cfg := ApplyPostgresPreset(PostgresTuningPreset(preset), memLimit, req.Config)
+	cfg, err := ApplyPostgresPreset(PostgresTuningPreset(preset), memLimit, req.Config)
+	if err != nil {
+		return nil, "", err
+	}
 	return cfg, preset, nil
 }
 

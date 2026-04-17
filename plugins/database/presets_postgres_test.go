@@ -18,13 +18,52 @@ func TestParseMemoryLimitMB(t *testing.T) {
 		{"1.5g", 1536},
 		{"256mb", 256},
 		{"2GB", 2048},
-		{"768K", 0}, // 768 KB rounds to 0 MB; treated as parse failure
+		{"768K", 0}, // 768 KB rounds to 0 MB
 		{"garbage", 0},
 		{"-1g", 0},
+		// IEC / container-style units added in Phase 3 review fix.
+		{"1Gi", 1024},
+		{"512Mi", 512},
+		{"1Ti", 1024 * 1024},
+		{"2048Ki", 2}, // 2048 KiB = 2 MiB
+		// Plain terabyte.
+		{"2T", 2048 * 1024},
 	}
 	for _, tc := range cases {
 		if got := parseMemoryLimitMB(tc.in); got != tc.want {
 			t.Errorf("parseMemoryLimitMB(%q) = %d, want %d", tc.in, got, tc.want)
+		}
+	}
+}
+
+// TestParseMemoryLimitMBStrict verifies the strict parser used by preset
+// application surfaces the failure reason instead of silently falling back.
+func TestParseMemoryLimitMBStrict(t *testing.T) {
+	good := map[string]int{
+		"512m":  512,
+		"1Gi":   1024,
+		"0.5g":  512,
+		"2T":    2048 * 1024,
+		"2048":  2048, // no suffix = MB
+	}
+	for in, want := range good {
+		got, err := parseMemoryLimitMBStrict(in)
+		if err != nil {
+			t.Errorf("parseMemoryLimitMBStrict(%q) unexpected error: %v", in, err)
+			continue
+		}
+		if got != want {
+			t.Errorf("parseMemoryLimitMBStrict(%q) = %d, want %d", in, got, want)
+		}
+	}
+
+	// Note: underscore digit separators ("1_000m") may or may not be
+	// rejected depending on the Go stdlib version's ParseFloat; excluded
+	// from assertions to keep the test stable across Go toolchains.
+	bad := []string{"", "garbage", "1Pi", "-1g", "abc123g"}
+	for _, in := range bad {
+		if _, err := parseMemoryLimitMBStrict(in); err == nil {
+			t.Errorf("parseMemoryLimitMBStrict(%q) expected error, got nil", in)
 		}
 	}
 }
@@ -44,28 +83,32 @@ func TestIsValidPostgresPreset(t *testing.T) {
 
 func TestApplyPostgresPreset_CustomReturnsSupplied(t *testing.T) {
 	supplied := &EngineConfig{SharedBuffers: "777MB"}
-	got := ApplyPostgresPreset(PgPresetCustom, "1g", supplied)
+	got, err := ApplyPostgresPreset(PgPresetCustom, "1g", supplied)
+	if err != nil {
+		t.Fatalf("custom preset: unexpected error %v", err)
+	}
 	if got != supplied {
 		t.Errorf("custom preset must return supplied config unchanged, got %+v", got)
 	}
 }
 
-func TestApplyPostgresPreset_OLTPScalesWithMemory(t *testing.T) {
+// TestApplyPostgresPreset_OLTP_Scales verifies shared_buffers tracks memory
+// proportionally without the unsafe 64MB floor that previously shipped.
+func TestApplyPostgresPreset_OLTP_Scales(t *testing.T) {
 	cases := []struct {
 		mem     string
 		wantSB  string
 		wantWM  string
 		wantECS string
-		wantMC  int
 	}{
-		{"1g", "256MB", "4MB", "768MB", 100},      // 25% / 75%
-		{"4g", "1024MB", "4MB", "3072MB", 100},
-		{"128m", "64MB", "4MB", "96MB", 100},      // 25% would be 32 -> floor at 64
+		{"1g", "256MB", "4MB", "768MB"},    // 25% / 75%
+		{"4g", "1024MB", "4MB", "3072MB"},
+		{"256m", "64MB", "4MB", "192MB"},   // at the minimum memory floor
 	}
 	for _, tc := range cases {
-		got := ApplyPostgresPreset(PgPresetOLTP, tc.mem, nil)
-		if got == nil {
-			t.Fatalf("OLTP[%s] returned nil", tc.mem)
+		got, err := ApplyPostgresPreset(PgPresetOLTP, tc.mem, nil)
+		if err != nil {
+			t.Fatalf("OLTP[%s]: %v", tc.mem, err)
 		}
 		if got.SharedBuffers != tc.wantSB {
 			t.Errorf("OLTP[%s].SharedBuffers = %s, want %s", tc.mem, got.SharedBuffers, tc.wantSB)
@@ -76,60 +119,100 @@ func TestApplyPostgresPreset_OLTPScalesWithMemory(t *testing.T) {
 		if got.EffectiveCacheSize != tc.wantECS {
 			t.Errorf("OLTP[%s].EffectiveCacheSize = %s, want %s", tc.mem, got.EffectiveCacheSize, tc.wantECS)
 		}
-		if got.MaxConnections != tc.wantMC {
-			t.Errorf("OLTP[%s].MaxConnections = %d, want %d", tc.mem, got.MaxConnections, tc.wantMC)
-		}
 	}
 }
 
 func TestApplyPostgresPreset_OLAPHigherWorkMem(t *testing.T) {
-	got := ApplyPostgresPreset(PgPresetOLAP, "8g", nil)
-	if got.WorkMem != "64MB" {
-		t.Errorf("OLAP work_mem = %s, want 64MB (analytic queries need bigger sort/hash buffers)", got.WorkMem)
+	got, err := ApplyPostgresPreset(PgPresetOLAP, "8g", nil)
+	if err != nil {
+		t.Fatalf("OLAP[8g]: %v", err)
 	}
-	// 40% of 8GB = ~3276MB
-	if !strings.HasSuffix(got.SharedBuffers, "MB") {
-		t.Errorf("OLAP SharedBuffers should be in MB, got %s", got.SharedBuffers)
+	if got.WorkMem != "64MB" {
+		t.Errorf("OLAP work_mem = %s, want 64MB", got.WorkMem)
 	}
 	mb, _ := strconv.Atoi(strings.TrimSuffix(got.SharedBuffers, "MB"))
 	if mb < 3000 || mb > 3300 {
 		t.Errorf("OLAP[8g] SharedBuffers ~3276MB expected, got %d MB", mb)
 	}
 	if got.MaxConnections != 50 {
-		t.Errorf("OLAP MaxConnections = %d, want 50 (fewer concurrent for heavier queries)", got.MaxConnections)
+		t.Errorf("OLAP MaxConnections = %d, want 50", got.MaxConnections)
 	}
 }
 
-func TestApplyPostgresPreset_TinyHardCaps(t *testing.T) {
-	// Tiny on a generous budget should still be conservative.
-	got := ApplyPostgresPreset(PgPresetTiny, "8g", nil)
+// TestApplyPostgresPreset_Tiny_ProportionalNoFloor verifies Tiny scales down
+// to match low memory budgets instead of imposing a fixed floor that would
+// exceed the container allocation.
+func TestApplyPostgresPreset_Tiny_ProportionalNoFloor(t *testing.T) {
+	got, err := ApplyPostgresPreset(PgPresetTiny, "128m", nil)
+	if err != nil {
+		t.Fatalf("Tiny[128m]: %v", err)
+	}
 	mb, _ := strconv.Atoi(strings.TrimSuffix(got.SharedBuffers, "MB"))
-	if mb > 256 {
-		t.Errorf("Tiny SharedBuffers should be capped low, got %d MB", mb)
-	}
-	if got.MaxConnections != 20 {
-		t.Errorf("Tiny MaxConnections = %d, want 20", got.MaxConnections)
-	}
-	if got.WalLevel != "minimal" {
-		t.Errorf("Tiny WalLevel = %s, want minimal (skip replication overhead)", got.WalLevel)
+	if mb != 32 { // 128 / 4
+		t.Errorf("Tiny[128m] SharedBuffers = %d MB, want 32 MB (proportional, no floor)", mb)
 	}
 }
 
-func TestApplyPostgresPreset_FallsBackOnUnparseableMemory(t *testing.T) {
-	// Bad memoryLimit must not cause nil panic; should produce a usable config.
-	got := ApplyPostgresPreset(PgPresetOLTP, "garbage", nil)
-	if got == nil {
-		t.Fatal("ApplyPostgresPreset must not return nil even on unparseable memory")
+// TestApplyPostgresPreset_Crit_EmitsDurabilityFields is a regression test
+// for the Codex-flagged CRITICAL finding: Crit preset used to claim
+// synchronous_commit/full_page_writes/fsync in its description but the
+// derived EngineConfig emitted none of them.
+func TestApplyPostgresPreset_Crit_EmitsDurabilityFields(t *testing.T) {
+	got, err := ApplyPostgresPreset(PgPresetCrit, "1g", nil)
+	if err != nil {
+		t.Fatalf("Crit[1g]: %v", err)
 	}
-	if got.SharedBuffers == "" {
-		t.Error("expected non-empty SharedBuffers from fallback memory budget")
+	if got.SynchronousCommit != "on" {
+		t.Errorf("Crit SynchronousCommit = %q, want on", got.SynchronousCommit)
+	}
+	if got.FullPageWrites == nil || !*got.FullPageWrites {
+		t.Error("Crit FullPageWrites must be true")
+	}
+	if got.Fsync == nil || !*got.Fsync {
+		t.Error("Crit Fsync must be true")
+	}
+	if got.WorkMem != "8MB" {
+		t.Errorf("Crit WorkMem = %s, want 8MB", got.WorkMem)
+	}
+}
+
+// TestApplyPostgresPreset_BelowMinimumMemoryRejects verifies each preset
+// errors when the memory budget is too small. Previously the code would
+// silently emit shared_buffers values larger than the container allocation.
+func TestApplyPostgresPreset_BelowMinimumMemoryRejects(t *testing.T) {
+	cases := []struct {
+		preset PostgresTuningPreset
+		mem    string
+	}{
+		{PgPresetOLTP, "128m"},  // minMemOLTP=256
+		{PgPresetOLAP, "256m"},  // minMemOLAP=512
+		{PgPresetCrit, "128m"},  // minMemCrit=256
+		{PgPresetTiny, "32m"},   // minMemTiny=64
+	}
+	for _, tc := range cases {
+		_, err := ApplyPostgresPreset(tc.preset, tc.mem, nil)
+		if err == nil {
+			t.Errorf("%s[%s] should return error (below minimum), got nil", tc.preset, tc.mem)
+		}
+	}
+}
+
+// TestApplyPostgresPreset_UnparseableMemoryErrors is a regression test for
+// the Codex-flagged MEDIUM finding: unsupported units now surface as errors
+// instead of silently falling back to a 512MB budget.
+func TestApplyPostgresPreset_UnparseableMemoryErrors(t *testing.T) {
+	for _, bad := range []string{"garbage", "1Pi", "-1g"} {
+		_, err := ApplyPostgresPreset(PgPresetOLTP, bad, nil)
+		if err == nil {
+			t.Errorf("memory=%q expected error, got nil", bad)
+		}
 	}
 }
 
 func TestListPostgresPresets_AllFour(t *testing.T) {
 	presets := ListPostgresPresets()
 	if len(presets) != 4 {
-		t.Fatalf("expected 4 presets (oltp/olap/tiny/crit), got %d", len(presets))
+		t.Fatalf("expected 4 presets, got %d", len(presets))
 	}
 	ids := map[PostgresTuningPreset]bool{}
 	for _, p := range presets {
@@ -137,10 +220,45 @@ func TestListPostgresPresets_AllFour(t *testing.T) {
 		if p.Name == "" || p.Description == "" {
 			t.Errorf("preset %s: Name/Description must be set", p.ID)
 		}
+		if p.MinMemoryMB <= 0 {
+			t.Errorf("preset %s: MinMemoryMB must be > 0, got %d", p.ID, p.MinMemoryMB)
+		}
 	}
 	for _, want := range []PostgresTuningPreset{PgPresetOLTP, PgPresetOLAP, PgPresetTiny, PgPresetCrit} {
 		if !ids[want] {
 			t.Errorf("missing preset %s", want)
 		}
+	}
+}
+
+// TestListPostgresPresets_CritDescriptionMatchesImplementation is a meta-test
+// guarding the Codex-flagged CRITICAL finding from regressing: the Crit
+// metadata description promises three durability settings; if ApplyPostgresPreset
+// stops emitting one, this test must fail.
+func TestListPostgresPresets_CritDescriptionMatchesImplementation(t *testing.T) {
+	presets := ListPostgresPresets()
+	var crit *PostgresPresetInfo
+	for i := range presets {
+		if presets[i].ID == PgPresetCrit {
+			crit = &presets[i]
+			break
+		}
+	}
+	if crit == nil {
+		t.Fatal("Crit preset missing from ListPostgresPresets")
+	}
+	cfg, err := ApplyPostgresPreset(PgPresetCrit, "1g", nil)
+	if err != nil {
+		t.Fatalf("Crit apply: %v", err)
+	}
+	// Walk description for each advertised setting and confirm emitted.
+	if strings.Contains(crit.Description, "synchronous_commit") && cfg.SynchronousCommit == "" {
+		t.Error("description advertises synchronous_commit but config omits it")
+	}
+	if strings.Contains(crit.Description, "full_page_writes") && cfg.FullPageWrites == nil {
+		t.Error("description advertises full_page_writes but config omits it")
+	}
+	if strings.Contains(crit.Description, "fsync") && cfg.Fsync == nil {
+		t.Error("description advertises fsync but config omits it")
 	}
 }

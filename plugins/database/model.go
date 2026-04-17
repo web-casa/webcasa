@@ -29,6 +29,11 @@ type EngineConfig struct {
 	EffectiveCacheSize      string `json:"effective_cache_size,omitempty"`        // e.g. "384MB"
 	WalLevel                string `json:"wal_level,omitempty"`                  // replica / logical / minimal
 	LogMinDurationStatement *int   `json:"log_min_duration_statement,omitempty"` // ms, -1=off
+	// Durability knobs. nil = leave Postgres default; set only by the "crit"
+	// tuning preset today, but exposed for future advanced-config UX.
+	SynchronousCommit string `json:"synchronous_commit,omitempty"` // on | off | local | remote_apply | remote_write
+	FullPageWrites    *bool  `json:"full_page_writes,omitempty"`
+	Fsync             *bool  `json:"fsync,omitempty"`
 
 	// Redis
 	MaxMemory       string `json:"maxmemory,omitempty"`        // e.g. "256mb"

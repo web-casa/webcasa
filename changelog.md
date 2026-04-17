@@ -91,6 +91,50 @@
 
 ---
 
+## [Unreleased] — v0.11 Phase 3 审查修复
+
+基于 Codex Review 发现的 5 个问题修复 (1 CRITICAL + 1 HIGH + 2 MEDIUM + 1 LOW)：
+
+### CRITICAL: Crit 预设描述与实现不一致 — 虚假安全承诺
+- **问题**: `ListPostgresPresets()` Crit 描述声称 `synchronous_commit=on, full_page_writes=on, fsync=on`，但 `pgCrit()` 未输出任何这些字段 — `EngineConfig` 连字段都没有。用户选 Crit 以为获得强持久性保证，实际拿到的是 OLTP + 更高 work_mem
+- **修复**:
+  - `EngineConfig` 新增 `SynchronousCommit string`, `FullPageWrites *bool`, `Fsync *bool` 三个字段
+  - `compose.go` `buildPostgresCommand()` 输出对应 `-c synchronous_commit=... -c full_page_writes=... -c fsync=...` 参数；新增 `boolToOnOff()` helper
+  - `pgCrit()` 实际设置三个字段
+- **回归测试**:
+  - `TestApplyPostgresPreset_Crit_EmitsDurabilityFields` 断言 Crit 返回的 config 含 3 个 durability 字段
+  - `TestListPostgresPresets_CritDescriptionMatchesImplementation` **meta-test**: 扫描 Crit 描述中承诺的字段，确认实现全部输出。未来如移除任一字段但忘记更新描述，此测试立即失败
+
+### HIGH: Preset 内存地板可产生超过容器限制的设置
+- **问题**: OLTP 有 64MB shared_buffers 下限、OLAP 128MB、Tiny 32MB。容器 `memory_limit=60m` 时 OLTP/OLAP 的 shared_buffers 占比过高 → PG 启动失败或 OOM
+- **修复**:
+  - 移除所有固定下限，`shared_buffers` 严格按百分比计算
+  - 每个预设声明最小内存 (`minMemOLTP=256 / minMemOLAP=512 / minMemCrit=256 / minMemTiny=64`)
+  - `ApplyPostgresPreset` 内存低于最小值时返回描述性错误，**不再 silent fallback**
+  - `PostgresPresetInfo` 新增 `MinMemoryMB` 字段暴露给前端 UI 供客户端预校验
+- **签名变化**: `ApplyPostgresPreset(...) *EngineConfig` → `(*EngineConfig, error)`，`resolveTuningPreset()` 传播错误 → 400 响应
+- **回归测试**: `TestApplyPostgresPreset_BelowMinimumMemoryRejects` 覆盖 4 个预设各自的最小内存拒绝 / `TestApplyPostgresPreset_Tiny_ProportionalNoFloor` 验证 Tiny 按比例缩放
+
+### MEDIUM: 预设选中时 UI 仍显示可编辑 Advanced 字段
+- **问题**: `resolveTuningPreset` 在预设生效时 override `req.Config`，但前端创建表单仍渲染可编辑的 shared_buffers/work_mem/wal_level 字段。用户编辑后 payload 包含 `config`，被前端 `if (!payload.tuning_preset)` 逻辑丢弃 — 用户编辑**静默被忽略**
+- **修复**: `DatabaseInstances.jsx` 高级配置区块条件从 `form.engine` 改为 `form.engine && !(form.engine === 'postgres' && form.tuning_preset)` — 选中 postgres 预设时整个 Advanced 折叠入口隐藏，视觉表达"预设接管调优"
+
+### MEDIUM: 不支持的内存单位静默 fallback 到 512MB
+- **问题**: `1Gi` / `1T` / `1_000m` 全部解析为 0，然后 fallback 到 512MB。K8s 用户发送 `1Gi` 期望 1024MB，实际得到 512MB 预设 — 与 `memory_limit` 指示的容器大小不一致
+- **修复**:
+  - 新增 `parseMemoryLimitMBStrict(s)` 严格模式，支持:
+    - 传统单位: `k/m/g/t` + 可选 `b` 后缀 (`256m`, `1gb`, `2T`)
+    - IEC 二进制单位: `Ki/Mi/Gi/Ti` (`512Mi`, `1Gi`, `2Ti`)
+    - 无后缀默认 MB
+  - 未识别单位 / 负值 / 空串返回 `error`，`ApplyPostgresPreset` 直接传播
+  - 保留兼容性 `parseMemoryLimitMB(s)` (忽略错误，返回 0)
+- **回归测试**: `TestParseMemoryLimitMBStrict` 覆盖 5 good + 5 bad 用例；`TestParseMemoryLimitMB` 扩充 IEC + T 单位
+
+### LOW: 测试覆盖不足
+- **修复**: 上述 4 个修复各自补充回归测试；测试用例数从 8 → 12
+
+---
+
 ## [Unreleased] — v0.11 Phase 2 审查修复
 
 基于 Codex Review 发现的 4 个问题修复 (2 MEDIUM + 2 LOW)：

@@ -631,8 +631,13 @@ export default function DatabaseInstances() {
                             </Box>
                         )}
 
-                        {/* Advanced Configuration — Collapsible */}
-                        {form.engine && (
+                        {/* Advanced Configuration — Collapsible.
+                            Hidden when a postgres tuning preset is active:
+                            the backend discards user-supplied Config in that
+                            case, so exposing editable fields would silently
+                            ignore the user's edits. See resolveTuningPreset
+                            in plugins/database/service.go. */}
+                        {form.engine && !(form.engine === 'postgres' && form.tuning_preset) && (
                             <Box>
                                 <Flex
                                     align="center"
