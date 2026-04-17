@@ -288,6 +288,10 @@ func (p *Plugin) installDocker(c *gin.Context) {
 		return
 	}
 
+	// Reached only when DetectRuntime() is neither Podman (short-circuited
+	// above) nor a reachable runtime — i.e. the legacy "no runtime detected
+	// on an EL host" path where EasyDocker installs real Docker. Keep the
+	// wording specific so users know what's being downloaded.
 	writeSSE("Downloading EasyDocker install script...")
 
 	// Build command: download and run EasyDocker with non-interactive flags.
@@ -499,7 +503,7 @@ func (p *Plugin) FrontendManifest() pluginpkg.FrontendManifest {
 	return pluginpkg.FrontendManifest{
 		ID: "docker",
 		Routes: []pluginpkg.FrontendRoute{
-			{Path: "/docker", Component: "DockerOverview", Menu: true, Icon: "Container", Label: "Docker", LabelZh: "Docker 管理"},
+			{Path: "/docker", Component: "DockerOverview", Menu: true, Icon: "Container", Label: "Containers", LabelZh: "容器管理"},
 			{Path: "/docker/containers", Component: "DockerContainers", Label: "Containers", LabelZh: "容器管理"},
 			{Path: "/docker/images", Component: "DockerImages", Label: "Images", LabelZh: "镜像管理"},
 			{Path: "/docker/networks", Component: "DockerNetworks", Label: "Networks", LabelZh: "网络管理"},

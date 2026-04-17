@@ -145,7 +145,6 @@
         "cpu": "CPU",
         "version": "Version",
         "not_available": "N/A",
-        "docker_stacks": "Docker Stacks",
         "containers_running": "Containers Running",
         "deploy_projects": "Deploy Projects",
         "deploy_running": "Projects Running",

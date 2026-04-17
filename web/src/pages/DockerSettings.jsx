@@ -156,7 +156,20 @@ export default function DockerSettings() {
                 </Callout.Root>
             )}
 
-            <Flex direction="column" gap="4" style={{ maxWidth: 700 }}>
+            {/* Under Podman the daemon.json form can never be applied — dim the
+                entire form and block pointer/keyboard input so users don't
+                waste time tweaking mirrors/log/storage that will be rejected
+                at save time. The Callout above explains why. */}
+            <Flex
+                direction="column"
+                gap="4"
+                style={{
+                    maxWidth: 700,
+                    opacity: isPodman ? 0.5 : 1,
+                    pointerEvents: isPodman ? 'none' : 'auto',
+                }}
+                aria-disabled={isPodman}
+            >
                 {/* Registry Mirrors */}
                 <Card style={{ padding: 20 }}>
                     <Text size="3" weight="bold" mb="1" style={{ display: 'block' }}>{t('docker.registry_mirrors')}</Text>

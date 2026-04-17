@@ -145,7 +145,6 @@
         "cpu": "CPU 使用",
         "version": "版本号",
         "not_available": "暂无信息",
-        "docker_stacks": "Docker Stacks",
         "containers_running": "运行中容器",
         "deploy_projects": "部署项目",
         "deploy_running": "运行中项目",

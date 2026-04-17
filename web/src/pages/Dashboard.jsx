@@ -260,7 +260,7 @@ export default function Dashboard() {
                     value={runningContainers != null ? `${runningContainers} / ${totalContainers}` : '-'}
                     color="cyan"
                     loading={loading}
-                    tooltip={!enabled('docker') ? t('dashboard.plugin_not_enabled', { plugin: 'Docker' }) : undefined}
+                    tooltip={!enabled('docker') ? t('dashboard.plugin_not_enabled', { plugin: t('docker.runtime_label') }) : undefined}
                 />
                 <StatCard
                     icon={Package}
