@@ -6,7 +6,63 @@
 
 ---
 
-## [Unreleased] — v0.11 Phase 5 "Docker Polish"
+## [0.11.0] - 2026-04-17
+
+### "Safe Wins Edition" — 8 个低风险 additive-only 特性 + 6 轮 Codex Review
+
+基于 8 个竞品分析 (Coolify/CapRover/Dokku/Dokploy/Portainer/1Panel/Dockge/Pigsty) 筛选低风险高价值模式，分 5 个 phase 交付，全部**向后兼容**、无 schema 破坏性迁移、无权限模型变动。
+
+#### 8 个特性
+
+| # | 特性 | 来源 | 影响 |
+|---|------|------|------|
+| F1 | PostgreSQL 调优预设 (OLTP/OLAP/Tiny/Crit) | Pigsty | database 插件 DBA 级调优 |
+| F2 | docker run → compose.yaml 转换器 | Dockge | deploy UX 快速胜利 |
+| F3 | SingleFlight 部署去重 | Portainer | 修复 5 分钟阻塞 bug，Build() 永不阻塞 |
+| F4 | Gzip 响应压缩 helper | 1Panel | appstore.ListApps 启用 gzip |
+| F5 | 分层限流器 (Login/TOTP/APIRead/APIWrite) | Dockge | Login 预算与 2FA 预算隔离 |
+| F6 | 备份保留安全地板 (MinRetainCount) | Pigsty | 防止误配置抹掉全部历史 |
+| F7 | Git polling 自动 redeploy | Portainer | 无 webhook 也能按间隔拉取检测 |
+| F8 | Docker 镜像状态 badge (本地对比) | Portainer | 容器列表标记 outdated 镜像 |
+
+#### 质量与安全加固
+
+经过 6 轮 Codex Review (每 phase 一轮 + HIGH 模式举一反三审计 + 最终全量 sweep)，共发现并修复 **28 个 findings** (1 CRITICAL + 7 HIGH + 13 MEDIUM + 7 LOW)。每个 finding 配对应回归测试。
+
+**关键安全修复**:
+- **SSRF 防护统一**: 4 个 outbound HTTP 站点 (notify/poller/monitoring/AI) 统一使用 `ValidateWebhookURL` + `SafeDialContext` + `CheckRedirect`
+- **Git 远程 SSRF 防护**: `ValidateGitRemoteTarget` 覆盖 poller / detector / appstore 三处 git clone 入口，block loopback/link-local/metadata endpoint，保留 RFC1918 私网支持
+- **Poller SSH 主机密钥校验**: 从 `StrictHostKeyChecking=no` 升级到 `accept-new` + 托管 known_hosts，防 MITM
+- **Build 去重**: buildLoop 原子化 pending 检查 + inflight 清除，消除 Phase 1 修复前的 "stranded pending" race
+
+**关键正确性修复**:
+- **PG Crit 预设**: 新增 `SynchronousCommit`/`FullPageWrites`/`Fsync` 三个 EngineConfig 字段并在 compose command 输出，兑现描述中的 durability 承诺
+- **PG 预设最小内存**: 每预设声明 `MinMemoryMB`，防止 shared_buffers 超过容器物理内存
+- **镜像状态缓存**: 世代计数器防 in-flight resolve 写回陈旧 SHA + context 取消不污染 negative cache
+- **PullImage 失效时机**: `invalidatingReader` 包装进度流，Close 时触发失效，消除拉取期间缓存旧值的窗口
+
+#### 性能与资源
+
+- 前端主 bundle gzip 净减少 ~90KB (composerize lazy import)
+- `AnnotateImageStatuses` 500ms sub-timeout，慢 Docker socket 不阻塞列表响应
+- Poller worker pool (4 并发) 替代串行循环，慢 remote 不拖垮整轮
+- SQL 响应 gzip 压缩 (appstore 大 JSON 负载 50KB+ → 5KB)
+
+#### 测试
+
+- `go test ./... -timeout 120s` 全绿
+- `go test -race` clean on plugins/deploy + plugins/docker + plugins/monitoring + internal/auth + internal/handler
+- `npm run build` 通过
+- `npm run test:composerize` 10/10 pass
+
+#### 依赖变更
+
+- `golang.org/x/sync` v0.10.0 → v0.20.0 (添加 singleflight 子包)
+- `composerize@1.7.5` 新增前端依赖 (lazy-loaded chunk)
+
+---
+
+## [v0.11 内部变更流水] Phase 5 "Docker Polish"
 
 ### F8: 镜像状态分层缓存 (Portainer Pattern 5，本地对比版)
 - 新增 `plugins/docker/imagestatus.go` — 短 TTL (5s) 缓存 tag→本地 imageID 映射，一次 ListContainers 内多个容器共用同一 tag 只 inspect 1 次
@@ -31,7 +87,7 @@
 
 ---
 
-## [Unreleased] — v0.11 Phase 4 "Automation & Reliability"
+## [v0.11 内部变更流水 — 0.11.0 发布节点] Phase 4 "Automation & Reliability"
 
 ### F7: Git polling 自动 redeploy (Portainer Pattern 8)
 - 新增 `plugins/deploy/poller.go` — 后台定时调度器，全局 30s tick 扫描所有启用的项目；per-project 间隔最低 60s (配置低于则自动 clamp)，默认 300s
@@ -57,7 +113,7 @@
 
 ---
 
-## [Unreleased] — v0.11 Phase 3 "Database Tuning"
+## [v0.11 内部变更流水 — 0.11.0 发布节点] Phase 3 "Database Tuning"
 
 ### F1: PostgreSQL 调优预设 (Pigsty Pattern 1)
 - 新增 `plugins/database/presets_postgres.go`：4 个工作负载感知预设
@@ -75,7 +131,7 @@
 
 ---
 
-## [Unreleased] — v0.11 Phase 2 "Deploy UX Quick Win"
+## [v0.11 内部变更流水 — 0.11.0 发布节点] Phase 2 "Deploy UX Quick Win"
 
 ### F2: docker run → compose 转换器 (Dockge Pattern 3)
 - 新增 `web/src/utils/composerize.js` 包装 `composerize` npm 库 (1.7.5)，导出 `dockerRunToCompose(cmd)` 纯函数
@@ -91,7 +147,7 @@
 
 ---
 
-## [Unreleased] — v0.11 最终全量 Codex Review 修复
+## [v0.11 内部变更流水 — 0.11.0 发布节点] 最终全量 Codex Review 修复
 
 Pre-release sweep covering cross-phase interactions. Found 3 HIGH + 2 MEDIUM + 2 LOW issues the per-phase reviews missed.
 
@@ -142,7 +198,7 @@ Pre-release sweep covering cross-phase interactions. Found 3 HIGH + 2 MEDIUM + 2
 
 ---
 
-## [Unreleased] — v0.11 Phase 5 审查修复
+## [v0.11 内部变更流水 — 0.11.0 发布节点] Phase 5 审查修复
 
 基于 Codex Review 发现的 3 个问题修复 (2 MEDIUM + 1 LOW)。
 
@@ -171,7 +227,7 @@ Pre-release sweep covering cross-phase interactions. Found 3 HIGH + 2 MEDIUM + 2
 
 ---
 
-## [Unreleased] — v0.11 HIGH-pattern 举一反三审计修复
+## [v0.11 内部变更流水 — 0.11.0 发布节点] HIGH-pattern 举一反三审计修复
 
 基于 Phase 1-4 Codex Review 中 HIGH 类问题的模式提取，对整个代码库做一轮系统性搜索，发现并修复 **2 处相同 class 的 SSRF 缺失**。
 
@@ -209,7 +265,7 @@ Pre-release sweep covering cross-phase interactions. Found 3 HIGH + 2 MEDIUM + 2
 
 ---
 
-## [Unreleased] — v0.11 Phase 4 审查修复
+## [v0.11 内部变更流水 — 0.11.0 发布节点] Phase 4 审查修复
 
 基于 Codex Review 发现的 5 个问题修复 (3 HIGH + 2 MEDIUM)。F6 (备份保留地板) 本次 review 无发现。
 
@@ -251,7 +307,7 @@ Pre-release sweep covering cross-phase interactions. Found 3 HIGH + 2 MEDIUM + 2
 
 ---
 
-## [Unreleased] — v0.11 Phase 3 审查修复
+## [v0.11 内部变更流水 — 0.11.0 发布节点] Phase 3 审查修复
 
 基于 Codex Review 发现的 5 个问题修复 (1 CRITICAL + 1 HIGH + 2 MEDIUM + 1 LOW)：
 
@@ -295,7 +351,7 @@ Pre-release sweep covering cross-phase interactions. Found 3 HIGH + 2 MEDIUM + 2
 
 ---
 
-## [Unreleased] — v0.11 Phase 2 审查修复
+## [v0.11 内部变更流水 — 0.11.0 发布节点] Phase 2 审查修复
 
 基于 Codex Review 发现的 4 个问题修复 (2 MEDIUM + 2 LOW)：
 
@@ -324,7 +380,7 @@ Pre-release sweep covering cross-phase interactions. Found 3 HIGH + 2 MEDIUM + 2
 
 ---
 
-## [Unreleased] — v0.11 Phase 1 审查修复
+## [v0.11 内部变更流水 — 0.11.0 发布节点] Phase 1 审查修复
 
 基于 Codex Review 发现的 3 个问题 (1 HIGH + 2 MEDIUM) 修复：
 
@@ -347,7 +403,7 @@ Pre-release sweep covering cross-phase interactions. Found 3 HIGH + 2 MEDIUM + 2
 
 ---
 
-## [Unreleased] — v0.11 Phase 1 "Core Infrastructure"
+## [v0.11 内部变更流水 — 0.11.0 发布节点] Phase 1 "Core Infrastructure"
 
 本 Phase 交付 3 个横切基础设施改进，基于 Portainer / Dockge / 1Panel 竞品分析。所有变更 **additive-only**，对 v0.10.0 行为完全兼容。
 
