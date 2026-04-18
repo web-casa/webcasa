@@ -44,12 +44,18 @@
 - `podman-docker` shim 让 `docker` CLI 调用透明转发 → service.go 零改动
 
 ### App store 兼容性 (静态审计)
-269 个应用经 podman-compose 1.5.0 parser 静态分析：
-- ✅ **268 apps (99.6%) 完全兼容**
-- 🟡 **1 app (ollama-nvidia)** `deploy.resources.reservations` 被静默忽略 — 仅 GPU 预留 hint 失效，应用仍部署，需文档说明 NVIDIA CDI 配置
-- 🔴 **0 hard failures**
+269 个应用经 `scripts/compose-audit.py` 静态扫描 (podman-compose 1.5.0 parser
++ Podman 5.6 兼容规则)：
+- ✅ **234 apps (87%) 完全 clean** — 无任何 finding
+- 🟡 **10 apps warning** — 主要是 `network_mode: host` (9) + `gpu-reservation-ignored` (1, ollama-nvidia)
+- 🔵 **25 apps info-only** — `docker-sock-mount` (13) + `needs-rootful` (8) +
+  `elevated-caps` (6) + `device-passthrough` (6) + `dep-completed-condition` (3)
+  全部在 v0.12 rootful + symlink 部署模型下可工作，但需逐个实测确认
+- 🔴 **0 critical / hard failures**
 
-静态审计工具: `/tmp/compose-audit.py` (pending commit to `scripts/`)
+完整 JSON 报告: `docs/podman-compose-audit.json` (CI 可用作 diff baseline)。
+
+静态审计工具: `scripts/compose-audit.py` (committed Phase 4)
 
 ### Rootless 放弃的理由
 详见 `ROOTLESS-RISKS` 附录。简要：
@@ -190,7 +196,22 @@ create_service_user() {
 | `README.md` | "Docker" → "Podman 5.6 (auto-installed from AppStream)" |
 | daemon-config UI | 识别 `ErrDaemonConfigNotSupportedOnPodman` 并渲染 Podman 特定说明页 |
 
-### Phase 4 候选 (视 app store 测试决定)
+### Phase 4 (App Store 静态审计 + 25 高风险应用测试)
+
+**已完成**:
+
+| 交付 | 路径 |
+|------|------|
+| 静态审计脚本 | `scripts/compose-audit.py` (CI 可重复运行；`--strict` 模式可作为 PR gate) |
+| 269-app 全量报告 | `docs/podman-compose-audit.json` |
+| 25 高风险应用清单 | 本文件「重点验证清单」表（Status 列待 VPS 实测填充） |
+
+**待执行（需 VPS Podman 5.6 环境）**:
+
+- 25 高风险应用逐个 stack up/down + 功能验证 (步骤见上方实测执行步骤)
+- 任何 🔴 fail 应用：判定 (a) 修 manifest，(b) Podman-only 标记 unavailable，(c) 文档化 workaround
+
+### Phase 5 候选 (视 Phase 4 实测决定)
 
 | 文件 | 可能改动 |
 |------|---------|
@@ -220,13 +241,49 @@ create_service_user() {
 
 ### 重点验证清单 (25 个高风险 app 实测)
 
-| 类别 | 应用 | 验证点 |
-|------|------|--------|
-| docker.sock 挂载 (8) | portainer, dockge, dozzle, uptime-kuma, crowdsec, cup, beszel-agent, homarr | symlink 透明访问，所有容器管理操作能看到 podman 容器 |
-| privileged: true (8) | dashdot, gladys, homebridge, kasm-workspaces, scrypted, sshwifty, stirling-pdf, unmanic | rootful podman 特权语义等价 |
-| network_mode: host (7) | beszel-agent, cloudflared, gladys, homebridge, matter-server, mdns-repeater, plex | 端口绑定 + 主机网络可见 |
-| cap_add (4) | netdata, transmission-vpn, windows, zerotier | NET_ADMIN 在 rootful 下可 grant |
-| devices: (3) | transmission-vpn, windows, zigbee2mqtt | `/dev/ttyUSB*` / `/dev/net/tun` 挂载 |
+每个应用列出 audit 检测到的 codes (可在 `docs/podman-compose-audit.json` 查到详情)。
+**Status** 字段在 VPS 实测后由 Phase 4 执行人填写：✅ pass / 🟡 partial / 🔴 fail / ⏳ pending。
+
+| App | Audit codes | 类别 | 验证点 | Status |
+|-----|------------|------|--------|--------|
+| portainer | `docker-sock-mount` | sock | symlink 透明访问，UI 能看到 podman 容器 | ⏳ |
+| dockge | `docker-sock-mount` | sock | compose stack 列表正确加载 | ⏳ |
+| dozzle | `docker-sock-mount` | sock | 容器日志实时流可读 | ⏳ |
+| uptime-kuma | `docker-sock-mount` | sock | 监控创建容器 | ⏳ |
+| crowdsec | `docker-sock-mount` | sock | log scan API 调用 | ⏳ |
+| cup | `docker-sock-mount` | sock | 镜像 update 检查 | ⏳ |
+| beszel-agent | `docker-sock-mount`,`network-host` | sock+net | 端口监听 + 容器枚举 | ⏳ |
+| homarr | (audit clean，但运行时挂 sock) | sock | dashboard 整合容器卡片 | ⏳ |
+| dashdot | `needs-rootful` | priv | 系统 metrics 采集 | ⏳ |
+| gladys | `docker-sock-mount`,`needs-rootful`,`network-host` | priv+sock+net | 物联网设备发现 | ⏳ |
+| homebridge | `needs-rootful`,`network-host` | priv+net | mDNS 广播 + HomeKit pair | ⏳ |
+| kasm-workspaces | `needs-rootful` | priv | 容器化桌面会话启动 | ⏳ |
+| scrypted | `device-passthrough`,`needs-rootful`,`network-host` | priv+net+dev | 摄像头流 | ⏳ |
+| sshwifty | `needs-rootful` | priv | SSH 终端 | ⏳ |
+| stirling-pdf | `needs-rootful` | priv | PDF 处理 | ⏳ |
+| unmanic | `needs-rootful` | priv | 转码任务运行 | ⏳ |
+| cloudflared | `network-host` | net | tunnel 建立 | ⏳ |
+| matter-server | `network-host` | net | Matter pair | ⏳ |
+| mdns-repeater | `network-host` | net | 跨网段 mDNS | ⏳ |
+| plex | `network-host` | net | 流媒体 + DLNA 发现 | ⏳ |
+| netdata | `docker-sock-mount`,`elevated-caps` | sock+cap | system metrics | ⏳ |
+| transmission-vpn | `device-passthrough`,`elevated-caps` | cap+dev | `/dev/net/tun` + NET_ADMIN | ⏳ |
+| windows | `device-passthrough`,`elevated-caps` | cap+dev | KVM `/dev/kvm` 可访问 | ⏳ |
+| zerotier | `device-passthrough`,`elevated-caps`,`network-host` | priv+net+cap+dev | TUN 设备 + 路由 | ⏳ |
+| zigbee2mqtt | `device-passthrough` | dev | `/dev/ttyUSB0` 串口适配 | ⏳ |
+
+### 实测执行步骤 (per-app)
+
+```bash
+# 1. 通过 Web.Casa UI 安装 (走 stack 路径)
+# 2. 等待容器到 running 状态
+podman ps --filter name=<app>
+# 3. 检查日志无 fatal
+podman logs <container> --tail 100
+# 4. 验证应用功能 (上面表格的"验证点"列)
+# 5. 删除并清理
+# 6. 在表格 Status 列填结果
+```
 
 ### 特殊处理
 
