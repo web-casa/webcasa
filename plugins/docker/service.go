@@ -169,6 +169,7 @@ func (s *Service) CreateStack(req *CreateStackRequest) (*Stack, error) {
 	// Write compose file.
 	composePath := filepath.Join(stackDir, "docker-compose.yml")
 	if err := os.WriteFile(composePath, []byte(req.ComposeFile), 0600); err != nil {
+		os.RemoveAll(stackDir)
 		return nil, fmt.Errorf("write compose file: %w", err)
 	}
 
@@ -176,6 +177,7 @@ func (s *Service) CreateStack(req *CreateStackRequest) (*Stack, error) {
 	if req.EnvFile != "" {
 		envPath := filepath.Join(stackDir, ".env")
 		if err := os.WriteFile(envPath, []byte(req.EnvFile), 0600); err != nil {
+			os.RemoveAll(stackDir)
 			return nil, fmt.Errorf("write env file: %w", err)
 		}
 	}
@@ -190,6 +192,10 @@ func (s *Service) CreateStack(req *CreateStackRequest) (*Stack, error) {
 	}
 
 	if err := s.db.Create(stack).Error; err != nil {
+		// DB insert failed after files were written — clean up the orphan
+		// directory so a retry with the same name doesn't trip the
+		// filesystem pre-existing check (Group C robustness).
+		os.RemoveAll(stackDir)
 		return nil, fmt.Errorf("create stack record: %w", err)
 	}
 
@@ -260,8 +266,14 @@ func (s *Service) DeleteStack(id uint) error {
 		return fmt.Errorf("failed to stop stack: %w (stack kept in UI for manual cleanup)", err)
 	}
 
-	// Remove data directory.
-	os.RemoveAll(stack.DataDir)
+	// Remove data directory. If this fails, keep the DB row so the stack is
+	// still addressable from the UI for manual cleanup; deleting the row
+	// unconditionally would orphan the files. (Group C robustness.)
+	if err := os.RemoveAll(stack.DataDir); err != nil {
+		s.logger.Error("remove stack data dir failed", "stack", stack.Name, "err", err)
+		s.db.Model(stack).Update("status", "error")
+		return fmt.Errorf("remove stack data dir: %w (DB record retained for manual cleanup)", err)
+	}
 
 	return s.db.Delete(&Stack{}, id).Error
 }

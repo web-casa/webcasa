@@ -30,6 +30,14 @@ export default function DockerOverview() {
     const [logStreaming, setLogStreaming] = useState(false)
     const logRef = useRef(null)
     const wsRef = useRef(null)
+    // Tracks the most recent logs-fetch request so a stale "opened A then
+    // opened B while A was in flight" sequence doesn't let A's response
+    // clobber B's dialog contents (Group C correctness fix).
+    const logReqRef = useRef(0)
+    // Whether a transient network error caused the last status check to
+    // fail. We distinguish this from "runtime missing" so the UI can prompt
+    // a retry instead of showing the install gate for a blip.
+    const [statusError, setStatusError] = useState(false)
 
     const fetchData = useCallback(async () => {
         try {
@@ -49,14 +57,18 @@ export default function DockerOverview() {
 
     useEffect(() => { fetchData() }, [fetchData])
 
-    // Check Docker availability first
+    // Check Docker availability first. Separate network/API failures from
+    // genuine "runtime missing" — the old code collapsed both into the
+    // install gate, so a transient blip looked like "Podman uninstalled".
     const checkDocker = useCallback(async () => {
         setDockerChecking(true)
         try {
             const res = await dockerAPI.status()
             setDockerStatus(res.data)
+            setStatusError(false)
         } catch {
-            setDockerStatus({ installed: false, daemon_running: false })
+            setStatusError(true)
+            setDockerStatus(null)
         } finally { setDockerChecking(false) }
     }, [])
 
@@ -83,17 +95,22 @@ export default function DockerOverview() {
     }
 
     const viewContainerLogs = async (id, name) => {
+        const reqId = ++logReqRef.current
         setShowLogs(`ctr-${name || id}`)
         setLogs('')
         setLogFilter('')
         setLogStreaming(false)
         try {
             const res = await dockerAPI.containerLogs(id, '200')
-            setLogs(res.data?.logs || 'No logs available')
-        } catch { setLogs('Failed to fetch logs') }
+            if (logReqRef.current !== reqId) return // a newer open superseded us
+            setLogs(res.data?.logs || t('docker.no_logs'))
+        } catch {
+            if (logReqRef.current === reqId) setLogs(t('docker.fetch_logs_failed'))
+        }
     }
 
     const viewLogs = async (id, streaming = false) => {
+        const reqId = ++logReqRef.current
         setShowLogs(id)
         setLogs('')
         setLogFilter('')
@@ -104,8 +121,11 @@ export default function DockerOverview() {
         } else {
             try {
                 const res = await dockerAPI.stackLogs(id, '200')
-                setLogs(res.data?.logs || 'No logs available')
-            } catch { setLogs('Failed to fetch logs') }
+                if (logReqRef.current !== reqId) return
+                setLogs(res.data?.logs || t('docker.no_logs'))
+            } catch {
+                if (logReqRef.current === reqId) setLogs(t('docker.fetch_logs_failed'))
+            }
         }
     }
 
@@ -153,6 +173,18 @@ export default function DockerOverview() {
         if (logRef.current) logRef.current.scrollTop = logRef.current.scrollHeight
     }, [logs])
 
+    // Close the live-log WebSocket on unmount. Without this, navigating away
+    // with the logs dialog open leaves the socket connected and keeps
+    // scheduling setState on a torn-down component (Group C robustness).
+    useEffect(() => {
+        return () => {
+            if (wsRef.current) {
+                wsRef.current.close()
+                wsRef.current = null
+            }
+        }
+    }, [])
+
     const filteredLogs = logFilter
         ? logs.split('\n').filter(line => line.toLowerCase().includes(logFilter.toLowerCase())).join('\n')
         : logs
@@ -170,6 +202,28 @@ export default function DockerOverview() {
         : dockerStatus?.runtime === 'docker'
             ? t('docker.runtime_docker')
             : t('docker.runtime_label')
+
+    // Transient status-fetch failure — distinguish from "runtime missing".
+    if (statusError) {
+        return (
+            <Box>
+                <Flex align="center" gap="2" mb="4">
+                    <Container size={24} />
+                    <Heading size="5">{runtimeLabel}</Heading>
+                </Flex>
+                <Callout.Root color="orange">
+                    <Callout.Icon><RefreshCw size={16} /></Callout.Icon>
+                    <Box>
+                        <Text size="2" weight="bold" style={{ display: 'block' }}>{t('docker.status_error_title')}</Text>
+                        <Text size="2">{t('docker.status_error_desc')}</Text>
+                    </Box>
+                </Callout.Root>
+                <Flex mt="3">
+                    <Button variant="soft" onClick={checkDocker}><RefreshCw size={16} /> {t('docker.check_again')}</Button>
+                </Flex>
+            </Box>
+        )
+    }
 
     // Show Docker required screen if the runtime is not available
     if (dockerStatus && (!dockerStatus.installed || !dockerStatus.daemon_running)) {
