@@ -86,6 +86,8 @@ curl -fsSL https://raw.githubusercontent.com/web-casa/webcasa/main/install.sh | 
 安装完成后访问 `http://YOUR_IP:39921`，首次访问会引导创建管理员账户。
 
 > **容器运行时：** v0.12 会自动安装 **Podman 5.6**（AppStream）+ `podman-docker` 兼容层 + `podman-compose`（EPEL）。面板通过 rootful Podman socket 通信，原有 `docker` / `docker-compose` 命令和镜像保持可用。
+>
+> **GPU 工作负载（Ollama、Stable Diffusion 等）：** 需要一次性配置 NVIDIA CDI —— Podman 不认 Docker 的 `--gpus all` 和 compose 里的 `deploy.resources.reservations`。3 条命令搞定 + compose 迁移指引见 [`docs/nvidia-gpu.md`](docs/nvidia-gpu.md)。
 
 **自定义选项：**
 
