@@ -84,30 +84,39 @@ def audit_service(svc_name: str, svc: dict[str, Any]) -> list[Finding]:
             path=f"{base}.deploy.resources.reservations.devices",
         ))
 
-    # `extends` has only partial support pre-podman-compose 1.6 and is a
-    # frequent source of silent failure.
+    # `extends` has been improved in podman-compose 1.4+ (release notes:
+    # "Fix support for `extends`"). Don't assert it as broken; flag for
+    # manual verification only since edge cases (cross-file extends with
+    # interpolation) still surface in upstream issues.
     if "extends" in svc:
         out.append(Finding(
-            severity="critical",
-            code="extends-unsupported",
-            message="`extends` is not reliably supported by podman-compose "
-                    "1.5; inline the parent service or split into separate "
-                    "stacks.",
+            severity="info",
+            code="extends-verify",
+            message="`extends` was reworked in podman-compose 1.4+; usually "
+                    "works but cross-file extends + env interpolation can "
+                    "still misbehave — verify the merged service definition.",
             path=f"{base}.extends",
         ))
 
-    # build: with cache_from / target / network is fragile under buildah.
+    # build: env-type secrets are the documented gap (containers/podman-compose
+    # issue #1066). cache_from/cache_to/ssh were added in podman-compose 1.3.
     build = svc.get("build")
     if isinstance(build, dict):
-        for risky in ("cache_from", "cache_to", "secrets", "ssh"):
-            if risky in build:
-                out.append(Finding(
-                    severity="warning",
-                    code=f"build-{risky}-fragile",
-                    message=f"build.{risky} works inconsistently with the "
-                            f"buildah backend in podman-compose 1.5.",
-                    path=f"{base}.build.{risky}",
-                ))
+        secrets = build.get("secrets") or []
+        if isinstance(secrets, list):
+            for sec in secrets:
+                # env-type build secret syntax: `- id=X,env=Y` or dict form
+                spec = sec if isinstance(sec, str) else (sec.get("source") if isinstance(sec, dict) else "")
+                if spec and "env" in spec:
+                    out.append(Finding(
+                        severity="warning",
+                        code="build-env-secret-fragile",
+                        message="build.secrets with env-type sources is an "
+                                "open gap in podman-compose (containers/"
+                                "podman-compose#1066); file-type secrets work.",
+                        path=f"{base}.build.secrets",
+                    ))
+                    break
 
     # privileged / cap_add: SYS_ADMIN: needs rootful Podman (which v0.12 ships
     # by default, so info-level only).
@@ -222,23 +231,31 @@ def audit_service(svc_name: str, svc: dict[str, Any]) -> list[Finding]:
 
 
 def audit_compose(text: str) -> list[Finding]:
-    """Parse a single compose YAML string and emit findings."""
+    """Parse a single compose YAML string and emit findings.
+
+    PyYAML parses every app in the seed corpus directly without needing
+    to substitute ${VAR} tokens; pre-substitution actually corrupts nested
+    interpolations like ${VAR:-${OTHER}}, so we only fall back to it when
+    the raw parse fails.
+    """
     out: list[Finding] = []
 
-    # Substitute env tokens with placeholders so PyYAML doesn't choke on
-    # ${VAR:-default} patterns that look fine to docker-compose but parse OK
-    # here too — keeping for safety in case any app uses unquoted shell-isms.
-    sanitized = re.sub(r"\$\{[^}]+\}", "PLACEHOLDER", text)
-
     try:
-        doc = yaml.safe_load(sanitized) or {}
-    except yaml.YAMLError as e:
-        out.append(Finding(
-            severity="critical",
-            code="yaml-parse-error",
-            message=f"YAML parse failed: {e}",
-        ))
-        return out
+        doc = yaml.safe_load(text) or {}
+    except yaml.YAMLError:
+        # Last-resort sanitization: replace env tokens with placeholders so
+        # the audit can still run on a manifest with shell-only constructs.
+        sanitized = re.sub(r"\$\{[^${}]+\}", "PLACEHOLDER", text)
+        try:
+            doc = yaml.safe_load(sanitized) or {}
+        except yaml.YAMLError as e:
+            out.append(Finding(
+                severity="critical",
+                code="yaml-parse-error",
+                message=f"YAML parse failed even after env-token "
+                        f"sanitization: {e}",
+            ))
+            return out
 
     if not isinstance(doc, dict):
         out.append(Finding(
