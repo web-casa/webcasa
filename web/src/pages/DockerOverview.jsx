@@ -154,13 +154,23 @@ export default function DockerOverview() {
         return <Flex align="center" justify="center" style={{ minHeight: 200 }}><RefreshCw size={20} className="spin" /><Text ml="2">{t('common.loading')}</Text></Flex>
     }
 
-    // Show Docker required screen if Docker is not available
+    // Runtime label: "Podman" under v0.12+, "Docker" if an older host still
+    // has real Docker, "Containers" if detection failed before the status
+    // endpoint returned. The heading text is derived rather than hard-coded
+    // so the panel's branding tracks the actual runtime in use.
+    const runtimeLabel = dockerStatus?.runtime === 'podman'
+        ? t('docker.runtime_podman')
+        : dockerStatus?.runtime === 'docker'
+            ? t('docker.runtime_docker')
+            : t('docker.runtime_label')
+
+    // Show Docker required screen if the runtime is not available
     if (dockerStatus && (!dockerStatus.installed || !dockerStatus.daemon_running)) {
         return (
             <Box>
                 <Flex align="center" gap="2" mb="4">
                     <Container size={24} />
-                    <Heading size="5">Docker</Heading>
+                    <Heading size="5">{runtimeLabel}</Heading>
                 </Flex>
                 <DockerRequired
                     installed={dockerStatus.installed}
@@ -177,7 +187,10 @@ export default function DockerOverview() {
             <Flex align="center" justify="between" mb="4">
                 <Flex align="center" gap="2">
                     <Container size={24} />
-                    <Heading size="5">Docker</Heading>
+                    <Heading size="5">{runtimeLabel}</Heading>
+                    {dockerStatus?.version && (
+                        <Badge variant="soft" size="1" color="gray">{dockerStatus.version}</Badge>
+                    )}
                 </Flex>
                 <Flex gap="2">
                     <Button size="2" variant="soft" color="gray" onClick={() => navigate('/docker/settings')}><Settings size={16} /> {t('docker.settings')}</Button>

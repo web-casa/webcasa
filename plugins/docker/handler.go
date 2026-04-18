@@ -9,6 +9,7 @@ import (
 	"net/url"
 	"os"
 	"strconv"
+	"sync"
 	"time"
 
 	"github.com/gin-gonic/gin"
@@ -286,17 +287,41 @@ func (h *Handler) ContainerStats(c *gin.Context) {
 // ── Daemon Configuration ──
 
 // GetDaemonConfig returns the current Docker daemon configuration.
+// Also surfaces the detected container runtime so the UI can render a
+// Podman-specific notice when daemon.json edits would have no effect.
 func (h *Handler) GetDaemonConfig(c *gin.Context) {
 	cfg, _, err := ReadDaemonConfig()
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
-	c.JSON(http.StatusOK, gin.H{"config": cfg})
+	c.JSON(http.StatusOK, gin.H{
+		"config":  cfg,
+		"runtime": DetectRuntime().String(),
+	})
 }
 
+// daemonConfigMu serializes concurrent /daemon-config writes so two admins
+// (or a retry + a new click) cannot race: the write-then-restart-then-
+// rollback sequence reads and rewrites /etc/docker/daemon.json, and parallel
+// flows can overwrite each other's rollback snapshots. Process-local is
+// sufficient — WebCasa is single-node; multi-replica deployments would need
+// a file lock, which is out of scope for v0.12.
+var daemonConfigMu sync.Mutex
+
 // UpdateDaemonConfig writes daemon.json and restarts Docker.
+// Refuses up-front under Podman: daemon.json is Docker-specific and writing
+// it on a Podman host would create a stale file that Podman silently ignores.
 func (h *Handler) UpdateDaemonConfig(c *gin.Context) {
+	if DetectRuntime() == RuntimePodman {
+		c.JSON(http.StatusBadRequest, gin.H{
+			"error":   ErrDaemonConfigNotSupportedOnPodman.Error(),
+			"runtime": "podman",
+		})
+		return
+	}
+	daemonConfigMu.Lock()
+	defer daemonConfigMu.Unlock()
 	var cfg DaemonConfig
 	if err := c.ShouldBindJSON(&cfg); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})

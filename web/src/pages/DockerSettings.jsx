@@ -33,11 +33,18 @@ export default function DockerSettings() {
     // Track original storage driver for warning
     const [originalStorageDriver, setOriginalStorageDriver] = useState('')
 
+    // Container runtime — "podman" on v0.12+ installs. When Podman is the
+    // active runtime, /etc/docker/daemon.json has no effect (Podman reads
+    // /etc/containers/*.conf instead) so the save button is disabled and an
+    // explanatory callout is rendered at the top of the form.
+    const [runtime, setRuntime] = useState('')
+
     const fetchConfig = useCallback(async () => {
         setLoading(true)
         try {
             const res = await dockerAPI.getDaemonConfig()
             const cfg = res.data?.config || {}
+            setRuntime(res.data?.runtime || '')
             setMirrors(cfg['registry-mirrors'] || [])
             setInsecureRegistries(cfg['insecure-registries'] || [])
             setLogDriver(cfg['log-driver'] || '')
@@ -122,6 +129,7 @@ export default function DockerSettings() {
     }
 
     const storageDriverChanged = storageDriver !== originalStorageDriver && originalStorageDriver !== ''
+    const isPodman = runtime === 'podman'
 
     return (
         <Box>
@@ -134,7 +142,34 @@ export default function DockerSettings() {
             </Text>
             <Separator size="4" mb="4" />
 
-            <Flex direction="column" gap="4" style={{ maxWidth: 700 }}>
+            {isPodman && (
+                <Callout.Root color="orange" mb="4">
+                    <Callout.Icon><AlertTriangle size={16} /></Callout.Icon>
+                    <Box>
+                        <Text size="2" weight="bold" style={{ display: 'block' }}>
+                            {t('docker.podman_daemon_unsupported_title')}
+                        </Text>
+                        <Text size="2" style={{ display: 'block' }}>
+                            {t('docker.podman_daemon_unsupported_desc')}
+                        </Text>
+                    </Box>
+                </Callout.Root>
+            )}
+
+            {/* Under Podman the daemon.json form can never be applied — dim the
+                entire form and block pointer/keyboard input so users don't
+                waste time tweaking mirrors/log/storage that will be rejected
+                at save time. The Callout above explains why. */}
+            <Flex
+                direction="column"
+                gap="4"
+                style={{
+                    maxWidth: 700,
+                    opacity: isPodman ? 0.5 : 1,
+                    pointerEvents: isPodman ? 'none' : 'auto',
+                }}
+                aria-disabled={isPodman}
+            >
                 {/* Registry Mirrors */}
                 <Card style={{ padding: 20 }}>
                     <Text size="3" weight="bold" mb="1" style={{ display: 'block' }}>{t('docker.registry_mirrors')}</Text>
@@ -297,7 +332,7 @@ export default function DockerSettings() {
 
                 {/* Save Button */}
                 <Flex justify="end">
-                    <Button size="3" disabled={saving} onClick={handleSave}>
+                    <Button size="3" disabled={saving || isPodman} onClick={handleSave}>
                         {saving ? (
                             <><Loader2 size={16} className="spin" /> {t('docker.saving_restarting')}</>
                         ) : (
