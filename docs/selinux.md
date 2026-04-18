@@ -15,9 +15,9 @@ $ getenforce
 Enforcing
 
 # WebCasa systemd 单元跑在专用 webcasa 用户下
-$ systemctl status webcasa | grep User=
-    CGroup: /system.slice/webcasa.service
-            └─... /usr/local/bin/webcasa
+$ systemctl show webcasa --property=User --property=Group
+User=webcasa
+Group=webcasa
 
 # 没有 denial 事件
 $ sudo ausearch -m AVC -ts today 2>/dev/null | grep -iE "webcasa|caddy|podman" | head
@@ -148,22 +148,39 @@ avc: denied { name_bind } for pid=... comm="caddy"
   tcontext=system_u:object_r:http_port_t:s0 tclass=tcp_socket
 ```
 
-**原因**：Caddy 以 `webcasa` 用户（`unconfined_service_t` 或继承 `init_t`）绑 80/443，但当前策略不允许该 type 绑 http_port_t。
+**原因**：SELinux 的 `name_bind` 是**独立于** Linux capabilities 的检查 —
+拿到 `CAP_NET_BIND_SERVICE` 只是满足了 DAC 层（允许绑特权端口），SELinux 还要额外
+在 MAC 层允许 `scontext` 类型对目标 port type 做 `name_bind`。两层都要通过。
 
-**修法 A（推荐）**：systemd 单元里加 `AmbientCapabilities=CAP_NET_BIND_SERVICE`，让内核不走 SELinux name_bind check。v0.12 install.sh 已经写了，如果你自己改了 systemd 单元，确认这行还在：
+v0.12 Caddy 以 root 独立 systemd service 运行（方案 X，见 `07-podman-v0.12.md`
+R8），进程 type 是 `init_t` 或 `unconfined_service_t`，两者默认都被策略允许绑
+`http_port_t` (80/443)，所以**正常部署不会触发这个 denial**。以下仅适用于
+你改了默认部署（比如让 Caddy 跑在 webcasa 用户下）并确实看到了这条 AVC。
 
-```ini
-[Service]
-AmbientCapabilities=CAP_NET_BIND_SERVICE
-```
-
-**修法 B（fallback）**：给 Caddy 二进制打 setcap（不推荐，和 SELinux 策略不直接相关但能绕开）：
+**修法 A（推荐）**：把 Caddy 监听的额外端口登记到 `http_port_t`：
 
 ```bash
-sudo setcap cap_net_bind_service=+ep $(command -v caddy)
+# 比如想让 Caddy 监听 8080：
+sudo semanage port -a -t http_port_t -p tcp 8080
+# 列出当前 http_port_t 包含哪些端口
+sudo semanage port -l | grep '^http_port_t'
 ```
 
-install.sh 已经在标准路径做了这个，如果你自己编译了 Caddy 放到别处，需要手动 setcap。
+**修法 B（自定义 policy module）**：如果你让 Caddy 跑在自定义 domain 里、
+希望它能绑所有 `http_port_t` 端口，用 audit2allow 从 AVC 生成 policy：
+
+```bash
+sudo ausearch -m AVC -ts recent | audit2allow -M caddy-binds
+sudo semodule -i caddy-binds.pp
+```
+
+生成的 `.te` 文件要人工审查 — audit2allow 只是给 raw 起点，不应直接 semodule -i
+而不看内容（可能比你想的放得更宽）。
+
+**不是修法（易混淆）**：`AmbientCapabilities=CAP_NET_BIND_SERVICE` 或
+`setcap cap_net_bind_service=+ep` 都只解决 capability 层的问题，**不影响** SELinux
+`name_bind`。v0.12 install.sh 给 Caddy 二进制打了 setcap，是为了支持以非 root
+启动的场景 — 不是 SELinux 解法。
 
 ### 场景 4：重装 / 恢复备份后 `/run/podman/podman.sock` 连不上
 

@@ -595,9 +595,12 @@ jobs:
   #   - podman-docker shim output format changes
   #   - /var/run/docker.sock symlink breakage
   #
-  # Runs in parallel with build (does not need artifacts). Uses
-  # systemd-enabled AlmaLinux containers so podman.socket starts
-  # the same way install.sh sets it up.
+  # Runs in parallel with build (does not need artifacts). The
+  # AlmaLinux containers have no systemd pid 1, so we start the
+  # compat API with `podman system service` manually — this is
+  # NOT identical to install.sh's systemctl-based path, but it
+  # binds the same socket at the same path, which is what the
+  # integration tests assert against.
   # ============================================================
   podman-compat:
     name: Podman Integration (${{ matrix.os }})
@@ -627,8 +630,13 @@ jobs:
       # even when install.sh itself isn't being exercised.
       - name: Install Podman + Go
         run: |
-          dnf install -y podman podman-docker go-toolset jq
+          # podman-compose lives in EPEL on EL9/EL10 (install.sh auto-enables
+          # EPEL too). Install it so TestDockerShimTransparency's `docker
+          # compose version` leg actually gates instead of silently skipping.
+          dnf install -y epel-release || dnf install -y 'dnf-command(config-manager)'
+          dnf install -y podman podman-docker podman-compose go-toolset jq
           echo "Podman: $(podman --version)"
+          echo "podman-compose: $(podman-compose --version || true)"
           echo "Go: $(go version)"
 
       # The Podman RPM ships a systemd socket unit, but the container
