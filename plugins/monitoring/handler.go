@@ -6,6 +6,7 @@ import (
 
 	"github.com/gin-gonic/gin"
 	"github.com/gorilla/websocket"
+	"github.com/web-casa/webcasa/internal/auth"
 )
 
 // Handler implements the REST API for the monitoring plugin.
@@ -51,7 +52,7 @@ func (h *Handler) GetContainers(c *gin.Context) {
 
 // MetricsWS upgrades the connection to a WebSocket for real-time metrics.
 func (h *Handler) MetricsWS(c *gin.Context) {
-	conn, err := wsUpgrader.Upgrade(c.Writer, c.Request, nil)
+	conn, err := wsUpgrader.Upgrade(c.Writer, c.Request, auth.WSUpgradeResponseHeader(c))
 	if err != nil {
 		return
 	}

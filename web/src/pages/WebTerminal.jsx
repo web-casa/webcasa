@@ -5,7 +5,7 @@ import { Terminal } from '@xterm/xterm'
 import { FitAddon } from '@xterm/addon-fit'
 import { WebLinksAddon } from '@xterm/addon-web-links'
 import '@xterm/xterm/css/xterm.css'
-import { fileManagerAPI } from '../api/index.js'
+import { fileManagerAPI, wsAuthProtocols } from '../api/index.js'
 import { useTranslation } from 'react-i18next'
 
 function TerminalTab({ active, wsUrl, onClose, tabId }) {
@@ -63,7 +63,7 @@ function TerminalTab({ active, wsUrl, onClose, tabId }) {
         const cols = term.cols
         const rows = term.rows
         const url = wsUrl(cols, rows)
-        const ws = new WebSocket(url)
+        const ws = new WebSocket(url, wsAuthProtocols())
         wsRef.current = ws
 
         ws.binaryType = 'arraybuffer'

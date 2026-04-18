@@ -13,6 +13,7 @@ import (
 
 	"github.com/gin-gonic/gin"
 	"github.com/gorilla/websocket"
+	"github.com/web-casa/webcasa/internal/auth"
 )
 
 const maxUploadSize = 100 << 20 // 100 MB
@@ -275,7 +276,9 @@ func (h *Handler) TerminalWS(c *gin.Context) {
 	cols, _ := strconv.ParseUint(c.DefaultQuery("cols", "80"), 10, 16)
 	rows, _ := strconv.ParseUint(c.DefaultQuery("rows", "24"), 10, 16)
 
-	conn, err := wsUpgrader.Upgrade(c.Writer, c.Request, nil)
+	// Echo the auth subprotocol so the 101 handshake is accepted when the
+	// client authenticated via Sec-WebSocket-Protocol (see auth middleware).
+	conn, err := wsUpgrader.Upgrade(c.Writer, c.Request, auth.WSUpgradeResponseHeader(c))
 	if err != nil {
 		return
 	}

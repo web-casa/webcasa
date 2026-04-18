@@ -2,25 +2,36 @@ package deploy
 
 import (
 	"bytes"
+	"context"
 	"fmt"
 	"log/slog"
-	"os/exec"
 	"sync"
 	"time"
 
 	"github.com/robfig/cron/v3"
+	"github.com/web-casa/webcasa/internal/execx"
 	"gorm.io/gorm"
 )
 
 // CronScheduler manages scheduled tasks for deploy projects.
+//
+// Each job execution binds to the scheduler's ctx so Stop() cancels every
+// in-flight subprocess tree (via execx process-group kill) rather than
+// letting a long-running job outlive the scheduler and stall shutdown.
+//
+// ctx is (re)created in Start, not in NewCronScheduler, so a disable-then-
+// enable cycle (plugin toggle, which calls Stop then Start) doesn't leave
+// future job runs bound to an already-cancelled context.
 type CronScheduler struct {
 	db     *gorm.DB
 	logger *slog.Logger
 	runner *cron.Cron
 	// Map from CronJob.ID → cron.EntryID for dynamic add/remove.
-	mu       sync.Mutex
-	entries  map[uint]cron.EntryID
-	dataDir  string
+	mu      sync.Mutex
+	entries map[uint]cron.EntryID
+	dataDir string
+	ctx     context.Context
+	cancel  context.CancelFunc
 }
 
 // NewCronScheduler creates a new cron scheduler.
@@ -35,7 +46,17 @@ func NewCronScheduler(db *gorm.DB, logger *slog.Logger, dataDir string) *CronSch
 }
 
 // Start loads all enabled cron jobs from DB and starts the scheduler.
+// Recreates the scheduler ctx so a previous Stop → Start cycle doesn't bind
+// new job runs to the cancelled ctx from the prior lifetime.
 func (cs *CronScheduler) Start() {
+	cs.mu.Lock()
+	// Fresh scheduler + fresh ctx on every Start so re-enabling the plugin
+	// doesn't leave job runs attached to a dead context.
+	cs.runner = cron.New(cron.WithSeconds())
+	cs.entries = make(map[uint]cron.EntryID)
+	cs.ctx, cs.cancel = context.WithCancel(context.Background())
+	cs.mu.Unlock()
+
 	var jobs []CronJob
 	cs.db.Where("enabled = ?", true).Find(&jobs)
 
@@ -47,9 +68,16 @@ func (cs *CronScheduler) Start() {
 	cs.logger.Info("cron scheduler started", "jobs", len(jobs))
 }
 
-// Stop stops the scheduler.
+// Stop stops the scheduler and cancels any in-flight job subprocesses.
+// Safe to call before Start (cancel is a no-op when nil).
 func (cs *CronScheduler) Stop() {
 	cs.runner.Stop()
+	cs.mu.Lock()
+	cancel := cs.cancel
+	cs.mu.Unlock()
+	if cancel != nil {
+		cancel()
+	}
 }
 
 // AddJob registers a cron job with the scheduler.
@@ -127,7 +155,16 @@ func (cs *CronScheduler) executeJob(jobID uint) {
 
 	cs.logger.Info("executing cron job", "job_id", job.ID, "name", job.Name, "command", job.Command)
 
-	cmd := exec.Command("bash", "-c", job.Command)
+	// Snapshot the scheduler ctx under the lock so a concurrent Start/Stop
+	// (rare: plugin toggle) can't swap it mid-assignment.
+	cs.mu.Lock()
+	jobCtx := cs.ctx
+	cs.mu.Unlock()
+	if jobCtx == nil {
+		cs.logger.Warn("cron job fired before Start; skipping", "job_id", job.ID)
+		return
+	}
+	cmd := execx.BashContext(jobCtx, job.Command)
 	cmd.Dir = workDir
 
 	var output bytes.Buffer

@@ -19,6 +19,7 @@ import (
 	"github.com/robfig/cron/v3"
 	"github.com/web-casa/webcasa/internal/caddy"
 	"github.com/web-casa/webcasa/internal/crypto"
+	"github.com/web-casa/webcasa/internal/execx"
 	"github.com/web-casa/webcasa/internal/model"
 	"github.com/web-casa/webcasa/internal/service"
 	"gorm.io/gorm"
@@ -518,7 +519,11 @@ func (a *CoreAPIImpl) RunCommand(cmd string, timeoutSec int) (string, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), time.Duration(timeoutSec)*time.Second)
 	defer cancel()
 
-	c := exec.CommandContext(ctx, "bash", "-c", cmd)
+	// Kill the full pipeline tree on timeout/cancel. Without Setpgid the
+	// context's SIGKILL only lands on the outer bash, so a shelled-out
+	// `foo | bar` leaves bar parented to init and the timeout is
+	// effectively ignored. execx.BashContext wires the Cancel hook.
+	c := execx.BashContext(ctx, cmd)
 	var buf bytes.Buffer
 	c.Stdout = &buf
 	c.Stderr = &buf

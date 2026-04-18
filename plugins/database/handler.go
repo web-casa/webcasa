@@ -10,6 +10,7 @@ import (
 
 	"github.com/gin-gonic/gin"
 	"github.com/gorilla/websocket"
+	"github.com/web-casa/webcasa/internal/auth"
 )
 
 // Handler implements the REST API for the database plugin.
@@ -406,7 +407,7 @@ var wsUpgrader = websocket.Upgrader{
 
 // InstanceLogsWS streams instance logs via WebSocket.
 func (h *Handler) InstanceLogsWS(c *gin.Context) {
-	conn, err := wsUpgrader.Upgrade(c.Writer, c.Request, nil)
+	conn, err := wsUpgrader.Upgrade(c.Writer, c.Request, auth.WSUpgradeResponseHeader(c))
 	if err != nil {
 		return
 	}

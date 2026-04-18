@@ -4,10 +4,11 @@ import (
 	"context"
 	"fmt"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strings"
 	"time"
+
+	"github.com/web-casa/webcasa/internal/execx"
 )
 
 // Builder orchestrates the build pipeline for a project.
@@ -160,7 +161,10 @@ func (b *Builder) Build(ctx context.Context, project *Project, logWriter *LogWri
 func (b *Builder) runCommand(ctx context.Context, dir, command string, envVars []EnvVar, extraEnv []string, logWriter *LogWriter) error {
 	logWriter.Write([]byte(fmt.Sprintf("$ %s\n", command)))
 
-	cmd := exec.CommandContext(ctx, "bash", "-c", command)
+	// Kill the full pipeline tree on ctx cancel (user-triggered build
+	// cancellation, deploy timeout) so `npm install && npm run build`
+	// children don't linger after the outer bash exits.
+	cmd := execx.BashContext(ctx, command)
 	cmd.Dir = dir
 	cmd.Stdout = logWriter
 	cmd.Stderr = logWriter

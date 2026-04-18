@@ -10,7 +10,7 @@ import {
     AlertCircle, Check,
 } from 'lucide-react'
 import { useParams, useNavigate } from 'react-router'
-import { databaseAPI } from '../api/index.js'
+import { databaseAPI, wsAuthProtocols } from '../api/index.js'
 import { useTranslation } from 'react-i18next'
 
 const engineColors = { mysql: 'blue', postgres: 'indigo', mariadb: 'teal', redis: 'red' }
@@ -301,7 +301,7 @@ export default function DatabaseDetail() {
         setLogs('')
 
         const url = databaseAPI.instanceLogsWsUrl(id)
-        const ws = new WebSocket(url)
+        const ws = new WebSocket(url, wsAuthProtocols())
         wsRef.current = ws
         let buffer = ''
 

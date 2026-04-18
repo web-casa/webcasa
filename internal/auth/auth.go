@@ -33,6 +33,24 @@ func WebSocketSelectedSubprotocol(c *gin.Context) string {
 	return ""
 }
 
+// WSUpgradeResponseHeader returns the http.Header a WebSocket handler should
+// pass as the responseHeader argument to gorilla/websocket's Upgrade. When
+// the request authenticated via the Sec-WebSocket-Protocol subprotocol path
+// this echoes the selected value so the browser accepts the 101 handshake.
+// When the request used ?token= (legacy) or Authorization header, returns
+// nil — gorilla then emits a stock 101 with no subprotocol echo, which is
+// what clients in those modes expect.
+//
+// Callers: every wsUpgrader.Upgrade(c.Writer, c.Request, *) site. Prefer
+// this over constructing the header inline so the "middleware selected a
+// subprotocol but the handler forgot to echo" regression can never recur.
+func WSUpgradeResponseHeader(c *gin.Context) http.Header {
+	if sub := WebSocketSelectedSubprotocol(c); sub != "" {
+		return http.Header{"Sec-WebSocket-Protocol": []string{sub}}
+	}
+	return nil
+}
+
 // Claims defines JWT token claims
 type Claims struct {
 	UserID     uint   `json:"user_id"`
