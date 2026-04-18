@@ -166,19 +166,30 @@ func (s *Service) CreateStack(req *CreateStackRequest) (*Stack, error) {
 		return nil, fmt.Errorf("create stack dir: %w", err)
 	}
 
+	// cleanupOnFail removes the half-created stack dir and logs if the
+	// cleanup itself fails — we don't want silent disk leaks, but we also
+	// can't surface the cleanup error to the caller because the primary
+	// error (write/DB failure) is more actionable.
+	cleanupOnFail := func(reason string, primary error) error {
+		if rmErr := os.RemoveAll(stackDir); rmErr != nil {
+			s.logger.Error("stack create cleanup failed",
+				"stack", req.Name, "stage", reason,
+				"primary_err", primary, "cleanup_err", rmErr)
+		}
+		return fmt.Errorf("%s: %w", reason, primary)
+	}
+
 	// Write compose file.
 	composePath := filepath.Join(stackDir, "docker-compose.yml")
 	if err := os.WriteFile(composePath, []byte(req.ComposeFile), 0600); err != nil {
-		os.RemoveAll(stackDir)
-		return nil, fmt.Errorf("write compose file: %w", err)
+		return nil, cleanupOnFail("write compose file", err)
 	}
 
 	// Write env file if provided.
 	if req.EnvFile != "" {
 		envPath := filepath.Join(stackDir, ".env")
 		if err := os.WriteFile(envPath, []byte(req.EnvFile), 0600); err != nil {
-			os.RemoveAll(stackDir)
-			return nil, fmt.Errorf("write env file: %w", err)
+			return nil, cleanupOnFail("write env file", err)
 		}
 	}
 
@@ -192,11 +203,7 @@ func (s *Service) CreateStack(req *CreateStackRequest) (*Stack, error) {
 	}
 
 	if err := s.db.Create(stack).Error; err != nil {
-		// DB insert failed after files were written — clean up the orphan
-		// directory so a retry with the same name doesn't trip the
-		// filesystem pre-existing check (Group C robustness).
-		os.RemoveAll(stackDir)
-		return nil, fmt.Errorf("create stack record: %w", err)
+		return nil, cleanupOnFail("create stack record", err)
 	}
 
 	if req.AutoStart {

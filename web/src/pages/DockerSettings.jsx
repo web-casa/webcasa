@@ -208,10 +208,23 @@ export default function DockerSettings() {
                                 key={preset.url}
                                 variant="soft"
                                 role="button"
-                                tabIndex={0}
-                                style={{ cursor: 'pointer' }}
-                                onClick={() => addPresetMirror(preset.url)}
+                                tabIndex={isPodman ? -1 : 0}
+                                aria-disabled={isPodman}
+                                style={{
+                                    cursor: isPodman ? 'not-allowed' : 'pointer',
+                                    opacity: isPodman ? 0.5 : 1,
+                                }}
+                                onClick={() => {
+                                    // The surrounding <fieldset disabled> only
+                                    // disables native form controls; Badge is
+                                    // a custom clickable element so we gate
+                                    // its handler here to keep the preset
+                                    // shortcut inert on Podman hosts.
+                                    if (isPodman) return
+                                    addPresetMirror(preset.url)
+                                }}
                                 onKeyDown={(e) => {
+                                    if (isPodman) return
                                     if (e.key === 'Enter' || e.key === ' ') {
                                         e.preventDefault()
                                         addPresetMirror(preset.url)

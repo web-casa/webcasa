@@ -8,6 +8,7 @@ import (
 	"os/exec"
 	"strings"
 	"sync"
+	"syscall"
 	"time"
 
 	"github.com/gin-gonic/gin"
@@ -367,8 +368,22 @@ func (p *Plugin) installDocker(c *gin.Context) {
 	args := []string{"-c", baseCmd}
 
 	// Bind the subprocess lifetime to the HTTP request context so SSE client
-	// disconnect terminates the installer tree (Group A robustness fix).
+	// disconnect terminates the installer tree. CommandContext on its own
+	// only kills the top-level bash PID, leaving the inner `curl | bash`
+	// pipeline children orphaned on cancel. Put the process in its own
+	// process group with Setpgid and override Cancel so we SIGKILL the
+	// whole group (pid = -pgid). WaitDelay gives the tree a short grace
+	// window to flush before a hard kill lands.
 	cmd := exec.CommandContext(c.Request.Context(), "bash", args...)
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	cmd.Cancel = func() error {
+		if cmd.Process == nil {
+			return nil
+		}
+		// Negative PID => signal every process in the group.
+		return syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL)
+	}
+	cmd.WaitDelay = 5 * time.Second
 	// Merge stdout and stderr.
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {

@@ -15,6 +15,24 @@ import (
 	"gorm.io/gorm"
 )
 
+// ctxKeyWSSubprotocol holds the Sec-WebSocket-Protocol value selected by the
+// auth middleware, so the WebSocket handler can echo it back during Upgrade.
+const ctxKeyWSSubprotocol = "webcasa.ws.subprotocol"
+
+// WebSocketSelectedSubprotocol returns the subprotocol string the auth
+// middleware parsed the token from, if any. Returns "" when the request was
+// authenticated via Authorization header or ?token= query. Handlers should
+// copy this into the response header they pass to gorilla's Upgrade so the
+// browser accepts the 101 handshake.
+func WebSocketSelectedSubprotocol(c *gin.Context) string {
+	if v, ok := c.Get(ctxKeyWSSubprotocol); ok {
+		if s, _ := v.(string); s != "" {
+			return s
+		}
+	}
+	return ""
+}
+
 // Claims defines JWT token claims
 type Claims struct {
 	UserID     uint   `json:"user_id"`
@@ -126,7 +144,13 @@ func Middleware(secret string, opts ...MiddlewareOption) gin.HandlerFunc {
 				p := strings.TrimSpace(raw)
 				if rest, ok := strings.CutPrefix(p, "webcasa.token."); ok && rest != "" {
 					tokenStr = rest
-					c.Writer.Header().Set("Sec-WebSocket-Protocol", p)
+					// The Gorilla websocket Upgrader writes the handshake
+					// response itself via the hijacked connection and does
+					// not consult headers we set on the Gin writer. Store
+					// the selected subprotocol on the gin.Context so the
+					// handler can pass it into Upgrade via responseHeader
+					// (see WebSocketSelectedSubprotocol below).
+					c.Set(ctxKeyWSSubprotocol, p)
 					break
 				}
 			}

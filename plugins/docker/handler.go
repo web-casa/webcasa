@@ -14,7 +14,20 @@ import (
 
 	"github.com/gin-gonic/gin"
 	"github.com/gorilla/websocket"
+	"github.com/web-casa/webcasa/internal/auth"
 )
+
+// wsUpgradeResponseHeader builds the responseHeader that Gorilla's Upgrade
+// uses to populate the 101 handshake. Echoing the subprotocol the auth
+// middleware selected is the only way the browser will accept the upgrade
+// — Gorilla does not consult headers set on the Gin response writer because
+// it hijacks the connection and writes the response itself.
+func wsUpgradeResponseHeader(c *gin.Context) http.Header {
+	if sub := auth.WebSocketSelectedSubprotocol(c); sub != "" {
+		return http.Header{"Sec-WebSocket-Protocol": []string{sub}}
+	}
+	return nil
+}
 
 // Handler implements the REST API for Docker management.
 type Handler struct {
@@ -630,7 +643,7 @@ var wsUpgrader = websocket.Upgrader{
 
 // ContainerLogsWS streams container logs via WebSocket.
 func (h *Handler) ContainerLogsWS(c *gin.Context) {
-	conn, err := wsUpgrader.Upgrade(c.Writer, c.Request, nil)
+	conn, err := wsUpgrader.Upgrade(c.Writer, c.Request, wsUpgradeResponseHeader(c))
 	if err != nil {
 		return
 	}
@@ -675,7 +688,7 @@ func (h *Handler) ContainerLogsWS(c *gin.Context) {
 
 // StackLogsWS streams stack logs via WebSocket.
 func (h *Handler) StackLogsWS(c *gin.Context) {
-	conn, err := wsUpgrader.Upgrade(c.Writer, c.Request, nil)
+	conn, err := wsUpgrader.Upgrade(c.Writer, c.Request, wsUpgradeResponseHeader(c))
 	if err != nil {
 		return
 	}
