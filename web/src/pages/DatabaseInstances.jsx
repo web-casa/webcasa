@@ -271,6 +271,7 @@ export default function DatabaseInstances() {
                     installed={dockerStatus.installed}
                     daemonRunning={dockerStatus.daemon_running}
                     error={dockerStatus.error}
+                    runtime={dockerStatus.runtime}
                     onRetry={checkDocker}
                     extraMessage={t('database.docker_required')}
                 />

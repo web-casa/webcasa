@@ -30,6 +30,17 @@ export default function DockerOverview() {
     const [logStreaming, setLogStreaming] = useState(false)
     const logRef = useRef(null)
     const wsRef = useRef(null)
+    // Tracks the most recent logs-fetch request so a stale "opened A then
+    // opened B while A was in flight" sequence doesn't let A's response
+    // clobber B's dialog contents (Group C correctness fix).
+    const logReqRef = useRef(0)
+    // Whether a transient network error caused the last status check to
+    // fail. We distinguish this from "runtime missing" so the UI can prompt
+    // a retry instead of showing the install gate for a blip.
+    const [statusError, setStatusError] = useState(false)
+    // Inline error banner for action failures, replacing blocking alert()
+    // popups. {msg, ts}: ts just drives re-render for repeated failures.
+    const [actionError, setActionError] = useState(null)
 
     const fetchData = useCallback(async () => {
         try {
@@ -49,51 +60,65 @@ export default function DockerOverview() {
 
     useEffect(() => { fetchData() }, [fetchData])
 
-    // Check Docker availability first
+    // Check Docker availability first. Separate network/API failures from
+    // genuine "runtime missing" — the old code collapsed both into the
+    // install gate, so a transient blip looked like "Podman uninstalled".
     const checkDocker = useCallback(async () => {
         setDockerChecking(true)
         try {
             const res = await dockerAPI.status()
             setDockerStatus(res.data)
+            setStatusError(false)
         } catch {
-            setDockerStatus({ installed: false, daemon_running: false })
+            setStatusError(true)
+            setDockerStatus(null)
         } finally { setDockerChecking(false) }
     }, [])
 
     useEffect(() => { checkDocker() }, [checkDocker])
 
-    const doAction = async (id, action, label) => {
+    const showActionError = (err) =>
+        setActionError({ msg: err?.response?.data?.error || err?.message || String(err), ts: Date.now() })
+
+    const doAction = async (id, action) => {
         setActionLoading(`${id}-${action}`)
+        setActionError(null)
         try {
             await dockerAPI[action](id)
             await fetchData()
         } catch (e) {
-            alert(`${label} failed: ${e.response?.data?.error || e.message}`)
+            showActionError(e)
         } finally { setActionLoading(null) }
     }
 
     const doContainerAction = async (id, action) => {
         setActionLoading(`ctr-${id}-${action}`)
+        setActionError(null)
         try {
             await dockerAPI[action](id)
             await fetchData()
         } catch (e) {
-            alert(`Failed: ${e.response?.data?.error || e.message}`)
+            showActionError(e)
         } finally { setActionLoading(null) }
     }
 
     const viewContainerLogs = async (id, name) => {
+        const reqId = ++logReqRef.current
         setShowLogs(`ctr-${name || id}`)
         setLogs('')
         setLogFilter('')
         setLogStreaming(false)
         try {
             const res = await dockerAPI.containerLogs(id, '200')
-            setLogs(res.data?.logs || 'No logs available')
-        } catch { setLogs('Failed to fetch logs') }
+            if (logReqRef.current !== reqId) return // a newer open superseded us
+            setLogs(res.data?.logs || t('docker.no_logs'))
+        } catch {
+            if (logReqRef.current === reqId) setLogs(t('docker.fetch_logs_failed'))
+        }
     }
 
     const viewLogs = async (id, streaming = false) => {
+        const reqId = ++logReqRef.current
         setShowLogs(id)
         setLogs('')
         setLogFilter('')
@@ -104,8 +129,11 @@ export default function DockerOverview() {
         } else {
             try {
                 const res = await dockerAPI.stackLogs(id, '200')
-                setLogs(res.data?.logs || 'No logs available')
-            } catch { setLogs('Failed to fetch logs') }
+                if (logReqRef.current !== reqId) return
+                setLogs(res.data?.logs || t('docker.no_logs'))
+            } catch {
+                if (logReqRef.current === reqId) setLogs(t('docker.fetch_logs_failed'))
+            }
         }
     }
 
@@ -113,7 +141,14 @@ export default function DockerOverview() {
         if (wsRef.current) wsRef.current.close()
         const proto = window.location.protocol === 'https:' ? 'wss:' : 'ws:'
         const token = localStorage.getItem('token')
-        const ws = new WebSocket(`${proto}//${window.location.host}/api/plugins/docker/stacks/${id}/logs/ws?tail=100&token=${token}`)
+        // Pass the auth token via Sec-WebSocket-Protocol instead of ?token= so
+        // it does not end up in server access logs or browser devtools URLs.
+        // Backend auth middleware reads the "webcasa.token.<jwt>" subprotocol
+        // and echoes it back to complete the upgrade.
+        const ws = new WebSocket(
+            `${proto}//${window.location.host}/api/plugins/docker/stacks/${id}/logs/ws?tail=100`,
+            [`webcasa.token.${token}`],
+        )
         wsRef.current = ws
         let buffer = ''
         ws.onmessage = (e) => {
@@ -146,6 +181,18 @@ export default function DockerOverview() {
         if (logRef.current) logRef.current.scrollTop = logRef.current.scrollHeight
     }, [logs])
 
+    // Close the live-log WebSocket on unmount. Without this, navigating away
+    // with the logs dialog open leaves the socket connected and keeps
+    // scheduling setState on a torn-down component (Group C robustness).
+    useEffect(() => {
+        return () => {
+            if (wsRef.current) {
+                wsRef.current.close()
+                wsRef.current = null
+            }
+        }
+    }, [])
+
     const filteredLogs = logFilter
         ? logs.split('\n').filter(line => line.toLowerCase().includes(logFilter.toLowerCase())).join('\n')
         : logs
@@ -164,6 +211,28 @@ export default function DockerOverview() {
             ? t('docker.runtime_docker')
             : t('docker.runtime_label')
 
+    // Transient status-fetch failure — distinguish from "runtime missing".
+    if (statusError) {
+        return (
+            <Box>
+                <Flex align="center" gap="2" mb="4">
+                    <Container size={24} />
+                    <Heading size="5">{runtimeLabel}</Heading>
+                </Flex>
+                <Callout.Root color="orange">
+                    <Callout.Icon><RefreshCw size={16} /></Callout.Icon>
+                    <Box>
+                        <Text size="2" weight="bold" style={{ display: 'block' }}>{t('docker.status_error_title')}</Text>
+                        <Text size="2">{t('docker.status_error_desc')}</Text>
+                    </Box>
+                </Callout.Root>
+                <Flex mt="3">
+                    <Button variant="soft" onClick={checkDocker}><RefreshCw size={16} /> {t('docker.check_again')}</Button>
+                </Flex>
+            </Box>
+        )
+    }
+
     // Show Docker required screen if the runtime is not available
     if (dockerStatus && (!dockerStatus.installed || !dockerStatus.daemon_running)) {
         return (
@@ -176,6 +245,7 @@ export default function DockerOverview() {
                     installed={dockerStatus.installed}
                     daemonRunning={dockerStatus.daemon_running}
                     error={dockerStatus.error}
+                    runtime={dockerStatus.runtime}
                     onRetry={checkDocker}
                 />
             </Box>
@@ -184,6 +254,20 @@ export default function DockerOverview() {
 
     return (
         <Box>
+            {actionError && (
+                <Callout.Root color="red" mb="3">
+                    <Callout.Icon><X size={16} /></Callout.Icon>
+                    <Box style={{ flex: 1 }}>
+                        <Text size="2" weight="bold" style={{ display: 'block' }}>
+                            {t('docker.action_failed')}
+                        </Text>
+                        <Text size="2">{actionError.msg}</Text>
+                    </Box>
+                    <Button variant="ghost" size="1" onClick={() => setActionError(null)} aria-label={t('common.close')}>
+                        <X size={14} />
+                    </Button>
+                </Callout.Root>
+            )}
             <Flex align="center" justify="between" mb="4">
                 <Flex align="center" gap="2">
                     <Container size={24} />
@@ -400,6 +484,7 @@ function CreateStackDialog({ open, onClose, onCreated }) {
     const [dockerRunCmd, setDockerRunCmd] = useState('')
     const [convertError, setConvertError] = useState(false) // boolean: friendly message shown regardless
     const [converting, setConverting] = useState(false)
+    const [createError, setCreateError] = useState('')
     const composeInputRef = useRef(null)
     const envInputRef = useRef(null)
 
@@ -412,6 +497,7 @@ function CreateStackDialog({ open, onClose, onCreated }) {
             setDockerRunCmd('')
             setConvertError(false)
             setConverting(false)
+            setCreateError('')
         }
     }, [open])
 
@@ -449,6 +535,7 @@ function CreateStackDialog({ open, onClose, onCreated }) {
     const handleCreate = async () => {
         if (!name.trim() || !composeFile.trim()) return
         setCreating(true)
+        setCreateError('')
         try {
             await dockerAPI.createStack({
                 name: name.trim(),
@@ -462,7 +549,7 @@ function CreateStackDialog({ open, onClose, onCreated }) {
             setName(''); setDescription(''); setComposeFile(''); setEnvFile('')
             setDockerRunCmd(''); setConvertError(false); setActiveTab('compose')
         } catch (e) {
-            alert(e.response?.data?.error || e.message)
+            setCreateError(e.response?.data?.error || e.message)
         } finally { setCreating(false) }
     }
 
@@ -556,6 +643,12 @@ function CreateStackDialog({ open, onClose, onCreated }) {
                         <label htmlFor="auto-start"><Text size="2">{t('docker.auto_start')}</Text></label>
                     </Flex>
                 </Flex>
+                {createError && (
+                    <Callout.Root color="red" size="1" mt="3">
+                        <Callout.Icon><X size={14} /></Callout.Icon>
+                        <Callout.Text>{createError}</Callout.Text>
+                    </Callout.Root>
+                )}
                 <Flex justify="end" gap="2" mt="4">
                     <Dialog.Close><Button variant="soft" color="gray">{t('common.cancel')}</Button></Dialog.Close>
                     <Button disabled={creating || !name.trim() || !composeFile.trim()} onClick={handleCreate}>
@@ -705,8 +798,17 @@ function RunContainerDialog({ open, onClose, onCreated }) {
                             <Box mt="2" style={{ border: '1px solid var(--gray-5)', borderRadius: 8, maxHeight: 200, overflow: 'auto' }}>
                                 {searchResults.map((r, i) => (
                                     <Flex key={i} align="center" gap="2" px="3" py="2"
+                                        role="option"
+                                        tabIndex={0}
+                                        aria-label={`${r.name}${r.is_official ? ' (official)' : ''}`}
                                         style={{ cursor: 'pointer', borderBottom: i < searchResults.length - 1 ? '1px solid var(--gray-4)' : 'none' }}
                                         onClick={() => selectImage(r.name)}
+                                        onKeyDown={(e) => {
+                                            if (e.key === 'Enter' || e.key === ' ') {
+                                                e.preventDefault()
+                                                selectImage(r.name)
+                                            }
+                                        }}
                                     >
                                         <Text size="2" weight="bold" style={{ flex: 1 }}>{r.name}</Text>
                                         {r.is_official && <Badge color="blue" size="1">Official</Badge>}

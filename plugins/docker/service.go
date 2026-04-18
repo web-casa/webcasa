@@ -166,17 +166,30 @@ func (s *Service) CreateStack(req *CreateStackRequest) (*Stack, error) {
 		return nil, fmt.Errorf("create stack dir: %w", err)
 	}
 
+	// cleanupOnFail removes the half-created stack dir and logs if the
+	// cleanup itself fails — we don't want silent disk leaks, but we also
+	// can't surface the cleanup error to the caller because the primary
+	// error (write/DB failure) is more actionable.
+	cleanupOnFail := func(reason string, primary error) error {
+		if rmErr := os.RemoveAll(stackDir); rmErr != nil {
+			s.logger.Error("stack create cleanup failed",
+				"stack", req.Name, "stage", reason,
+				"primary_err", primary, "cleanup_err", rmErr)
+		}
+		return fmt.Errorf("%s: %w", reason, primary)
+	}
+
 	// Write compose file.
 	composePath := filepath.Join(stackDir, "docker-compose.yml")
 	if err := os.WriteFile(composePath, []byte(req.ComposeFile), 0600); err != nil {
-		return nil, fmt.Errorf("write compose file: %w", err)
+		return nil, cleanupOnFail("write compose file", err)
 	}
 
 	// Write env file if provided.
 	if req.EnvFile != "" {
 		envPath := filepath.Join(stackDir, ".env")
 		if err := os.WriteFile(envPath, []byte(req.EnvFile), 0600); err != nil {
-			return nil, fmt.Errorf("write env file: %w", err)
+			return nil, cleanupOnFail("write env file", err)
 		}
 	}
 
@@ -190,7 +203,7 @@ func (s *Service) CreateStack(req *CreateStackRequest) (*Stack, error) {
 	}
 
 	if err := s.db.Create(stack).Error; err != nil {
-		return nil, fmt.Errorf("create stack record: %w", err)
+		return nil, cleanupOnFail("create stack record", err)
 	}
 
 	if req.AutoStart {
@@ -260,8 +273,14 @@ func (s *Service) DeleteStack(id uint) error {
 		return fmt.Errorf("failed to stop stack: %w (stack kept in UI for manual cleanup)", err)
 	}
 
-	// Remove data directory.
-	os.RemoveAll(stack.DataDir)
+	// Remove data directory. If this fails, keep the DB row so the stack is
+	// still addressable from the UI for manual cleanup; deleting the row
+	// unconditionally would orphan the files. (Group C robustness.)
+	if err := os.RemoveAll(stack.DataDir); err != nil {
+		s.logger.Error("remove stack data dir failed", "stack", stack.Name, "err", err)
+		s.db.Model(stack).Update("status", "error")
+		return fmt.Errorf("remove stack data dir: %w (DB record retained for manual cleanup)", err)
+	}
 
 	return s.db.Delete(&Stack{}, id).Error
 }

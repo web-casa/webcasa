@@ -1,12 +1,20 @@
-import { useState, useRef } from 'react'
+import { useState, useRef, useEffect } from 'react'
 import { Box, Flex, Text, Card, Button, Code, ScrollArea, Select, Callout } from '@radix-ui/themes'
 import { Container, RefreshCw, AlertTriangle, Download, Terminal, Copy, Check, RotateCcw } from 'lucide-react'
 import { useTranslation } from 'react-i18next'
 import { dockerAPI } from '../api'
 import { copyToClipboard } from '../utils/clipboard.js'
 
-export default function DockerRequired({ installed, daemonRunning, error, onRetry, extraMessage }) {
+// DockerRequired renders the install / not-running gate for the Docker
+// plugin. The `runtime` prop is required so the recovery commands match the
+// actual runtime in use; v0.12 Podman hosts get `systemctl start podman.socket`
+// while legacy Docker hosts get `systemctl start docker`. Unknown (neither
+// runtime detected) falls back to the Podman install guidance, since v0.12's
+// install.sh provisions Podman.
+export default function DockerRequired({ installed, daemonRunning, error, onRetry, extraMessage, runtime }) {
     const { t } = useTranslation()
+    const isDocker = runtime === 'docker'
+    const startCmd = isDocker ? 'sudo systemctl start docker' : 'sudo systemctl start podman.socket'
     const [installing, setInstalling] = useState(false)
     const [installLog, setInstallLog] = useState([])
     const [installDone, setInstallDone] = useState(false)
@@ -18,6 +26,25 @@ export default function DockerRequired({ installed, daemonRunning, error, onRetr
     // Keep a mutable ref of the log lines so the copy and catch handlers always
     // see the latest data, avoiding stale-closure issues with React state.
     const logLinesRef = useRef([])
+    // Track live install resources so unmount can cancel them cleanly: the
+    // fetch AbortController aborts the SSE request (and lets the backend kill
+    // the subprocess via CommandContext), the reader is released, pending
+    // scrollToBottom timers are cleared, and a mounted-flag stops any
+    // in-flight setState calls after unmount (React 19 warns about these).
+    const abortRef = useRef(null)
+    const readerRef = useRef(null)
+    const scrollTimersRef = useRef(new Set())
+    const mountedRef = useRef(true)
+
+    useEffect(() => {
+        return () => {
+            mountedRef.current = false
+            abortRef.current?.abort()
+            readerRef.current?.cancel?.().catch(() => {})
+            scrollTimersRef.current.forEach((id) => clearTimeout(id))
+            scrollTimersRef.current.clear()
+        }
+    }, [])
 
     const scrollToBottom = () => {
         logEndRef.current?.scrollIntoView({ behavior: 'smooth' })
@@ -40,6 +67,15 @@ export default function DockerRequired({ installed, daemonRunning, error, onRetr
         setNeedsReboot(false)
 
         let detectedReboot = false
+        const controller = new AbortController()
+        abortRef.current = controller
+        // Guarded setState helpers so a late chunk arriving after unmount
+        // (or after abort) doesn't trigger the React warning.
+        const safeSet = (setter) => (...args) => { if (mountedRef.current) setter(...args) }
+        const safeSetInstallDone = safeSet(setInstallDone)
+        const safeSetInstallError = safeSet(setInstallError)
+        const safeSetNeedsReboot = safeSet(setNeedsReboot)
+        const safeSetInstallLog = safeSet(setInstallLog)
 
         try {
             const token = localStorage.getItem('token')
@@ -50,9 +86,11 @@ export default function DockerRequired({ installed, daemonRunning, error, onRetr
                     'Authorization': `Bearer ${token}`,
                 },
                 body: JSON.stringify({ mirror: mirror === 'none' ? '' : mirror }),
+                signal: controller.signal,
             })
 
             const reader = response.body.getReader()
+            readerRef.current = reader
             const decoder = new TextDecoder()
             let buffer = ''
 
@@ -72,39 +110,47 @@ export default function DockerRequired({ installed, daemonRunning, error, onRetr
                             detectedReboot = true
                         }
                         logLinesRef.current = [...logLinesRef.current, data]
-                        setInstallLog(prev => [...prev, data])
-                        setTimeout(scrollToBottom, 50)
+                        safeSetInstallLog(prev => [...prev, data])
+                        const tid = setTimeout(() => {
+                            scrollTimersRef.current.delete(tid)
+                            if (mountedRef.current) scrollToBottom()
+                        }, 50)
+                        scrollTimersRef.current.add(tid)
                     } else if (line.startsWith('event: done')) {
-                        setInstallDone(true)
+                        safeSetInstallDone(true)
                     } else if (line.startsWith('event: reboot')) {
                         detectedReboot = true
-                        setNeedsReboot(true)
+                        safeSetNeedsReboot(true)
                     } else if (line.startsWith('event: error')) {
-                        setInstallError(true)
+                        safeSetInstallError(true)
                     }
                 }
             }
 
             // If stream ended cleanly after reboot detection
             if (detectedReboot) {
-                setNeedsReboot(true)
+                safeSetNeedsReboot(true)
             }
-        } catch {
+        } catch (err) {
+            // Abort during unmount is expected — drop silently.
+            if (err?.name === 'AbortError') return
             // Connection dropped — check if it was due to a server reboot
             if (detectedReboot) {
-                setNeedsReboot(true)
-                setInstallError(null)
+                safeSetNeedsReboot(true)
+                safeSetInstallError(null)
             } else {
                 // Check log lines for reboot signals
                 const hasReboot = logLinesRef.current.some(l => l.toLowerCase().includes('reboot'))
                 if (hasReboot) {
-                    setNeedsReboot(true)
+                    safeSetNeedsReboot(true)
                 } else {
-                    setInstallError('network_error')
+                    safeSetInstallError('network_error')
                 }
             }
         } finally {
-            setInstalling(false)
+            abortRef.current = null
+            readerRef.current = null
+            if (mountedRef.current) setInstalling(false)
         }
     }
 
@@ -271,7 +317,7 @@ export default function DockerRequired({ installed, daemonRunning, error, onRetr
                         userSelect: 'all',
                     }}
                 >
-                    sudo systemctl start podman.socket
+                    {startCmd}
                 </Code>
                 <Button variant="soft" onClick={onRetry}>
                     <RefreshCw size={16} />

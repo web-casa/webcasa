@@ -156,20 +156,25 @@ export default function DockerSettings() {
                 </Callout.Root>
             )}
 
-            {/* Under Podman the daemon.json form can never be applied — dim the
-                entire form and block pointer/keyboard input so users don't
-                waste time tweaking mirrors/log/storage that will be rejected
-                at save time. The Callout above explains why. */}
+            {/* Under Podman the daemon.json form can never be applied.
+                Wrap in a <fieldset disabled> so native form semantics disable
+                every input, button, and select — keyboard focus skips over
+                them too, unlike the earlier pointerEvents:none hack which
+                only blocked mouse input. Fieldset chrome is reset so the
+                visual layout matches the un-disabled state. */}
             <Flex
+                asChild
                 direction="column"
                 gap="4"
                 style={{
                     maxWidth: 700,
                     opacity: isPodman ? 0.5 : 1,
-                    pointerEvents: isPodman ? 'none' : 'auto',
                 }}
-                aria-disabled={isPodman}
             >
+                <fieldset
+                    disabled={isPodman}
+                    style={{ border: 'none', padding: 0, margin: 0, minWidth: 0 }}
+                >
                 {/* Registry Mirrors */}
                 <Card style={{ padding: 20 }}>
                     <Text size="3" weight="bold" mb="1" style={{ display: 'block' }}>{t('docker.registry_mirrors')}</Text>
@@ -202,8 +207,29 @@ export default function DockerSettings() {
                             <Badge
                                 key={preset.url}
                                 variant="soft"
-                                style={{ cursor: 'pointer' }}
-                                onClick={() => addPresetMirror(preset.url)}
+                                role="button"
+                                tabIndex={isPodman ? -1 : 0}
+                                aria-disabled={isPodman}
+                                style={{
+                                    cursor: isPodman ? 'not-allowed' : 'pointer',
+                                    opacity: isPodman ? 0.5 : 1,
+                                }}
+                                onClick={() => {
+                                    // The surrounding <fieldset disabled> only
+                                    // disables native form controls; Badge is
+                                    // a custom clickable element so we gate
+                                    // its handler here to keep the preset
+                                    // shortcut inert on Podman hosts.
+                                    if (isPodman) return
+                                    addPresetMirror(preset.url)
+                                }}
+                                onKeyDown={(e) => {
+                                    if (isPodman) return
+                                    if (e.key === 'Enter' || e.key === ' ') {
+                                        e.preventDefault()
+                                        addPresetMirror(preset.url)
+                                    }
+                                }}
                             >
                                 {preset.label}
                             </Badge>
@@ -340,6 +366,7 @@ export default function DockerSettings() {
                         )}
                     </Button>
                 </Flex>
+                </fieldset>
             </Flex>
         </Box>
     )

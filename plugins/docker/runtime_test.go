@@ -1,21 +1,14 @@
 package docker
 
 import (
-	"sync"
 	"testing"
 )
 
-// resetRuntimeForTesting clears the detection cache so each test sees a
-// fresh DetectRuntime() resolution. Lives in _test.go (not production
-// runtime.go) so the reset handle never ships in binaries where it would
-// be a misuse footgun.
-//
-// Not thread-safe with respect to concurrent DetectRuntime() calls. Tests
-// that reset the cache must do so before launching goroutines that rely on
-// the detection result.
+// resetRuntimeForTesting is a thin wrapper around ResetRuntimeCache so tests
+// keep the previous local-helper name. The production reset is safe to call
+// concurrently; tests still reset before launching goroutines for clarity.
 func resetRuntimeForTesting() {
-	runtimeOnce = sync.Once{}
-	runtimeCache = RuntimeUnknown
+	ResetRuntimeCache()
 }
 
 func TestRuntime_String(t *testing.T) {

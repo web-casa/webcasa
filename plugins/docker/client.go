@@ -7,6 +7,7 @@ import (
 	"io"
 	"strings"
 
+	"github.com/distribution/reference"
 	"github.com/docker/docker/api/types"
 	"github.com/docker/docker/api/types/container"
 	"github.com/docker/docker/api/types/filters"
@@ -260,9 +261,22 @@ func (c *Client) RunContainer(ctx context.Context, req *RunContainerRequest) (st
 		}
 	}
 
-	// Build volume binds.
+	// Build volume binds. Reject colons in either path: Docker's bind syntax
+	// is colon-delimited (host:container[:options]) so a `:` smuggled in
+	// either field would silently change the mount semantics (Group A
+	// correctness finding). Colon is not valid in Linux filesystem paths, so
+	// rejecting is not a usability loss.
 	var binds []string
 	for _, v := range req.Volumes {
+		if strings.ContainsRune(v.HostPath, ':') {
+			return "", fmt.Errorf("invalid host path %q: must not contain ':'", v.HostPath)
+		}
+		if strings.ContainsRune(v.ContainerPath, ':') {
+			return "", fmt.Errorf("invalid container path %q: must not contain ':'", v.ContainerPath)
+		}
+		if v.HostPath == "" || v.ContainerPath == "" {
+			return "", fmt.Errorf("host_path and container_path are both required for bind mounts")
+		}
 		bind := v.HostPath + ":" + v.ContainerPath
 		if v.ReadOnly {
 			bind += ":ro"
@@ -367,6 +381,14 @@ func (c *Client) ListImages(ctx context.Context) ([]ImageInfo, error) {
 
 // PullImage pulls an image. Returns a reader for progress output.
 //
+// Reference validation: parse with distribution/reference so the caller
+// can't smuggle a URL-shaped value or a shell metacharacter through the
+// pull endpoint. The Docker daemon would reject most junk on its own, but
+// validating here gives a cleaner error surface and blocks obviously
+// attacker-controlled inputs (e.g. `file:///etc/passwd` or refs embedding
+// whitespace that break downstream parsers). ParseNormalizedNamed mirrors
+// what the Docker CLI accepts.
+//
 // Image-status cache invalidation is deferred to reader Close — ImagePull
 // returns the reader immediately but the pull itself streams as the caller
 // consumes it. Invalidating at return time would race: a concurrent
@@ -374,6 +396,9 @@ func (c *Client) ListImages(ctx context.Context) ([]ImageInfo, error) {
 // stale entry would linger for up to cacheTTL. Invalidating after the
 // reader is fully consumed guarantees the next list sees the new SHA.
 func (c *Client) PullImage(ctx context.Context, refStr string) (io.ReadCloser, error) {
+	if _, err := reference.ParseNormalizedNamed(strings.TrimSpace(refStr)); err != nil {
+		return nil, fmt.Errorf("invalid image reference %q: %w", refStr, err)
+	}
 	rc, err := c.cli.ImagePull(ctx, refStr, image.PullOptions{})
 	if err != nil {
 		return nil, err

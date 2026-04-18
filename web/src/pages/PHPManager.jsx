@@ -89,7 +89,7 @@ export default function PHPManager() {
                     <FileCode size={24} />
                     <Heading size="5">{t('php.title')}</Heading>
                 </Flex>
-                <DockerRequired installed={dockerStatus?.installed} daemonRunning={dockerStatus?.daemon_running} error={dockerStatus?.error} onRetry={checkDocker} extraMessage={t('php.docker_required')} />
+                <DockerRequired installed={dockerStatus?.installed} daemonRunning={dockerStatus?.daemon_running} error={dockerStatus?.error} runtime={dockerStatus?.runtime} onRetry={checkDocker} extraMessage={t('php.docker_required')} />
             </Box>
         )
     }
