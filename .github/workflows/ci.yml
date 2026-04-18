@@ -586,3 +586,88 @@ jobs:
 
       - name: Run install verification (AlmaLinux 10)
         run: bash scripts/test-install.sh alma
+
+  # ============================================================
+  # Job 4: Podman compat matrix (v0.12 Phase 5)
+  # Runs plugins/docker Podman integration tests against the
+  # actual AppStream Podman on AlmaLinux 9 and 10. Catches:
+  #   - Go SDK ↔ Podman compat API negotiation drift
+  #   - podman-docker shim output format changes
+  #   - /var/run/docker.sock symlink breakage
+  #
+  # Runs in parallel with build (does not need artifacts). Uses
+  # systemd-enabled AlmaLinux containers so podman.socket starts
+  # the same way install.sh sets it up.
+  # ============================================================
+  podman-compat:
+    name: Podman Integration (${{ matrix.os }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [almalinux9, almalinux10]
+        include:
+          - os: almalinux9
+            image: almalinux:9
+          - os: almalinux10
+            image: almalinux:10
+    container:
+      image: ${{ matrix.image }}
+      # Privileged + cgroupns=host so podman can actually run inside
+      # the container; without this podman-in-docker hits cgroup v2
+      # delegation issues.
+      options: --privileged --cgroupns=host
+
+    steps:
+      - uses: actions/checkout@v4
+
+      # AlmaLinux minimal images are slim; install only what the
+      # integration tests need. We're NOT running install.sh here —
+      # that's the job's whole point: pin the SDK/shim/symlink contract
+      # even when install.sh itself isn't being exercised.
+      - name: Install Podman + Go
+        run: |
+          dnf install -y podman podman-docker go-toolset jq
+          echo "Podman: $(podman --version)"
+          echo "Go: $(go version)"
+
+      # The Podman RPM ships a systemd socket unit, but the container
+      # doesn't have systemd pid 1. `podman system service --time=0`
+      # runs the same API server as the socket unit would, bound to
+      # the rootful /run/podman/podman.sock path install.sh expects.
+      - name: Start Podman API server
+        run: |
+          mkdir -p /run/podman
+          podman system service --time=0 unix:///run/podman/podman.sock &
+          for i in $(seq 1 20); do
+            [ -S /run/podman/podman.sock ] && break
+            sleep 0.5
+          done
+          [ -S /run/podman/podman.sock ] || { echo "socket failed to appear"; exit 1; }
+
+      # Mirror install.sh's symlink so TestSocketSymlinkIntegrity and
+      # every docker.sock-mount app-store entry works.
+      - name: Symlink /var/run/docker.sock → Podman socket
+        run: |
+          mkdir -p /var/run
+          ln -sf /run/podman/podman.sock /var/run/docker.sock
+          ls -la /var/run/docker.sock
+
+      - name: Run Podman integration tests
+        env:
+          WEBCASA_RUN_PODMAN_TESTS: '1'
+        run: |
+          go test ./plugins/docker/... \
+            -run 'TestPodmanSocketCompat|TestDockerShimTransparency|TestSocketSymlinkIntegrity' \
+            -v -count=1 -timeout 120s
+
+      # On failure, dump enough context to triage the matrix job
+      # without rerunning locally.
+      - name: Dump diagnostics on failure
+        if: failure()
+        run: |
+          echo "=== podman info ===" && podman info || true
+          echo "=== docker version (shim) ===" && docker version || true
+          echo "=== socket paths ==="
+          ls -laZ /run/podman/podman.sock /var/run/docker.sock 2>&1 || true
+          echo "=== kernel ===" && uname -a
