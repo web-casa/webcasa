@@ -112,13 +112,23 @@ def run_one(app_id: str, compose_body: str, timeout_s: int, keep: bool) -> Resul
         # to the tmp dir for easy cleanup on failure.
         base = tool + ["-f", str(compose_path), "-p", f"webcasa-batch-{app_id}"]
 
-        def cleanup():
+        def cleanup() -> str:
+            """Tear down the stack. Returns an error string on failure so the
+            caller can attach it to the Result — silently ignoring cleanup
+            failures lets orphans leak into subsequent apps and makes one
+            broken teardown cascade into downstream false FAILs."""
             if keep:
-                return
-            subprocess.run(
-                base + ["down", "--remove-orphans"],
-                capture_output=True, timeout=120,
-            )
+                return ""
+            try:
+                down = subprocess.run(
+                    base + ["down", "--remove-orphans"],
+                    capture_output=True, text=True, timeout=120,
+                )
+            except subprocess.TimeoutExpired:
+                return "down: timed out after 120s (containers may have leaked)"
+            if down.returncode != 0:
+                return f"down exit {down.returncode}: {down.stderr[-400:]}"
+            return ""
 
         try:
             up = subprocess.run(
@@ -126,11 +136,14 @@ def run_one(app_id: str, compose_body: str, timeout_s: int, keep: bool) -> Resul
                 capture_output=True, text=True, timeout=timeout_s,
             )
             if up.returncode != 0:
-                cleanup()
+                cleanup_err = cleanup()
+                err = f"compose up exit {up.returncode}"
+                if cleanup_err:
+                    err += f"; cleanup also failed ({cleanup_err})"
                 return Result(
                     app_id=app_id, status="fail",
                     duration_s=time.monotonic() - start,
-                    error=f"compose up exit {up.returncode}",
+                    error=err,
                     stderr_tail=up.stderr[-800:],
                 )
 
@@ -164,13 +177,23 @@ def run_one(app_id: str, compose_body: str, timeout_s: int, keep: bool) -> Resul
                     # Fall back to string sniff for older podman-compose
                     running = "Up" in ps.stdout or "running" in ps.stdout.lower()
 
-            cleanup()
+            cleanup_err = cleanup()
             if not running:
                 return Result(
                     app_id=app_id, status="fail",
                     duration_s=time.monotonic() - start,
                     error="no container reached running state",
                     stderr_tail=ps.stdout[-800:] or ps.stderr[-800:],
+                )
+            if cleanup_err:
+                # up + ps succeeded but teardown didn't. Downgrading to fail
+                # keeps the JSON report honest (a PASS would wrongly imply
+                # the app leaves no state behind); the stderr_tail points at
+                # which down command needed manual cleanup.
+                return Result(
+                    app_id=app_id, status="fail",
+                    duration_s=time.monotonic() - start,
+                    error=f"teardown failed: {cleanup_err}",
                 )
 
             return Result(
@@ -179,18 +202,24 @@ def run_one(app_id: str, compose_body: str, timeout_s: int, keep: bool) -> Resul
             )
 
         except subprocess.TimeoutExpired as e:
-            cleanup()
+            cleanup_err = cleanup()
+            err = f"timed out after {timeout_s}s: {e.cmd}"
+            if cleanup_err:
+                err += f"; cleanup also failed ({cleanup_err})"
             return Result(
                 app_id=app_id, status="timeout",
                 duration_s=time.monotonic() - start,
-                error=f"timed out after {timeout_s}s: {e.cmd}",
+                error=err,
             )
         except Exception as e:  # noqa: BLE001 — we want catch-all for the CI path
-            cleanup()
+            cleanup_err = cleanup()
+            err = f"{type(e).__name__}: {e}"
+            if cleanup_err:
+                err += f"; cleanup also failed ({cleanup_err})"
             return Result(
                 app_id=app_id, status="fail",
                 duration_s=time.monotonic() - start,
-                error=f"{type(e).__name__}: {e}",
+                error=err,
             )
 
 
@@ -218,14 +247,26 @@ def main() -> int:
     targets = [a.strip() for a in args.apps.split(",") if a.strip()]
     results: list[Result] = []
 
-    # Ctrl+C should terminate the current compose in-flight, not the whole
-    # Python process, so partial results still get written.
+    # Ctrl+C sets a flag so the outer loop stops scheduling new apps and
+    # writes the partial report. We do NOT interrupt the current in-flight
+    # subprocess — that would risk leaking containers mid-up. Press Ctrl+C a
+    # second time (KeyboardInterrupt) if you need to force-abort; the default
+    # Python handler will raise through subprocess.run and the finally/except
+    # paths will still call cleanup().
     interrupted = False
 
     def sigint_handler(signum, frame):
         nonlocal interrupted
+        if interrupted:
+            # Second Ctrl+C — restore default handler so the next one raises
+            # KeyboardInterrupt through the running subprocess.
+            signal.signal(signal.SIGINT, signal.SIG_DFL)
+            print("\n[sigint x2] raising KeyboardInterrupt — may leak "
+                  "containers if down hangs", file=sys.stderr)
+            return
         interrupted = True
-        print("\n[sigint] finishing current app then stopping…", file=sys.stderr)
+        print("\n[sigint] finishing current app then stopping… "
+              "(press again to force-abort)", file=sys.stderr)
 
     signal.signal(signal.SIGINT, sigint_handler)
 

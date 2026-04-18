@@ -120,14 +120,18 @@ func TestDockerShimTransparency(t *testing.T) {
 
 	// `docker compose version` should also work when podman-compose is
 	// installed and wired via the shim. WebCasa's plugin init uses this
-	// to decide whether compose support is live.
+	// to decide whether compose support is live. We look up podman-compose
+	// first so a missing-package config issue fails with a clear cause
+	// rather than as a generic exec error.
+	if _, err := exec.LookPath("podman-compose"); err != nil {
+		t.Fatalf("podman-compose not on PATH — install.sh should have installed "+
+			"it from EPEL. Without it `docker compose` commands hit the shim "+
+			"but fail: %v", err)
+	}
 	out, err = exec.Command("docker", "compose", "version").CombinedOutput()
 	if err != nil {
-		// Not a hard failure: if podman-compose is missing this command
-		// will exit non-zero, which is a deployment config issue rather
-		// than a SDK regression. Surface it as a skip with context so
-		// the CI log points at the right fix.
-		t.Skipf("`docker compose version` failed — install podman-compose: %v\noutput: %s",
+		t.Fatalf("`docker compose version` via shim failed even though "+
+			"podman-compose is present — shim misconfiguration: %v\noutput: %s",
 			err, out)
 	}
 	got = string(out)
