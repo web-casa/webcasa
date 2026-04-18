@@ -86,6 +86,8 @@ curl -fsSL https://raw.githubusercontent.com/web-casa/webcasa/main/install.sh | 
 After installation, open `http://YOUR_IP:39921`. On first access, the panel will guide you through creating an administrator account.
 
 > **Container runtime:** v0.12 installs **Podman 5.6** (AppStream) with the `podman-docker` shim plus `podman-compose` (EPEL). The panel talks to the rootful Podman socket; existing `docker`/`docker-compose` commands and images keep working unchanged.
+>
+> **GPU workloads (Ollama, Stable Diffusion, etc.):** require a one-time NVIDIA CDI setup because Podman does not honour Docker's `--gpus all` or compose `deploy.resources.reservations`. See [`docs/nvidia-gpu.md`](docs/nvidia-gpu.md) for the 3-command setup + compose migration.
 
 **Custom options:**
 

@@ -304,8 +304,9 @@ podman logs <container> --tail 100
 **ollama-nvidia**:
 - 原 compose 用 `deploy.resources.reservations.devices.driver=nvidia`
 - Podman 需 NVIDIA CDI (Container Device Interface)
-- 文档指引: `dnf install nvidia-container-toolkit` + `nvidia-ctk cdi generate`
-- 或在 compose 加 `devices: ["nvidia.com/gpu=all"]`
+- 完整指引见 [`docs/nvidia-gpu.md`](nvidia-gpu.md):
+  `dnf install nvidia-container-toolkit` + `nvidia-ctk cdi generate /etc/cdi/nvidia.yaml`
+- compose 改成 `devices: ["nvidia.com/gpu=all"]` 即可
 
 **8 个 docker.sock 应用**:
 - symlink 后 API v1.41 访问 podman 容器
@@ -479,7 +480,7 @@ journalctl -u podman.socket -n 50
 - [ ] 27 高风险 app 全部 stack up/down 验证通过
 - [ ] CI matrix (AlmaLinux 9/10) 绿
 - [ ] `go test ./... -timeout 120s` + `-race` 全绿
-- [ ] `docs/07-podman-v0.12.md` (本文档) + `docs/nvidia-gpu.md` (新) 完整
+- [x] `docs/07-podman-v0.12.md` (本文档) + `docs/nvidia-gpu.md` (新) 完整
 - [ ] `changelog.md` [0.12.0] 节含 breaking change warning
 - [ ] `VERSION` + `web/package.json` → 0.12.0
 - [ ] README "supported runtime: Podman 5.6+" 更新
