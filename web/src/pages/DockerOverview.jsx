@@ -5,7 +5,7 @@ import { useNavigate } from 'react-router'
 // composerize is lazy-loaded on button click (see convertDockerRun below) so
 // its transitive deps (composeverter, core-js, yargs-parser, deepmerge) do
 // not bloat the main bundle for users who never open the import flow.
-import { dockerAPI } from '../api/index.js'
+import { dockerAPI, wsAuthProtocols } from '../api/index.js'
 import { useTranslation } from 'react-i18next'
 import DockerRequired from '../components/DockerRequired.jsx'
 // Docker — Compose Stacks management (simplified view)
@@ -140,14 +140,12 @@ export default function DockerOverview() {
     const startLogStream = (id) => {
         if (wsRef.current) wsRef.current.close()
         const proto = window.location.protocol === 'https:' ? 'wss:' : 'ws:'
-        const token = localStorage.getItem('token')
-        // Pass the auth token via Sec-WebSocket-Protocol instead of ?token= so
-        // it does not end up in server access logs or browser devtools URLs.
-        // Backend auth middleware reads the "webcasa.token.<jwt>" subprotocol
-        // and echoes it back to complete the upgrade.
+        // Auth via Sec-WebSocket-Protocol (wsAuthProtocols helper); backend
+        // auth middleware reads "webcasa.token.<jwt>" and echoes it so the
+        // 101 upgrade completes.
         const ws = new WebSocket(
             `${proto}//${window.location.host}/api/plugins/docker/stacks/${id}/logs/ws?tail=100`,
-            [`webcasa.token.${token}`],
+            wsAuthProtocols(),
         )
         wsRef.current = ws
         let buffer = ''

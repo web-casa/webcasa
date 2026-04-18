@@ -27,6 +27,20 @@ api.interceptors.response.use(
     }
 )
 
+/**
+ * Build the Sec-WebSocket-Protocol array that authenticates a WebSocket
+ * handshake. Pass this as the second argument to `new WebSocket(url, protocols)`.
+ * Prefer this over `?token=<jwt>` in the URL — subprotocols are not typically
+ * logged by reverse proxies and don't appear in devtools URL bars.
+ *
+ * Returns [] when no token is stored so callers that forgot to guard still
+ * trigger a 401 at auth time rather than opening an unauthenticated socket.
+ */
+export function wsAuthProtocols() {
+    const token = localStorage.getItem('token')
+    return token ? [`webcasa.token.${token}`] : []
+}
+
 // ============ Auth ============
 export const authAPI = {
     needSetup: () => api.get('/auth/need-setup'),
@@ -298,8 +312,7 @@ export const fileManagerAPI = {
     extract: (path, dest) => api.post('/plugins/filemanager/extract', { path, dest }),
     terminalWsUrl: (cols, rows) => {
         const proto = window.location.protocol === 'https:' ? 'wss:' : 'ws:'
-        const token = localStorage.getItem('token')
-        return `${proto}//${window.location.host}/api/plugins/filemanager/terminal/ws?cols=${cols}&rows=${rows}&token=${token}`
+        return `${proto}//${window.location.host}/api/plugins/filemanager/terminal/ws?cols=${cols}&rows=${rows}`
     },
 }
 
@@ -336,8 +349,7 @@ export const databaseAPI = {
 
     instanceLogsWsUrl: (id) => {
         const proto = window.location.protocol === 'https:' ? 'wss:' : 'ws:'
-        const token = localStorage.getItem('token')
-        return `${proto}//${window.location.host}/api/plugins/database/instances/${id}/logs/ws?tail=100&token=${token}`
+        return `${proto}//${window.location.host}/api/plugins/database/instances/${id}/logs/ws?tail=100`
     },
 }
 
@@ -348,8 +360,7 @@ export const monitoringAPI = {
     getContainers: () => api.get('/plugins/monitoring/metrics/containers'),
     metricsWsUrl: () => {
         const proto = window.location.protocol === 'https:' ? 'wss:' : 'ws:'
-        const token = localStorage.getItem('token')
-        return `${proto}//${window.location.host}/api/plugins/monitoring/metrics/ws?token=${token}`
+        return `${proto}//${window.location.host}/api/plugins/monitoring/metrics/ws`
     },
     listAlertRules: () => api.get('/plugins/monitoring/alerts'),
     createAlertRule: (data) => api.post('/plugins/monitoring/alerts', data),
