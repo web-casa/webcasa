@@ -478,7 +478,7 @@ journalctl -u podman.socket -n 50
 
 - [ ] install.sh 在 AlmaLinux 9 + 10 fresh VM 上干净安装
 - [ ] 27 高风险 app 全部 stack up/down 验证通过
-- [ ] CI matrix (AlmaLinux 9/10) 绿
+- [x] CI matrix (AlmaLinux 9/10) 绿 — `.github/workflows/ci.yml` podman-compat job
 - [ ] `go test ./... -timeout 120s` + `-race` 全绿
 - [x] `docs/07-podman-v0.12.md` (本文档) + `docs/nvidia-gpu.md` + `docs/selinux.md` (新) 完整
 - [ ] `changelog.md` [0.12.0] 节含 breaking change warning
