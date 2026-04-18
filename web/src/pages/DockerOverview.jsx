@@ -113,7 +113,14 @@ export default function DockerOverview() {
         if (wsRef.current) wsRef.current.close()
         const proto = window.location.protocol === 'https:' ? 'wss:' : 'ws:'
         const token = localStorage.getItem('token')
-        const ws = new WebSocket(`${proto}//${window.location.host}/api/plugins/docker/stacks/${id}/logs/ws?tail=100&token=${token}`)
+        // Pass the auth token via Sec-WebSocket-Protocol instead of ?token= so
+        // it does not end up in server access logs or browser devtools URLs.
+        // Backend auth middleware reads the "webcasa.token.<jwt>" subprotocol
+        // and echoes it back to complete the upgrade.
+        const ws = new WebSocket(
+            `${proto}//${window.location.host}/api/plugins/docker/stacks/${id}/logs/ws?tail=100`,
+            [`webcasa.token.${token}`],
+        )
         wsRef.current = ws
         let buffer = ''
         ws.onmessage = (e) => {
@@ -176,6 +183,7 @@ export default function DockerOverview() {
                     installed={dockerStatus.installed}
                     daemonRunning={dockerStatus.daemon_running}
                     error={dockerStatus.error}
+                    runtime={dockerStatus.runtime}
                     onRetry={checkDocker}
                 />
             </Box>

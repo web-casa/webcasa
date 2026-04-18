@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"os/exec"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/gin-gonic/gin"
@@ -14,6 +15,13 @@ import (
 )
 
 // Plugin implements the plugin.Plugin interface for Docker management.
+//
+// stateMu guards the mutable runtime-reachability fields (client,
+// dockerAvailable, dockerError) that are read by requireDocker from every
+// request goroutine and written by tryReconnect / dockerStatus when the
+// daemon appears/disappears. Without the lock these fields were racing
+// (go-review Group A finding). The service/handler client pointers that
+// mirror p.client are updated inside the same critical section.
 type Plugin struct {
 	client          *Client
 	svc             *Service
@@ -21,6 +29,11 @@ type Plugin struct {
 	dockerAvailable bool
 	dockerError     string
 	socketPath      string // configured docker socket path
+	stateMu         sync.RWMutex
+	// installMu serializes /api/plugins/docker/install so concurrent admin
+	// clicks cannot launch overlapping EasyDocker subprocesses that would
+	// both mutate /etc/docker/*, systemd units, and the package database.
+	installMu sync.Mutex
 }
 
 // New creates a new Docker plugin instance.
@@ -103,7 +116,9 @@ func (p *Plugin) Init(ctx *pluginpkg.Context) error {
 	o.POST("/stacks/:id/down", p.requireDocker(), p.handler.StackDown)
 	o.POST("/stacks/:id/restart", p.requireDocker(), p.handler.StackRestart)
 	o.POST("/stacks/:id/pull", p.requireDocker(), p.handler.StackPull)
-	r.GET("/stacks/:id/logs", p.requireDocker(), p.handler.StackLogs)
+	// Logs can contain secrets, DB credentials, and request bodies, so they
+	// sit one tier above plain read (Group A authz finding).
+	o.GET("/stacks/:id/logs", p.requireDocker(), p.handler.StackLogs)
 
 	// Containers (read + operator operations + admin mutations)
 	r.GET("/containers", p.requireDocker(), p.handler.ListContainers)
@@ -112,7 +127,8 @@ func (p *Plugin) Init(ctx *pluginpkg.Context) error {
 	o.POST("/containers/:id/stop", p.requireDocker(), p.handler.StopContainer)
 	o.POST("/containers/:id/restart", p.requireDocker(), p.handler.RestartContainer)
 	a.DELETE("/containers/:id", p.requireDocker(), p.handler.RemoveContainer)
-	r.GET("/containers/:id/logs", p.requireDocker(), p.handler.ContainerLogs)
+	// Container logs can leak secrets same as stack logs (Group A authz).
+	o.GET("/containers/:id/logs", p.requireDocker(), p.handler.ContainerLogs)
 	r.GET("/containers/:id/stats", p.requireDocker(), p.handler.ContainerStats)
 
 	// Images (read + admin mutations)
@@ -132,9 +148,9 @@ func (p *Plugin) Init(ctx *pluginpkg.Context) error {
 	a.POST("/volumes", p.requireDocker(), p.handler.CreateVolume)
 	a.DELETE("/volumes/:id", p.requireDocker(), p.handler.RemoveVolume)
 
-	// WebSocket log streaming (read)
-	r.GET("/containers/:id/logs/ws", p.requireDocker(), p.handler.ContainerLogsWS)
-	r.GET("/stacks/:id/logs/ws", p.requireDocker(), p.handler.StackLogsWS)
+	// WebSocket log streaming — operator tier (same rationale as HTTP logs).
+	o.GET("/containers/:id/logs/ws", p.requireDocker(), p.handler.ContainerLogsWS)
+	o.GET("/stacks/:id/logs/ws", p.requireDocker(), p.handler.StackLogsWS)
 
 	ctx.Logger.Info("Docker plugin routes registered", "docker_available", p.dockerAvailable)
 	return nil
@@ -143,11 +159,15 @@ func (p *Plugin) Init(ctx *pluginpkg.Context) error {
 // requireDocker returns middleware that blocks requests if Docker is not available.
 func (p *Plugin) requireDocker() gin.HandlerFunc {
 	return func(c *gin.Context) {
-		if !p.dockerAvailable {
+		p.stateMu.RLock()
+		available := p.dockerAvailable
+		detail := p.dockerError
+		p.stateMu.RUnlock()
+		if !available {
 			c.JSON(http.StatusServiceUnavailable, gin.H{
 				"error":     "Docker is not available",
 				"installed": false,
-				"detail":    p.dockerError,
+				"detail":    detail,
 			})
 			c.Abort()
 			return
@@ -157,7 +177,10 @@ func (p *Plugin) requireDocker() gin.HandlerFunc {
 }
 
 // tryReconnect attempts to connect to the Docker daemon and update the plugin state.
-// Returns true if the daemon is reachable.
+// Returns true if the daemon is reachable. The old client is closed AFTER
+// the write lock is released so the ping goroutine holding it can finish
+// cleanly (holding stateMu during Close() would let a waiting RLock queue
+// observe an open-but-unreachable client and mis-route requests).
 func (p *Plugin) tryReconnect() bool {
 	client, err := NewClient(p.socketPath)
 	if err != nil {
@@ -169,11 +192,9 @@ func (p *Plugin) tryReconnect() bool {
 		client.Close()
 		return false
 	}
-	// Close old client to release resources (HTTP connection pool).
-	if p.client != nil {
-		p.client.Close()
-	}
-	// Update plugin state
+
+	p.stateMu.Lock()
+	oldClient := p.client
 	p.client = client
 	p.dockerAvailable = true
 	p.dockerError = ""
@@ -182,6 +203,11 @@ func (p *Plugin) tryReconnect() bool {
 	}
 	if p.handler != nil {
 		p.handler.client = client
+	}
+	p.stateMu.Unlock()
+
+	if oldClient != nil {
+		oldClient.Close()
 	}
 	return true
 }
@@ -209,7 +235,10 @@ func (p *Plugin) dockerStatus(c *gin.Context) {
 		}
 	}
 
+	p.stateMu.RLock()
 	daemonRunning := p.dockerAvailable
+	client := p.client
+	p.stateMu.RUnlock()
 
 	// Live check: if Docker binary is present but cached state says not available,
 	// try to reconnect now. This handles the case where Docker was installed
@@ -219,20 +248,24 @@ func (p *Plugin) dockerStatus(c *gin.Context) {
 	}
 
 	// Also verify that a cached "available" state is still valid.
-	if daemonRunning && p.client != nil {
+	if daemonRunning && client != nil {
 		ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 		defer cancel()
-		if err := p.client.Ping(ctx); err != nil {
+		if err := client.Ping(ctx); err != nil {
 			daemonRunning = false
+			p.stateMu.Lock()
 			p.dockerAvailable = false
 			p.dockerError = err.Error()
+			p.stateMu.Unlock()
 		}
 	}
 
+	p.stateMu.RLock()
 	errMsg := ""
 	if !daemonRunning {
 		errMsg = p.dockerError
 	}
+	p.stateMu.RUnlock()
 
 	c.JSON(http.StatusOK, gin.H{
 		"installed":      installed,
@@ -245,6 +278,18 @@ func (p *Plugin) dockerStatus(c *gin.Context) {
 
 // installDocker runs the EasyDocker script (https://github.com/web-casa/easydocker)
 // and streams the output to the client via SSE.
+//
+// Concurrency: installMu serializes concurrent admin clicks. Without it, two
+// tabs firing /install in parallel would each start their own `curl | bash`
+// running package-manager transactions on the same host — a reliable way to
+// corrupt /etc/docker state. We try-lock so the second caller gets a clear
+// error instead of blocking on the first installer's 60s+ runtime.
+//
+// Lifetime: the subprocess is tied to the request context via CommandContext
+// so an SSE client disconnect (browser tab closed mid-install) kills the
+// child process tree. The prior exec.Command variant let the installer keep
+// running after the socket closed, masking failure modes and wasting host
+// resources if the admin clicked "retry" repeatedly.
 func (p *Plugin) installDocker(c *gin.Context) {
 	// Parse optional mirror parameter.
 	var req struct {
@@ -268,6 +313,16 @@ func (p *Plugin) installDocker(c *gin.Context) {
 		fmt.Fprintf(c.Writer, "event: %s\ndata: %s\n\n", event, data)
 		c.Writer.Flush()
 	}
+
+	// Non-blocking install lock. If another admin is mid-install we refuse
+	// rather than queue — a queued install behind the first would execute
+	// against mutated host state and yield unpredictable results.
+	if !p.installMu.TryLock() {
+		writeSSE("Another install is already in progress.")
+		writeEvent("error", "install already in progress")
+		return
+	}
+	defer p.installMu.Unlock()
 
 	// Quick check: if the runtime is already installed and reachable, skip
 	// the EasyDocker script entirely. Under v0.12 Podman is pre-installed
@@ -311,7 +366,9 @@ func (p *Plugin) installDocker(c *gin.Context) {
 	}
 	args := []string{"-c", baseCmd}
 
-	cmd := exec.Command("bash", args...)
+	// Bind the subprocess lifetime to the HTTP request context so SSE client
+	// disconnect terminates the installer tree (Group A robustness fix).
+	cmd := exec.CommandContext(c.Request.Context(), "bash", args...)
 	// Merge stdout and stderr.
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {
@@ -357,6 +414,11 @@ func (p *Plugin) installDocker(c *gin.Context) {
 	}
 
 	writeSSE("Docker installation completed successfully!")
+
+	// Invalidate the PATH-based runtime cache: the installer just provisioned
+	// a binary that DetectRuntime would otherwise keep reporting as missing
+	// until process restart.
+	ResetRuntimeCache()
 
 	// Try to reconnect to Docker daemon after installation.
 	if p.tryReconnect() {

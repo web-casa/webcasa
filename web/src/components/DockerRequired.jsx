@@ -5,8 +5,16 @@ import { useTranslation } from 'react-i18next'
 import { dockerAPI } from '../api'
 import { copyToClipboard } from '../utils/clipboard.js'
 
-export default function DockerRequired({ installed, daemonRunning, error, onRetry, extraMessage }) {
+// DockerRequired renders the install / not-running gate for the Docker
+// plugin. The `runtime` prop is required so the recovery commands match the
+// actual runtime in use; v0.12 Podman hosts get `systemctl start podman.socket`
+// while legacy Docker hosts get `systemctl start docker`. Unknown (neither
+// runtime detected) falls back to the Podman install guidance, since v0.12's
+// install.sh provisions Podman.
+export default function DockerRequired({ installed, daemonRunning, error, onRetry, extraMessage, runtime }) {
     const { t } = useTranslation()
+    const isDocker = runtime === 'docker'
+    const startCmd = isDocker ? 'sudo systemctl start docker' : 'sudo systemctl start podman.socket'
     const [installing, setInstalling] = useState(false)
     const [installLog, setInstallLog] = useState([])
     const [installDone, setInstallDone] = useState(false)
@@ -271,7 +279,7 @@ export default function DockerRequired({ installed, daemonRunning, error, onRetr
                         userSelect: 'all',
                     }}
                 >
-                    sudo systemctl start podman.socket
+                    {startCmd}
                 </Code>
                 <Button variant="soft" onClick={onRetry}>
                     <RefreshCw size={16} />

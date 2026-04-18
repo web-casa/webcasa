@@ -45,8 +45,9 @@ func (r Runtime) SystemdUnit() string {
 }
 
 var (
-	runtimeOnce   sync.Once
-	runtimeCache  Runtime
+	runtimeOnce  sync.Once
+	runtimeCache Runtime
+	runtimeMu    sync.RWMutex // guards runtimeCache + runtimeOnce on reset
 )
 
 // DetectRuntime inspects the host once and caches the result. Detection
@@ -54,22 +55,45 @@ var (
 // shim); (2) docker binary present = Docker; (3) neither = Unknown.
 //
 // This is a process-local cache — it is safe to call freely from HTTP
-// handlers without burning subprocess fork cost per request. If an operator
-// swaps runtimes without restarting WebCasa, they need a service restart to
-// pick up the new value (acceptable: runtime swap is a rare admin action).
+// handlers without burning subprocess fork cost per request. The cache can
+// be invalidated with ResetRuntimeCache after the install flow provisions a
+// runtime, so callers don't see stale "unknown" state until process restart.
 func DetectRuntime() Runtime {
-	runtimeOnce.Do(func() {
-		if _, err := exec.LookPath("podman"); err == nil {
-			runtimeCache = RuntimePodman
-			return
-		}
-		if _, err := exec.LookPath("docker"); err == nil {
-			runtimeCache = RuntimeDocker
-			return
-		}
-		runtimeCache = RuntimeUnknown
+	runtimeMu.RLock()
+	once := &runtimeOnce
+	runtimeMu.RUnlock()
+	once.Do(func() {
+		r := detectRuntimeUncached()
+		runtimeMu.Lock()
+		runtimeCache = r
+		runtimeMu.Unlock()
 	})
-	return runtimeCache
+	runtimeMu.RLock()
+	r := runtimeCache
+	runtimeMu.RUnlock()
+	return r
+}
+
+// detectRuntimeUncached performs a PATH lookup without consulting the cache.
+func detectRuntimeUncached() Runtime {
+	if _, err := exec.LookPath("podman"); err == nil {
+		return RuntimePodman
+	}
+	if _, err := exec.LookPath("docker"); err == nil {
+		return RuntimeDocker
+	}
+	return RuntimeUnknown
+}
+
+// ResetRuntimeCache clears the DetectRuntime cache. Call after an install or
+// uninstall flow so subsequent /status + /daemon-config lookups re-probe the
+// host. Safe to call concurrently. Cheap: the next DetectRuntime call does
+// two exec.LookPath probes (PATH-resolved, no fork).
+func ResetRuntimeCache() {
+	runtimeMu.Lock()
+	runtimeOnce = sync.Once{}
+	runtimeCache = RuntimeUnknown
+	runtimeMu.Unlock()
 }
 
 // RuntimeVersion returns a one-line human-readable version string for the
