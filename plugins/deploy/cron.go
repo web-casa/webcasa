@@ -2,35 +2,45 @@ package deploy
 
 import (
 	"bytes"
+	"context"
 	"fmt"
 	"log/slog"
-	"os/exec"
 	"sync"
 	"time"
 
 	"github.com/robfig/cron/v3"
+	"github.com/web-casa/webcasa/internal/execx"
 	"gorm.io/gorm"
 )
 
 // CronScheduler manages scheduled tasks for deploy projects.
+//
+// Each job execution binds to ctx so Stop() cancels every in-flight
+// subprocess tree (via execx process-group kill) rather than letting a
+// long-running job outlive the scheduler and stall shutdown.
 type CronScheduler struct {
 	db     *gorm.DB
 	logger *slog.Logger
 	runner *cron.Cron
 	// Map from CronJob.ID → cron.EntryID for dynamic add/remove.
-	mu       sync.Mutex
-	entries  map[uint]cron.EntryID
-	dataDir  string
+	mu      sync.Mutex
+	entries map[uint]cron.EntryID
+	dataDir string
+	ctx     context.Context
+	cancel  context.CancelFunc
 }
 
 // NewCronScheduler creates a new cron scheduler.
 func NewCronScheduler(db *gorm.DB, logger *slog.Logger, dataDir string) *CronScheduler {
+	ctx, cancel := context.WithCancel(context.Background())
 	return &CronScheduler{
 		db:      db,
 		logger:  logger,
 		runner:  cron.New(cron.WithSeconds()),
 		entries: make(map[uint]cron.EntryID),
 		dataDir: dataDir,
+		ctx:     ctx,
+		cancel:  cancel,
 	}
 }
 
@@ -47,9 +57,10 @@ func (cs *CronScheduler) Start() {
 	cs.logger.Info("cron scheduler started", "jobs", len(jobs))
 }
 
-// Stop stops the scheduler.
+// Stop stops the scheduler and cancels any in-flight job subprocesses.
 func (cs *CronScheduler) Stop() {
 	cs.runner.Stop()
+	cs.cancel()
 }
 
 // AddJob registers a cron job with the scheduler.
@@ -127,7 +138,7 @@ func (cs *CronScheduler) executeJob(jobID uint) {
 
 	cs.logger.Info("executing cron job", "job_id", job.ID, "name", job.Name, "command", job.Command)
 
-	cmd := exec.Command("bash", "-c", job.Command)
+	cmd := execx.BashContext(cs.ctx, job.Command)
 	cmd.Dir = workDir
 
 	var output bytes.Buffer

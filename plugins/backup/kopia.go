@@ -14,6 +14,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/web-casa/webcasa/internal/execx"
 	"github.com/web-casa/webcasa/internal/versions"
 )
 
@@ -34,7 +35,12 @@ func NewKopiaClient(dataDir string, logger *slog.Logger) *KopiaClient {
 // InstallKopia runs the Kopia installation commands and streams output via
 // the provided write functions. It detects the OS family and picks the
 // appropriate install commands. Returns true on success.
-func (k *KopiaClient) InstallKopia(writeSSE func(string), writeEvent func(string, string)) bool {
+//
+// ctx should be the inbound HTTP request context so an SSE client
+// disconnect kills the install subprocess tree (kopia install can pull
+// packages, which is slow and wasteful to keep running after the admin
+// closed the tab).
+func (k *KopiaClient) InstallKopia(ctx context.Context, writeSSE func(string), writeEvent func(string, string)) bool {
 	// Check if already installed.
 	if status := k.CheckKopia(); status.Available {
 		writeSSE("Kopia is already installed: " + status.Version)
@@ -61,7 +67,7 @@ func (k *KopiaClient) InstallKopia(writeSSE func(string), writeEvent func(string
 
 	writeSSE("Installing Kopia...")
 
-	cmd := exec.Command("bash", "-c", installCmd)
+	cmd := execx.BashContext(ctx, installCmd)
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {
 		writeSSE("ERROR: " + err.Error())

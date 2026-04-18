@@ -39,7 +39,7 @@ func (h *Handler) InstallKopia(c *gin.Context) {
 		c.Writer.Flush()
 	}
 
-	h.svc.kopia.InstallKopia(writeSSE, writeEvent)
+	h.svc.kopia.InstallKopia(c.Request.Context(), writeSSE, writeEvent)
 }
 
 // ── Config ──

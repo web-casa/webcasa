@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/robfig/cron/v3"
+	"github.com/web-casa/webcasa/internal/execx"
 	pluginpkg "github.com/web-casa/webcasa/internal/plugin"
 	"gorm.io/gorm"
 )
@@ -461,7 +462,11 @@ func (s *Service) runCommand(task CronTask) (*CronLog, error) {
 		}
 
 		ctx, cancel := context.WithTimeout(s.taskCtx, timeout)
-		cmd := exec.CommandContext(ctx, "bash", "-c", task.Command)
+		// execx.BashContext enforces the timeout across the full pipeline
+		// tree — `exec.CommandContext` alone lets `foo | bar` children
+		// survive the outer bash getting SIGKILL'd, so a runaway cron task
+		// could outlive its timeout budget.
+		cmd := execx.BashContext(ctx, task.Command)
 		if task.WorkingDir != "" {
 			cmd.Dir = task.WorkingDir
 		}

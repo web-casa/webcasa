@@ -177,5 +177,5 @@ func (h *Handler) InstallFirewalld(c *gin.Context) {
 		c.Writer.Flush()
 	}
 
-	h.svc.InstallFirewalld(writeSSE, writeEvent)
+	h.svc.InstallFirewalld(c.Request.Context(), writeSSE, writeEvent)
 }

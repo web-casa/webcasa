@@ -2,6 +2,7 @@ package firewall
 
 import (
 	"bufio"
+	"context"
 	"fmt"
 	"log/slog"
 	"os"
@@ -9,6 +10,8 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+
+	"github.com/web-casa/webcasa/internal/execx"
 )
 
 var (
@@ -428,8 +431,11 @@ func splitNonEmpty(s string) []string {
 }
 
 // InstallFirewalld installs firewalld, enables and starts the service.
+//
+// ctx is the inbound request context so SSE client disconnect kills the
+// install subprocess tree instead of leaving dnf running.
 // Progress is streamed via writeSSE (log lines) and writeEvent (done/error signals).
-func (s *Service) InstallFirewalld(writeSSE func(string), writeEvent func(string, string)) {
+func (s *Service) InstallFirewalld(ctx context.Context, writeSSE func(string), writeEvent func(string, string)) {
 	// Check if already installed.
 	if _, err := exec.LookPath("firewall-cmd"); err == nil {
 		writeSSE("firewalld is already installed")
@@ -453,14 +459,14 @@ func (s *Service) InstallFirewalld(writeSSE func(string), writeEvent func(string
 	}
 
 	writeSSE("Installing firewalld...")
-	if !s.streamCmd(installCmd, writeSSE) {
+	if !s.streamCmd(ctx, installCmd, writeSSE) {
 		writeEvent("error", "Installation failed")
 		return
 	}
 
 	// Enable and start.
 	writeSSE("Enabling and starting firewalld...")
-	if !s.streamCmd("systemctl enable --now firewalld", writeSSE) {
+	if !s.streamCmd(ctx, "systemctl enable --now firewalld", writeSSE) {
 		writeEvent("error", "Failed to start firewalld")
 		return
 	}
@@ -502,9 +508,11 @@ func (s *Service) InstallFirewalld(writeSSE func(string), writeEvent func(string
 }
 
 // streamCmd runs a shell command and streams stdout/stderr line by line.
-// Returns true if the command exits successfully.
-func (s *Service) streamCmd(shellCmd string, writeSSE func(string)) bool {
-	cmd := exec.Command("bash", "-c", shellCmd)
+// Returns true if the command exits successfully. ctx cancellation kills
+// the whole subprocess group (execx.BashContext) so SSE disconnect doesn't
+// leave a dnf/systemctl transaction running.
+func (s *Service) streamCmd(ctx context.Context, shellCmd string, writeSSE func(string)) bool {
+	cmd := execx.BashContext(ctx, shellCmd)
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {
 		writeSSE("ERROR: " + err.Error())
