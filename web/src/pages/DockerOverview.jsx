@@ -38,6 +38,9 @@ export default function DockerOverview() {
     // fail. We distinguish this from "runtime missing" so the UI can prompt
     // a retry instead of showing the install gate for a blip.
     const [statusError, setStatusError] = useState(false)
+    // Inline error banner for action failures, replacing blocking alert()
+    // popups. {msg, ts}: ts just drives re-render for repeated failures.
+    const [actionError, setActionError] = useState(null)
 
     const fetchData = useCallback(async () => {
         try {
@@ -74,23 +77,28 @@ export default function DockerOverview() {
 
     useEffect(() => { checkDocker() }, [checkDocker])
 
-    const doAction = async (id, action, label) => {
+    const showActionError = (err) =>
+        setActionError({ msg: err?.response?.data?.error || err?.message || String(err), ts: Date.now() })
+
+    const doAction = async (id, action) => {
         setActionLoading(`${id}-${action}`)
+        setActionError(null)
         try {
             await dockerAPI[action](id)
             await fetchData()
         } catch (e) {
-            alert(`${label} failed: ${e.response?.data?.error || e.message}`)
+            showActionError(e)
         } finally { setActionLoading(null) }
     }
 
     const doContainerAction = async (id, action) => {
         setActionLoading(`ctr-${id}-${action}`)
+        setActionError(null)
         try {
             await dockerAPI[action](id)
             await fetchData()
         } catch (e) {
-            alert(`Failed: ${e.response?.data?.error || e.message}`)
+            showActionError(e)
         } finally { setActionLoading(null) }
     }
 
@@ -246,6 +254,20 @@ export default function DockerOverview() {
 
     return (
         <Box>
+            {actionError && (
+                <Callout.Root color="red" mb="3">
+                    <Callout.Icon><X size={16} /></Callout.Icon>
+                    <Box style={{ flex: 1 }}>
+                        <Text size="2" weight="bold" style={{ display: 'block' }}>
+                            {t('docker.action_failed')}
+                        </Text>
+                        <Text size="2">{actionError.msg}</Text>
+                    </Box>
+                    <Button variant="ghost" size="1" onClick={() => setActionError(null)} aria-label={t('common.close')}>
+                        <X size={14} />
+                    </Button>
+                </Callout.Root>
+            )}
             <Flex align="center" justify="between" mb="4">
                 <Flex align="center" gap="2">
                     <Container size={24} />
@@ -462,6 +484,7 @@ function CreateStackDialog({ open, onClose, onCreated }) {
     const [dockerRunCmd, setDockerRunCmd] = useState('')
     const [convertError, setConvertError] = useState(false) // boolean: friendly message shown regardless
     const [converting, setConverting] = useState(false)
+    const [createError, setCreateError] = useState('')
     const composeInputRef = useRef(null)
     const envInputRef = useRef(null)
 
@@ -474,6 +497,7 @@ function CreateStackDialog({ open, onClose, onCreated }) {
             setDockerRunCmd('')
             setConvertError(false)
             setConverting(false)
+            setCreateError('')
         }
     }, [open])
 
@@ -511,6 +535,7 @@ function CreateStackDialog({ open, onClose, onCreated }) {
     const handleCreate = async () => {
         if (!name.trim() || !composeFile.trim()) return
         setCreating(true)
+        setCreateError('')
         try {
             await dockerAPI.createStack({
                 name: name.trim(),
@@ -524,7 +549,7 @@ function CreateStackDialog({ open, onClose, onCreated }) {
             setName(''); setDescription(''); setComposeFile(''); setEnvFile('')
             setDockerRunCmd(''); setConvertError(false); setActiveTab('compose')
         } catch (e) {
-            alert(e.response?.data?.error || e.message)
+            setCreateError(e.response?.data?.error || e.message)
         } finally { setCreating(false) }
     }
 
@@ -618,6 +643,12 @@ function CreateStackDialog({ open, onClose, onCreated }) {
                         <label htmlFor="auto-start"><Text size="2">{t('docker.auto_start')}</Text></label>
                     </Flex>
                 </Flex>
+                {createError && (
+                    <Callout.Root color="red" size="1" mt="3">
+                        <Callout.Icon><X size={14} /></Callout.Icon>
+                        <Callout.Text>{createError}</Callout.Text>
+                    </Callout.Root>
+                )}
                 <Flex justify="end" gap="2" mt="4">
                     <Dialog.Close><Button variant="soft" color="gray">{t('common.cancel')}</Button></Dialog.Close>
                     <Button disabled={creating || !name.trim() || !composeFile.trim()} onClick={handleCreate}>
@@ -767,8 +798,17 @@ function RunContainerDialog({ open, onClose, onCreated }) {
                             <Box mt="2" style={{ border: '1px solid var(--gray-5)', borderRadius: 8, maxHeight: 200, overflow: 'auto' }}>
                                 {searchResults.map((r, i) => (
                                     <Flex key={i} align="center" gap="2" px="3" py="2"
+                                        role="option"
+                                        tabIndex={0}
+                                        aria-label={`${r.name}${r.is_official ? ' (official)' : ''}`}
                                         style={{ cursor: 'pointer', borderBottom: i < searchResults.length - 1 ? '1px solid var(--gray-4)' : 'none' }}
                                         onClick={() => selectImage(r.name)}
+                                        onKeyDown={(e) => {
+                                            if (e.key === 'Enter' || e.key === ' ') {
+                                                e.preventDefault()
+                                                selectImage(r.name)
+                                            }
+                                        }}
                                     >
                                         <Text size="2" weight="bold" style={{ flex: 1 }}>{r.name}</Text>
                                         {r.is_official && <Badge color="blue" size="1">Official</Badge>}

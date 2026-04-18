@@ -740,7 +740,7 @@
         "filter_logs": "Filter log lines...",
         "no_logs": "No logs available",
         "fetch_logs_failed": "Failed to fetch logs",
-        "action_failed": "Action failed: {{error}}",
+        "action_failed": "Action failed",
         "status_error_title": "Couldn't reach the panel",
         "status_error_desc": "Status check failed. Click retry or refresh once connectivity is back.",
         "upload_file": "Upload File",
