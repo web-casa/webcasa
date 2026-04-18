@@ -10,6 +10,8 @@ package execx
 
 import (
 	"context"
+	"errors"
+	"os"
 	"os/exec"
 	"syscall"
 	"time"
@@ -44,7 +46,18 @@ func CommandContext(ctx context.Context, name string, args ...string) *exec.Cmd 
 			return nil
 		}
 		// Negative PID signals every process in the group.
-		return syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL)
+		err := syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL)
+		// Race: the process may have exited between the ctx firing and
+		// the Kill syscall landing. ESRCH ("no such process") or the
+		// stdlib's os.ErrProcessDone both mean "already gone". Translate
+		// to ErrProcessDone so cmd.Wait returns the real exit status
+		// instead of propagating a spurious kill-failed error. Matches
+		// the stdlib default Cancel hook (exec.CommandContext →
+		// Process.Kill filters this same case internally).
+		if errors.Is(err, syscall.ESRCH) || errors.Is(err, os.ErrProcessDone) {
+			return os.ErrProcessDone
+		}
+		return err
 	}
 	cmd.WaitDelay = DefaultWaitDelay
 	return cmd
