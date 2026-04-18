@@ -1,0 +1,471 @@
+{
+  "summary": {
+    "total": 269,
+    "critical": 0,
+    "warning_only": 10,
+    "info_only": 25,
+    "clean": 234,
+    "histogram": {
+      "docker-sock-mount": 13,
+      "network-host": 9,
+      "needs-rootful": 8,
+      "dep-completed-condition": 3,
+      "elevated-caps": 6,
+      "device-passthrough": 6,
+      "gpu-reservation-ignored": 1
+    }
+  },
+  "apps": [
+    {
+      "app_id": "authentik-1",
+      "findings": [
+        {
+          "severity": "info",
+          "code": "docker-sock-mount",
+          "path": "services.authentik-worker.volumes",
+          "message": "Mounts the container runtime socket. v0.12 ships /var/run/docker.sock as a symlink to the Podman rootful socket; verify Docker-API consumers work against Podman's compat endpoint."
+        }
+      ]
+    },
+    {
+      "app_id": "beszel-agent",
+      "findings": [
+        {
+          "severity": "warning",
+          "code": "network-host",
+          "path": "services.beszel-agent.network_mode",
+          "message": "network_mode: host shares the host namespace; verify the app's ports do not collide with WebCasa (39921), Caddy (80/443), or other installed services."
+        },
+        {
+          "severity": "info",
+          "code": "docker-sock-mount",
+          "path": "services.beszel-agent.volumes",
+          "message": "Mounts the container runtime socket. v0.12 ships /var/run/docker.sock as a symlink to the Podman rootful socket; verify Docker-API consumers work against Podman's compat endpoint."
+        }
+      ]
+    },
+    {
+      "app_id": "cloudflared",
+      "findings": [
+        {
+          "severity": "warning",
+          "code": "network-host",
+          "path": "services.cloudflared.network_mode",
+          "message": "network_mode: host shares the host namespace; verify the app's ports do not collide with WebCasa (39921), Caddy (80/443), or other installed services."
+        }
+      ]
+    },
+    {
+      "app_id": "crowdsec",
+      "findings": [
+        {
+          "severity": "info",
+          "code": "docker-sock-mount",
+          "path": "services.crowdsec.volumes",
+          "message": "Mounts the container runtime socket. v0.12 ships /var/run/docker.sock as a symlink to the Podman rootful socket; verify Docker-API consumers work against Podman's compat endpoint."
+        }
+      ]
+    },
+    {
+      "app_id": "cup",
+      "findings": [
+        {
+          "severity": "info",
+          "code": "docker-sock-mount",
+          "path": "services.cup.volumes",
+          "message": "Mounts the container runtime socket. v0.12 ships /var/run/docker.sock as a symlink to the Podman rootful socket; verify Docker-API consumers work against Podman's compat endpoint."
+        }
+      ]
+    },
+    {
+      "app_id": "dashdot",
+      "findings": [
+        {
+          "severity": "info",
+          "code": "needs-rootful",
+          "path": "services.dashdot.privileged",
+          "message": "`privileged: true` requires the rootful Podman socket; v0.12 ships rootful by default so this is supported."
+        }
+      ]
+    },
+    {
+      "app_id": "dockge",
+      "findings": [
+        {
+          "severity": "info",
+          "code": "docker-sock-mount",
+          "path": "services.dockge.volumes",
+          "message": "Mounts the container runtime socket. v0.12 ships /var/run/docker.sock as a symlink to the Podman rootful socket; verify Docker-API consumers work against Podman's compat endpoint."
+        }
+      ]
+    },
+    {
+      "app_id": "dozzle",
+      "findings": [
+        {
+          "severity": "info",
+          "code": "docker-sock-mount",
+          "path": "services.dozzle.volumes",
+          "message": "Mounts the container runtime socket. v0.12 ships /var/run/docker.sock as a symlink to the Podman rootful socket; verify Docker-API consumers work against Podman's compat endpoint."
+        }
+      ]
+    },
+    {
+      "app_id": "gladys",
+      "findings": [
+        {
+          "severity": "info",
+          "code": "needs-rootful",
+          "path": "services.gladys.privileged",
+          "message": "`privileged: true` requires the rootful Podman socket; v0.12 ships rootful by default so this is supported."
+        },
+        {
+          "severity": "warning",
+          "code": "network-host",
+          "path": "services.gladys.network_mode",
+          "message": "network_mode: host shares the host namespace; verify the app's ports do not collide with WebCasa (39921), Caddy (80/443), or other installed services."
+        },
+        {
+          "severity": "info",
+          "code": "docker-sock-mount",
+          "path": "services.gladys.volumes",
+          "message": "Mounts the container runtime socket. v0.12 ships /var/run/docker.sock as a symlink to the Podman rootful socket; verify Docker-API consumers work against Podman's compat endpoint."
+        }
+      ]
+    },
+    {
+      "app_id": "glances",
+      "findings": [
+        {
+          "severity": "info",
+          "code": "docker-sock-mount",
+          "path": "services.glances.volumes",
+          "message": "Mounts the container runtime socket. v0.12 ships /var/run/docker.sock as a symlink to the Podman rootful socket; verify Docker-API consumers work against Podman's compat endpoint."
+        }
+      ]
+    },
+    {
+      "app_id": "homarr-1",
+      "findings": [
+        {
+          "severity": "info",
+          "code": "docker-sock-mount",
+          "path": "services.homarr-1.volumes",
+          "message": "Mounts the container runtime socket. v0.12 ships /var/run/docker.sock as a symlink to the Podman rootful socket; verify Docker-API consumers work against Podman's compat endpoint."
+        }
+      ]
+    },
+    {
+      "app_id": "homebridge",
+      "findings": [
+        {
+          "severity": "info",
+          "code": "needs-rootful",
+          "path": "services.homebridge.privileged",
+          "message": "`privileged: true` requires the rootful Podman socket; v0.12 ships rootful by default so this is supported."
+        },
+        {
+          "severity": "warning",
+          "code": "network-host",
+          "path": "services.homebridge.network_mode",
+          "message": "network_mode: host shares the host namespace; verify the app's ports do not collide with WebCasa (39921), Caddy (80/443), or other installed services."
+        }
+      ]
+    },
+    {
+      "app_id": "invoice-ninja",
+      "findings": [
+        {
+          "severity": "info",
+          "code": "dep-completed-condition",
+          "path": "services.invoice-ninja-db.depends_on.invoice-ninja-init",
+          "message": "depends_on condition: service_completed_successfully may behave subtly differently under podman-compose; verify init-container patterns work as expected."
+        }
+      ]
+    },
+    {
+      "app_id": "kasm-workspaces",
+      "findings": [
+        {
+          "severity": "info",
+          "code": "needs-rootful",
+          "path": "services.kasm-workspaces.privileged",
+          "message": "`privileged: true` requires the rootful Podman socket; v0.12 ships rootful by default so this is supported."
+        }
+      ]
+    },
+    {
+      "app_id": "matter-server",
+      "findings": [
+        {
+          "severity": "warning",
+          "code": "network-host",
+          "path": "services.matter-server.network_mode",
+          "message": "network_mode: host shares the host namespace; verify the app's ports do not collide with WebCasa (39921), Caddy (80/443), or other installed services."
+        }
+      ]
+    },
+    {
+      "app_id": "mdns-repeater",
+      "findings": [
+        {
+          "severity": "warning",
+          "code": "network-host",
+          "path": "services.mdns-repeater.network_mode",
+          "message": "network_mode: host shares the host namespace; verify the app's ports do not collide with WebCasa (39921), Caddy (80/443), or other installed services."
+        }
+      ]
+    },
+    {
+      "app_id": "n8n-1",
+      "findings": [
+        {
+          "severity": "info",
+          "code": "dep-completed-condition",
+          "path": "services.n8n-1.depends_on.n8n-init",
+          "message": "depends_on condition: service_completed_successfully may behave subtly differently under podman-compose; verify init-container patterns work as expected."
+        }
+      ]
+    },
+    {
+      "app_id": "n8n-2",
+      "findings": [
+        {
+          "severity": "info",
+          "code": "dep-completed-condition",
+          "path": "services.n8n-2.depends_on.n8n-init",
+          "message": "depends_on condition: service_completed_successfully may behave subtly differently under podman-compose; verify init-container patterns work as expected."
+        }
+      ]
+    },
+    {
+      "app_id": "netdata",
+      "findings": [
+        {
+          "severity": "info",
+          "code": "elevated-caps",
+          "path": "services.netdata.cap_add",
+          "message": "Elevated capabilities (SYS_ADMIN/NET_ADMIN/ALL) require rootful Podman; supported in v0.12 by default."
+        },
+        {
+          "severity": "info",
+          "code": "docker-sock-mount",
+          "path": "services.netdata.volumes",
+          "message": "Mounts the container runtime socket. v0.12 ships /var/run/docker.sock as a symlink to the Podman rootful socket; verify Docker-API consumers work against Podman's compat endpoint."
+        }
+      ]
+    },
+    {
+      "app_id": "ollama-amd",
+      "findings": [
+        {
+          "severity": "info",
+          "code": "device-passthrough",
+          "path": "services.ollama-amd.devices",
+          "message": "Maps host device(s) into the container. Verify the device node exists on the target host and that the `webcasa`/`podman` group has read/write access (udev rules for /dev/ttyUSB*, /dev/net/tun, etc.)."
+        }
+      ]
+    },
+    {
+      "app_id": "ollama-nvidia",
+      "findings": [
+        {
+          "severity": "warning",
+          "code": "gpu-reservation-ignored",
+          "path": "services.ollama-nvidia.deploy.resources.reservations.devices",
+          "message": "deploy.resources.reservations.devices is ignored by podman-compose; GPU/accelerator passthrough requires Podman CDI (`--device nvidia.com/gpu=all`) instead."
+        }
+      ]
+    },
+    {
+      "app_id": "onedev",
+      "findings": [
+        {
+          "severity": "info",
+          "code": "docker-sock-mount",
+          "path": "services.onedev.volumes",
+          "message": "Mounts the container runtime socket. v0.12 ships /var/run/docker.sock as a symlink to the Podman rootful socket; verify Docker-API consumers work against Podman's compat endpoint."
+        }
+      ]
+    },
+    {
+      "app_id": "pihole",
+      "findings": [
+        {
+          "severity": "info",
+          "code": "elevated-caps",
+          "path": "services.pihole.cap_add",
+          "message": "Elevated capabilities (SYS_ADMIN/NET_ADMIN/ALL) require rootful Podman; supported in v0.12 by default."
+        }
+      ]
+    },
+    {
+      "app_id": "plex",
+      "findings": [
+        {
+          "severity": "warning",
+          "code": "network-host",
+          "path": "services.plex.network_mode",
+          "message": "network_mode: host shares the host namespace; verify the app's ports do not collide with WebCasa (39921), Caddy (80/443), or other installed services."
+        }
+      ]
+    },
+    {
+      "app_id": "portainer",
+      "findings": [
+        {
+          "severity": "info",
+          "code": "docker-sock-mount",
+          "path": "services.portainer.volumes",
+          "message": "Mounts the container runtime socket. v0.12 ships /var/run/docker.sock as a symlink to the Podman rootful socket; verify Docker-API consumers work against Podman's compat endpoint."
+        }
+      ]
+    },
+    {
+      "app_id": "scrypted",
+      "findings": [
+        {
+          "severity": "info",
+          "code": "needs-rootful",
+          "path": "services.scrypted.privileged",
+          "message": "`privileged: true` requires the rootful Podman socket; v0.12 ships rootful by default so this is supported."
+        },
+        {
+          "severity": "warning",
+          "code": "network-host",
+          "path": "services.scrypted.network_mode",
+          "message": "network_mode: host shares the host namespace; verify the app's ports do not collide with WebCasa (39921), Caddy (80/443), or other installed services."
+        },
+        {
+          "severity": "info",
+          "code": "device-passthrough",
+          "path": "services.scrypted.devices",
+          "message": "Maps host device(s) into the container. Verify the device node exists on the target host and that the `webcasa`/`podman` group has read/write access (udev rules for /dev/ttyUSB*, /dev/net/tun, etc.)."
+        }
+      ]
+    },
+    {
+      "app_id": "sshwifty",
+      "findings": [
+        {
+          "severity": "info",
+          "code": "needs-rootful",
+          "path": "services.sshwifty.privileged",
+          "message": "`privileged: true` requires the rootful Podman socket; v0.12 ships rootful by default so this is supported."
+        }
+      ]
+    },
+    {
+      "app_id": "stirling-pdf",
+      "findings": [
+        {
+          "severity": "info",
+          "code": "needs-rootful",
+          "path": "services.stirling-pdf.privileged",
+          "message": "`privileged: true` requires the rootful Podman socket; v0.12 ships rootful by default so this is supported."
+        }
+      ]
+    },
+    {
+      "app_id": "transmission-vpn",
+      "findings": [
+        {
+          "severity": "info",
+          "code": "elevated-caps",
+          "path": "services.transmission-vpn.cap_add",
+          "message": "Elevated capabilities (SYS_ADMIN/NET_ADMIN/ALL) require rootful Podman; supported in v0.12 by default."
+        },
+        {
+          "severity": "info",
+          "code": "device-passthrough",
+          "path": "services.transmission-vpn.devices",
+          "message": "Maps host device(s) into the container. Verify the device node exists on the target host and that the `webcasa`/`podman` group has read/write access (udev rules for /dev/ttyUSB*, /dev/net/tun, etc.)."
+        }
+      ]
+    },
+    {
+      "app_id": "unmanic",
+      "findings": [
+        {
+          "severity": "info",
+          "code": "needs-rootful",
+          "path": "services.unmanic.privileged",
+          "message": "`privileged: true` requires the rootful Podman socket; v0.12 ships rootful by default so this is supported."
+        }
+      ]
+    },
+    {
+      "app_id": "uptime-kuma",
+      "findings": [
+        {
+          "severity": "info",
+          "code": "docker-sock-mount",
+          "path": "services.uptime-kuma.volumes",
+          "message": "Mounts the container runtime socket. v0.12 ships /var/run/docker.sock as a symlink to the Podman rootful socket; verify Docker-API consumers work against Podman's compat endpoint."
+        }
+      ]
+    },
+    {
+      "app_id": "wg-easy",
+      "findings": [
+        {
+          "severity": "info",
+          "code": "elevated-caps",
+          "path": "services.wg-easy.cap_add",
+          "message": "Elevated capabilities (SYS_ADMIN/NET_ADMIN/ALL) require rootful Podman; supported in v0.12 by default."
+        }
+      ]
+    },
+    {
+      "app_id": "windows",
+      "findings": [
+        {
+          "severity": "info",
+          "code": "elevated-caps",
+          "path": "services.windows.cap_add",
+          "message": "Elevated capabilities (SYS_ADMIN/NET_ADMIN/ALL) require rootful Podman; supported in v0.12 by default."
+        },
+        {
+          "severity": "info",
+          "code": "device-passthrough",
+          "path": "services.windows.devices",
+          "message": "Maps host device(s) into the container. Verify the device node exists on the target host and that the `webcasa`/`podman` group has read/write access (udev rules for /dev/ttyUSB*, /dev/net/tun, etc.)."
+        }
+      ]
+    },
+    {
+      "app_id": "zerotier",
+      "findings": [
+        {
+          "severity": "info",
+          "code": "elevated-caps",
+          "path": "services.zerotier.cap_add",
+          "message": "Elevated capabilities (SYS_ADMIN/NET_ADMIN/ALL) require rootful Podman; supported in v0.12 by default."
+        },
+        {
+          "severity": "warning",
+          "code": "network-host",
+          "path": "services.zerotier.network_mode",
+          "message": "network_mode: host shares the host namespace; verify the app's ports do not collide with WebCasa (39921), Caddy (80/443), or other installed services."
+        },
+        {
+          "severity": "info",
+          "code": "device-passthrough",
+          "path": "services.zerotier.devices",
+          "message": "Maps host device(s) into the container. Verify the device node exists on the target host and that the `webcasa`/`podman` group has read/write access (udev rules for /dev/ttyUSB*, /dev/net/tun, etc.)."
+        }
+      ]
+    },
+    {
+      "app_id": "zigbee2mqtt",
+      "findings": [
+        {
+          "severity": "info",
+          "code": "device-passthrough",
+          "path": "services.zigbee2mqtt.devices",
+          "message": "Maps host device(s) into the container. Verify the device node exists on the target host and that the `webcasa`/`podman` group has read/write access (udev rules for /dev/ttyUSB*, /dev/net/tun, etc.)."
+        }
+      ]
+    }
+  ]
+}
