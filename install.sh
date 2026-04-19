@@ -405,10 +405,18 @@ SOCKCONF
     # everywhere) is rejected with "short-name resolution enforced but cannot
     # prompt without a TTY" in any non-interactive context. WebCasa installs
     # apps via SSE/CLI, never with a TTY attached, so without this drop-in
-    # the entire app-store breaks. Drop file (not main config) so we don't
-    # collide with admin overrides; alphabetical 000- prefix wins.
+    # the entire app-store breaks.
+    #
+    # Drop file (not main config) so we don't collide with admin overrides.
+    # Per containers-registries.conf.d(5), drop-ins load alphabetically and
+    # LATER files override earlier ones ("last wins") — so we pick the
+    # highest-priority name (999-*) to survive any future system package
+    # that installs its own 100-*.conf / 500-*.conf.
     install -d -m 755 /etc/containers/registries.conf.d
-    cat > /etc/containers/registries.conf.d/000-webcasa-shortnames.conf <<'REGCONF'
+    # Remove the earlier (pre-v0.12.0 beta) 000- prefix if present — it
+    # was backwards-ordered and could be silently overridden.
+    rm -f /etc/containers/registries.conf.d/000-webcasa-shortnames.conf
+    cat > /etc/containers/registries.conf.d/999-webcasa-shortnames.conf <<'REGCONF'
 # Added by WebCasa install.sh — let app-store compose files reference
 # images by short name (e.g. portainer/portainer-ce:tag) without an
 # explicit docker.io/ prefix. Resolves to docker.io.

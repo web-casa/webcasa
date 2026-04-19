@@ -167,12 +167,29 @@ def sanitize_compose(text: str) -> str:
 
 
 def _inject_socket_label_disable(content: str) -> str:
+    """Mirror renderer.go injectSocketLabelDisable with indent-agnostic
+    service detection and smart merge into an existing security_opt: block.
+    """
     lines = content.split("\n")
     services_indent = -1
     services: list[dict] = []
     cur: dict | None = None
     in_volumes = False
     vol_indent = -1
+    in_sec_opt = False
+
+    def is_service_header(trimmed: str, indent: int) -> bool:
+        if services_indent < 0 or indent <= services_indent:
+            return False
+        code = trimmed.split("#", 1)[0].strip()
+        if not code.endswith(":"):
+            return False
+        key = code[:-1]
+        if not key or any(c.isspace() for c in key):
+            return False
+        if cur is not None and indent != cur["indent"]:
+            return False
+        return True
 
     for i, line in enumerate(lines):
         trimmed = line.strip()
@@ -184,18 +201,20 @@ def _inject_socket_label_disable(content: str) -> str:
         if services_indent < 0:
             continue
 
-        is_service_header = (
-            indent == services_indent + 2
-            and trimmed.endswith(":")
-            and " " not in trimmed
-        )
-        if is_service_header:
+        if is_service_header(trimmed, indent):
             if cur is not None:
                 cur["end"] = i - 1
                 services.append(cur)
-            cur = {"start": i, "indent": indent, "mounts_sock": False}
+            cur = {
+                "start": i, "indent": indent,
+                "mounts_sock": False,
+                "sec_opt_index": -1, "sec_opt_indent": -1,
+                "sec_opt_list_item_indent": -1,
+                "has_label_disable": False,
+            }
             in_volumes = False
             vol_indent = -1
+            in_sec_opt = False
             continue
 
         if cur is not None and trimmed and not trimmed.startswith("#") and indent <= services_indent:
@@ -205,15 +224,35 @@ def _inject_socket_label_disable(content: str) -> str:
             services_indent = -1
             continue
 
-        if cur is not None and trimmed == "volumes:" and indent == cur["indent"] + 2:
+        if cur is None:
+            continue
+
+        if trimmed == "volumes:":
             in_volumes = True
             vol_indent = indent
+            in_sec_opt = False
             continue
         if in_volumes and trimmed and indent <= vol_indent:
             in_volumes = False
-        if in_volumes and cur is not None:
+        if in_volumes:
             if "docker.sock" in trimmed or "podman.sock" in trimmed:
                 cur["mounts_sock"] = True
+
+        if trimmed == "security_opt:":
+            cur["sec_opt_index"] = i
+            cur["sec_opt_indent"] = indent
+            in_sec_opt = True
+            in_volumes = False
+            continue
+        if in_sec_opt:
+            if trimmed and indent <= cur["sec_opt_indent"]:
+                in_sec_opt = False
+            elif trimmed.startswith("- "):
+                if cur["sec_opt_list_item_indent"] < 0:
+                    cur["sec_opt_list_item_indent"] = indent
+                item = trimmed.removeprefix("- ").strip().strip("\"'")
+                if item == "label=disable":
+                    cur["has_label_disable"] = True
 
     if cur is not None:
         cur["end"] = len(lines) - 1
@@ -221,22 +260,18 @@ def _inject_socket_label_disable(content: str) -> str:
 
     inserts: list[tuple[int, str]] = []
     for s in services:
-        if not s["mounts_sock"]:
+        if not s["mounts_sock"] or s["has_label_disable"]:
             continue
-        already = False
-        has_secopt = False
-        for j in range(s["start"] + 1, s["end"] + 1):
-            t = lines[j].strip()
-            if t == "security_opt:":
-                has_secopt = True
-            if has_secopt and t in ("- label=disable", '- "label=disable"', "- 'label=disable'"):
-                already = True
-                break
-        if already:
-            continue
-        body_indent = " " * (s["indent"] + 2)
-        list_indent = " " * (s["indent"] + 4)
-        inserts.append((s["start"] + 1, f"{body_indent}security_opt:\n{list_indent}- label=disable"))
+        if s["sec_opt_index"] >= 0:
+            list_indent = s["sec_opt_list_item_indent"]
+            if list_indent < 0:
+                list_indent = s["sec_opt_indent"] + 2
+            inserts.append((s["sec_opt_index"] + 1, " " * list_indent + "- label=disable"))
+        else:
+            body_indent = " " * (s["indent"] + 2)
+            list_indent_str = " " * (s["indent"] + 4)
+            inserts.append((s["start"] + 1,
+                            f"{body_indent}security_opt:\n{list_indent_str}- label=disable"))
 
     if not inserts:
         return content
@@ -251,21 +286,33 @@ def _relabel_host_bind(line: str, in_volumes: bool) -> str:
     trimmed = line.strip()
     if not trimmed.startswith("- "):
         return line
-    stripped = trimmed.removeprefix("- ").strip("\"'")
+    stripped = trimmed.removeprefix("- ")
+
+    # Preserve quote state — see relabelHostBindMount in renderer.go for
+    # rationale (Codex Critical: naive strip + append produced
+    # `- "host:container":Z` which is invalid YAML).
+    quote = ""
+    if len(stripped) >= 2 and stripped[0] == stripped[-1] and stripped[0] in ("'", '"'):
+        quote = stripped[0]
+        stripped = stripped[1:-1]
+
     parts = stripped.split(":")
     if len(parts) < 2:
         return line
     host = parts[0]
     if not (host.startswith("/") or host.startswith("${")):
-        return line  # named volume
+        return line
     if "docker.sock" in host or "podman.sock" in host:
-        return line  # relabel breaks the socket
-    # Pseudo-fs / device nodes — Podman refuses to relabel these.
+        return line
     for prefix in ("/dev", "/sys", "/proc", "/run/udev"):
         if host == prefix or host.startswith(prefix + "/"):
             return line
     if parts[-1] in ("Z", "z", "ro", "rw"):
-        return line  # already suffixed
+        return line
+
+    prefix_str = line[: len(line) - len(trimmed)] + "- "
+    if quote:
+        return f"{prefix_str}{quote}{stripped}:Z{quote}"
     return line + ":Z"
 
 
@@ -430,15 +477,16 @@ def run_one(app_id: str, app: dict, timeout_s: int, keep: bool, port: int) -> Re
             # (transmission-vpn, kasm-workspaces) sometimes pass through
             # a brief Created → starting transition that the snapshot
             # missed, producing a false FAIL on a container that was
-            # actually fine. Poll for up to ~10s instead, exiting as
-            # soon as we see Running. Healthcheck-readiness still isn't
-            # part of the bar — the audit already flagged GPU/network/
-            # etc quirks, all we need here is "container actually
-            # started and is staying up".
+            # actually fine. Poll until the per-app deadline — earlier
+            # versions hardcoded 10s, which would record FAIL for slow
+            # but eventually-healthy apps. Respect the budget the user
+            # actually asked for, floor at 8s so short --timeout values
+            # still get a meaningful readiness window.
+            deadline = start + max(timeout_s, 8)
             running = False
             ps_stdout = ""
             ps_stderr = ""
-            for _ in range(10):
+            while time.monotonic() < deadline:
                 time.sleep(1)
                 ps = subprocess.run(
                     base + ["ps", "--format", "json"],
