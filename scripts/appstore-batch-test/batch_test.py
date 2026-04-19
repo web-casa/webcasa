@@ -46,9 +46,10 @@ DEFAULT_APPS = [
     # docker.sock mount (8)
     "portainer", "dockge", "dozzle", "uptime-kuma", "crowdsec", "cup",
     "beszel-agent", "homarr-1",
-    # rootful/privileged (8)
-    "dashdot", "gladys", "homebridge", "kasm-workspaces", "scrypted",
-    "sshwifty", "stirling-pdf", "unmanic",
+    # rootful/privileged (6 — sshwifty + scrypted removed in v0.12.1
+    # because upstream image tags were deleted from docker.io)
+    "dashdot", "gladys", "homebridge", "kasm-workspaces",
+    "stirling-pdf", "unmanic",
     # network_mode: host (4 new vs above)
     "cloudflared", "matter-server", "mdns-repeater", "plex",
     # cap_add (4)
@@ -337,9 +338,13 @@ def _clean_empty_section(content: str, section_key: str) -> str:
                     has_content = True
                 break
             if not has_content:
-                # Skip the section header. Children (if any blank/comment) get
-                # carried through naturally because we just continue.
-                i += 1
+                # Skip the section header AND all its blank/comment children
+                # in one jump — mirrors the Go `i = j` behaviour so the two
+                # implementations produce byte-identical output. Earlier
+                # Python version used `i += 1` which left the blank/comment
+                # children in place, causing a small corpus drift between
+                # what the harness rendered and what production rendered.
+                i = j
                 continue
         out.append(lines[i])
         i += 1

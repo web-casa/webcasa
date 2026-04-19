@@ -303,9 +303,10 @@ findings histogram:
 
 ### 已知 catalog 缺陷
 
-- `sshwifty` (seed pin `niruix/sshwifty:0.4.3`) — 上游镜像消失。Phase 6 候选。
-- `scrypted` (seed pin `koush/scrypted:20`) — 上游镜像消失。Phase 6 候选。
-- 两者都是 catalog seed 维护问题，与 Podman 迁移无关；Docker 也会同样失败。
+**v0.12.1 已处理**：`sshwifty` 和 `scrypted` 两个 app 上游 docker.io 镜像
+tag 已被删除，经用户决策在 v0.12.1 **从 seed 中移除**（267 apps remaining）。
+新版 `compose-audit.py --check-images` 可选开启 skopeo 预检，防止未来
+再次积压这类 finding。
 
 ### 实测执行步骤 (per-app)
 
