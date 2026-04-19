@@ -6,6 +6,71 @@
 
 ---
 
+## [0.13.0] - 2026-04-19
+
+### Podman refinements: Nixpacks UI + SELinux preview + shim future plan
+
+Three small, independent epics delivered alongside the v0.12.1 patch
+cycle. No breaking changes — default install behaviour is identical
+to v0.12.1 unless you opt in.
+
+#### Epic 1 — webcasa_t SELinux policy (preview, opt-in)
+
+New `policy/webcasa.te` + `webcasa.fc` + pre-built `webcasa.pp`
+(committed) narrow the service domain from `unconfined_service_t` to
+a dedicated `webcasa_t` with explicit allow rules for reading
+`/etc/webcasa`, writing `/var/lib/webcasa` + `/var/log/webcasa`,
+connecting `/run/podman/podman.sock`, binding `http_port_t`, and
+executing allow-listed CLIs (`podman` / `podman-compose` / `caddy` /
+`kopia` / `docker` shim).
+
+**Status: opt-in preview**. VPS validation revealed that exec'd
+children (caddy, curl, podman CLI) inherit `webcasa_t` and hit
+additional rules not covered in this baseline. Rather than ship a
+broken default, `install.sh` only installs the policy when
+`ENABLE_SELINUX_POLICY=1` is set. Default v0.13.0 installs stay on
+`unconfined_service_t` (identical to v0.12). Opt-in users help size
+the ruleset for a v0.14 default.
+
+See `policy/README.md` and `docs/selinux.md` for activation + AVC
+reporting instructions.
+
+#### Epic 2 — `podman-docker` shim future assessment
+
+New `docs/08-podman-docker-shim-future.md` surveys all 39 `docker` CLI
+call sites across 10 files and concludes: **do not migrate off the
+shim in v0.13/v0.14**. Shim is internal implementation detail, users
+see zero difference, Podman community maintains `podman-docker`
+long-term. Explicit trigger list documents when to revisit.
+
+Two legacy-only `case RuntimeDocker` paths in `daemon.go` and
+`runtime.go` now carry comments pointing at the decision doc.
+
+#### Epic 3 — Nixpacks (and Paketo / Railpack / Static) in the UI
+
+The backend multi-builder support has been in the codebase since
+before v0.12 (`plugins/deploy/builders/`), but the Project Create
+form silently defaulted to `""` (legacy dockerfile). The Docker
+deploy-mode section now shows a **Build Type** dropdown:
+
+- **Auto-detect** (default) — Dockerfile if present, else Nixpacks
+- **Dockerfile** — the project's Dockerfile
+- **Nixpacks** — language auto-detection + build (requires `nixpacks` CLI)
+- **Paketo Buildpacks** — cloud-native Buildpacks via `pack`
+- **Railpack** — Railway's builder
+- **Static Files (Nginx)** — for HTML-only projects
+
+Each option carries an i18n hint explaining the host-side CLI
+requirement and installer command. No runtime changes — the backend
+already understood all of these.
+
+#### Version bumps
+- `VERSION`                       `0.12.1` → `0.13.0`
+- `web/package.json`              `0.12.1` → `0.13.0`
+- Binary reports `WebCasa v0.13.0`
+
+---
+
 ## [0.12.1] - 2026-04-19
 
 ### Patch release — Tier 1 cleanup
