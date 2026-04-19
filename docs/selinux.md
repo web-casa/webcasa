@@ -52,8 +52,8 @@ Web.Casa v0.12 在 SELinux 下涉及以下 type：
 | `/var/lib/webcasa/stacks/*` app 数据 | `container_file_t` | install.sh（挂 volume 时）|
 | `/etc/webcasa/` 配置 | `etc_t` | install.sh |
 | `/var/log/webcasa/` 日志 | `var_log_t` | install.sh |
-| `/run/podman/podman.sock` | `container_var_run_t` | podman RPM |
-| `/var/run/docker.sock` (symlink) | 继承 target | install.sh `ln -sf` |
+| `/run/podman/podman.sock` | `var_run_t` (RPM 默认；不是 `container_var_run_t`) | podman RPM |
+| `/var/run/docker.sock` (symlink) | 继承 target — `var_run_t` | install.sh `ln -sf` |
 | webcasa 进程运行时 | `unconfined_service_t` 或自定义 `webcasa_t` | systemd + policy |
 
 查一个具体文件的标签：
@@ -74,7 +74,7 @@ v0.12 install.sh 在 SELinux enforcing 主机上自动：
 
 1. **不关闭 SELinux**。之前某些面板的做法是 `setenforce 0` — 我们**明确拒绝**这样做，SELinux 是发行版的默认安全层，关掉会让整机所有服务都降级。
 2. 创建 `/var/lib/webcasa/` 等目录后**不手动 `chcon`**。默认 `var_lib_t` 标签足够，WebCasa 不跑有 SELinux 特殊要求的行为。
-3. 让 `webcasa` 用户加入 `podman` 组，**靠 DAC 权限**（`/run/podman/podman.sock` 是 `srw-rw----. root podman`）访问 socket，SELinux 这边 container_var_run_t 对普通进程是 read/write allowed。
+3. 让 `webcasa` 用户加入 `podman` 组，**靠 DAC 权限**（`/run/podman/podman.sock` 是 `srw-rw----. root podman`）访问 socket。SELinux 层面：webcasa 进程跑在 `unconfined_service_t` 域（systemd 默认 service 域），对 `var_run_t` socket 的访问默认放行。**注意**：socket 的 SELinux type 是 `var_run_t`（不是早期文档误写的 `container_var_run_t`），可以用 `ls -laZ /run/podman/podman.sock` 验证。
 4. 不写自定义 SELinux policy module。WebCasa 的所有行为（HTTP 服务、读 SQLite、启动 podman CLI、读日志文件）都能用 `unconfined_service_t` 默认策略覆盖。
 
 结果：**默认安装零 SELinux 摩擦**。
@@ -182,7 +182,49 @@ sudo semodule -i caddy-binds.pp
 `name_bind`。v0.12 install.sh 给 Caddy 二进制打了 setcap，是为了支持以非 root
 启动的场景 — 不是 SELinux 解法。
 
-### 场景 4：重装 / 恢复备份后 `/run/podman/podman.sock` 连不上
+### 场景 4：app-store 容器挂 docker.sock 但报"can't connect to docker"
+
+**症状**：portainer/dockge/dozzle 等挂 `/var/run/docker.sock` 的应用启动后立刻
+fatal，日志典型如：
+
+```
+{"level":"fatal","message":"Could not connect to any Docker Engine"}
+```
+
+`podman exec` 或宿主上 `curl --unix-socket /run/podman/podman.sock http://d/_ping`
+工作正常，证实 socket 本身是好的 —— 问题在容器内 `container_t` 域无法跨 SELinux
+策略边界访问宿主 `var_run_t` 的 socket。
+
+**v0.12 默认修法**：install.sh 启用了 `container_manage_cgroup` boolean，绝大多数
+情况下放行：
+
+```bash
+sudo getsebool container_manage_cgroup
+# container_manage_cgroup --> on
+```
+
+如果你重装 / 恢复备份后这个 boolean 被还原成 off，重新打开：
+
+```bash
+sudo setsebool -P container_manage_cgroup on
+```
+
+**仍然不行的场景** 给问题容器加 `--security-opt label=disable`：
+
+```yaml
+services:
+  portainer:
+    image: portainer/portainer-ce:2.39
+    security_opt:
+      - label=disable
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+```
+
+代价：该容器完全跳过 SELinux 标签隔离（其他容器仍受策略保护）。可以接受 —
+docker.sock-mount 类应用本来就是有 root 等价的"管理类"容器。
+
+### 场景 5：重装 / 恢复备份后 `/run/podman/podman.sock` 连不上
 
 **症状**：WebCasa 报 `connect: permission denied`，但 `webcasa` 用户在 `podman` 组里、DAC 看着没问题。
 
