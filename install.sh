@@ -399,6 +399,38 @@ SOCKCONF
     install -d -m 755 /etc/containers
     : > /etc/containers/nodocker
 
+    # Short-name resolution: EL9/EL10 ship `short-name-mode = enforcing` by
+    # default, which means a compose file referencing `portainer/portainer-ce`
+    # (no registry prefix — the Tipi catalogue WebCasa imports uses these
+    # everywhere) is rejected with "short-name resolution enforced but cannot
+    # prompt without a TTY" in any non-interactive context. WebCasa installs
+    # apps via SSE/CLI, never with a TTY attached, so without this drop-in
+    # the entire app-store breaks. Drop file (not main config) so we don't
+    # collide with admin overrides; alphabetical 000- prefix wins.
+    install -d -m 755 /etc/containers/registries.conf.d
+    cat > /etc/containers/registries.conf.d/000-webcasa-shortnames.conf <<'REGCONF'
+# Added by WebCasa install.sh — let app-store compose files reference
+# images by short name (e.g. portainer/portainer-ce:tag) without an
+# explicit docker.io/ prefix. Resolves to docker.io.
+unqualified-search-registries = ['docker.io']
+short-name-mode = 'permissive'
+REGCONF
+
+    # SELinux boolean: app-store containers that bind-mount the Podman
+    # socket (portainer, dockge, dozzle, uptime-kuma, crowdsec, cup,
+    # beszel-agent, homarr-1) need container_t to communicate with the
+    # podman var_run socket. Default policy denies this; turning on
+    # `container_manage_cgroup` is the closest off-the-shelf boolean
+    # that grants the necessary access without writing a custom policy
+    # module. -P makes it persist across reboots.
+    if command -v setsebool &>/dev/null; then
+        # Best-effort: silently noop on hosts where SELinux is disabled
+        # (the boolean still gets recorded but has no effect). Don't
+        # fatal — install.sh must succeed on permissive/disabled SELinux.
+        setsebool -P container_manage_cgroup on 2>/dev/null || \
+            warn "setsebool container_manage_cgroup failed; docker.sock-mounting apps may need '--security-opt label=disable' (see docs/selinux.md)"
+    fi
+
     # Container-install detection: install.sh is exercised inside a plain
     # Docker container by scripts/test-install.sh (no PID 1 = systemd, no
     # /run/systemd/system). In that case skip every systemctl call — the

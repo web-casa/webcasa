@@ -98,15 +98,170 @@ def compose_tool() -> list[str]:
     return ["docker", "compose"]
 
 
-def run_one(app_id: str, compose_body: str, timeout_s: int, keep: bool) -> Result:
+def sanitize_compose(text: str) -> str:
+    """Port of plugins/appstore/renderer.go:SanitizeCompose.
+
+    The seed compose files came from the Tipi catalogue and reference an
+    `external: tipi_main_network` plus `traefik.*` / `runtipi.*` labels that
+    only make sense in a Tipi runtime. WebCasa's renderer strips them at
+    install time; we mirror the same logic here so the harness exercises
+    what an actual WebCasa install would produce, not the raw catalogue
+    data. Keep this in sync with the Go implementation.
+    """
+    out: list[str] = []
+    skip_top_network = False
+
+    for line in text.splitlines():
+        trimmed = line.strip()
+
+        # Strip traefik.* / runtipi.* labels in both mapping and list forms.
+        if trimmed.startswith(("traefik.", "runtipi.")):
+            continue
+        stripped = trimmed.removeprefix("- ").strip("\"'")
+        if stripped.startswith(("traefik.", "runtipi.")):
+            continue
+
+        # Service-level network reference.
+        if trimmed in ("- tipi_main_network", "- tipi-main-network"):
+            continue
+
+        # Top-level networks block — once we see "tipi_main_network:" at
+        # the network-key indent, swallow all of its child indented lines.
+        if skip_top_network:
+            if line.startswith(("  ", "\t")):
+                continue
+            skip_top_network = False
+        if trimmed in ("tipi_main_network:", "tipi-main-network:"):
+            skip_top_network = True
+            continue
+
+        out.append(line)
+
+    result = "\n".join(out)
+    # Drop empty `networks:` / `labels:` sections that the strips above leave
+    # behind. podman-compose 1.5 fails parse on bare `networks:` with no
+    # children, so we have to do this — matches Go cleanEmptySection.
+    result = _clean_empty_section(result, "networks:")
+    result = _clean_empty_section(result, "labels:")
+    return result
+
+
+def _clean_empty_section(content: str, section_key: str) -> str:
+    """Remove a YAML section whose only child lines are blank/comments."""
+    lines = content.split("\n")
+    out: list[str] = []
+    i = 0
+    while i < len(lines):
+        trimmed = lines[i].strip()
+        if trimmed == section_key:
+            indent = len(lines[i]) - len(lines[i].lstrip(" \t"))
+            j = i + 1
+            has_content = False
+            while j < len(lines):
+                child_trimmed = lines[j].strip()
+                if child_trimmed == "" or child_trimmed.startswith("#"):
+                    j += 1
+                    continue
+                child_indent = len(lines[j]) - len(lines[j].lstrip(" \t"))
+                if child_indent > indent:
+                    has_content = True
+                break
+            if not has_content:
+                # Skip the section header. Children (if any blank/comment) get
+                # carried through naturally because we just continue.
+                i += 1
+                continue
+        out.append(lines[i])
+        i += 1
+    return "\n".join(out)
+
+
+def default_env_for(app: dict, data_dir: Path, host_port: int) -> dict[str, str]:
+    """Build the env-var map a fresh WebCasa install would inject.
+
+    Mirrors the builtins set in plugins/appstore/renderer.go:RenderCompose:
+    APP_PORT, APP_DATA_DIR, APP_DOMAIN, APP_PROTOCOL, plus a few extras
+    that some Tipi seeds reference (LOCAL_DOMAIN). For form_fields we use
+    each field's `default` so the harness doesn't need an interactive UI.
+    """
+    env = {
+        "APP_PORT": str(host_port),
+        "APP_ID": app.get("app_id", "test"),
+        "APP_DATA_DIR": str(data_dir),
+        "APP_DOMAIN": "localhost",
+        "APP_PROTOCOL": "http",
+        "LOCAL_DOMAIN": "local",
+        "ROOT_FOLDER_HOST": str(data_dir),  # some seeds use this
+        "STORAGE_PATH": str(data_dir),      # some seeds use this
+    }
+    # form_fields defaults — a real install would prompt the user; we use
+    # whatever the catalogue authors marked as default so the smoke test
+    # has a chance of bringing the app up. The seed stores form_fields
+    # either as a list of dicts (newer entries) OR as a JSON-encoded
+    # string (older Tipi imports). Decode the string form lazily so we
+    # don't choke either way.
+    fields = app.get("form_fields") or []
+    if isinstance(fields, str):
+        try:
+            fields = json.loads(fields)
+        except json.JSONDecodeError:
+            fields = []
+    if not isinstance(fields, list):
+        fields = []
+    for field in fields:
+        if not isinstance(field, dict):
+            continue
+        key = field.get("env_variable")
+        if not key or key in env:
+            continue
+        if "default" in field and field["default"] is not None:
+            env[key] = str(field["default"])
+        elif field.get("type") == "random":
+            # crude — real renderer uses crypto random; smoke test can use
+            # a fixed marker so failure logs are deterministic.
+            env[key] = "smoketest_random_placeholder"
+    return env
+
+
+def run_one(app_id: str, app: dict, timeout_s: int, keep: bool, port: int) -> Result:
     """Bring an app up, verify at least one container entered Running,
     then bring it down. Returns a Result dataclass regardless of outcome."""
     start = time.monotonic()
     tool = compose_tool()
 
+    compose_body = sanitize_compose(app.get("compose_file", ""))
+    if not compose_body.strip():
+        return Result(
+            app_id=app_id, status="skipped",
+            duration_s=0.0, error="empty compose after sanitize",
+        )
+
     with tempfile.TemporaryDirectory(prefix=f"webcasa-batch-{app_id}-") as tmp:
-        compose_path = Path(tmp) / "docker-compose.yml"
+        tmp_path = Path(tmp)
+        compose_path = tmp_path / "docker-compose.yml"
         compose_path.write_text(compose_body, encoding="utf-8")
+
+        # Per-app data dir for volume mounts. Real WebCasa install puts these
+        # under /var/lib/webcasa/stacks/<app>/data; mirror the layout so
+        # the relative paths in compose volumes resolve sanely.
+        data_dir = tmp_path / "data"
+        data_dir.mkdir(exist_ok=True)
+        # SELinux relabel so the container's container_t domain can write
+        # to this host path — same gotcha covered in docs/selinux.md
+        # Scenario 1. Best-effort: fails silently on hosts without SELinux
+        # tooling (e.g. CI inside a non-EL container). When SELinux is
+        # actually enforcing this is what makes the bind mounts work.
+        subprocess.run(
+            ["chcon", "-R", "-t", "container_file_t", str(data_dir)],
+            capture_output=True, timeout=10, check=False,
+        )
+
+        env_vars = default_env_for(app, data_dir, port)
+        env_path = tmp_path / ".env"
+        env_path.write_text(
+            "\n".join(f"{k}={v}" for k, v in env_vars.items()) + "\n",
+            encoding="utf-8",
+        )
 
         # podman-compose writes state under --project-directory, so pin it
         # to the tmp dir for easy cleanup on failure.
@@ -291,7 +446,10 @@ def main() -> int:
             results.append(Result(app_id=app_id, status="skipped",
                                   duration_s=0.0, error="empty compose"))
             continue
-        res = run_one(app_id, compose, args.timeout, args.keep)
+        # Per-app port to avoid host-port collisions if podman-compose's
+        # cleanup is incomplete between apps. Range starts above ephemeral.
+        port = 19000 + i
+        res = run_one(app_id, app, args.timeout, args.keep, port)
         results.append(res)
         badge = {"pass": "PASS", "fail": "FAIL",
                  "timeout": "TIME", "skipped": "SKIP"}[res.status]

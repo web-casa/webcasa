@@ -142,9 +142,60 @@ func FillDefaults(fields []FormField, values map[string]string) {
 	}
 }
 
+// relabelHostBindMounts walks volume bind specs in a sanitized compose and
+// appends `:Z` to host-path bind mounts so the container's container_t
+// SELinux domain can read/write them on EL9/EL10 enforcing hosts. Without
+// this, ${APP_DATA_DIR}/data:/data style mounts hit "permission denied"
+// at first write (verified on the v0.12 Phase 5 VPS smoke test — see
+// docs/selinux.md scenario 1).
+//
+// Skips:
+//   - Named volumes (no leading / or ${ — Podman creates these and labels
+//     them container_file_t automatically).
+//   - Spec already containing :Z, :z, or :[ro|rw] explicit options to
+//     avoid double-suffixing or conflicting with the operator's intent.
+//   - The Podman/Docker socket bind mount specifically — relabeling the
+//     socket file breaks it (the socket needs its var_run_t label intact;
+//     access is controlled via `setsebool container_manage_cgroup` set in
+//     install.sh, not via per-mount relabel).
+func relabelHostBindMounts(line string) string {
+	trimmed := strings.TrimSpace(line)
+	stripped := strings.TrimPrefix(trimmed, "- ")
+	stripped = strings.Trim(stripped, "\"'")
+	// Only handle list-form bind mount entries.
+	if !strings.HasPrefix(trimmed, "- ") {
+		return line
+	}
+	// Need a host:container[:opts] shape with at least one colon.
+	parts := strings.Split(stripped, ":")
+	if len(parts) < 2 {
+		return line
+	}
+	host := parts[0]
+	// Only host-path bind mounts get relabeled.
+	if !strings.HasPrefix(host, "/") && !strings.HasPrefix(host, "${") {
+		return line
+	}
+	// Skip the Podman/Docker socket — relabel breaks it.
+	if strings.Contains(host, "docker.sock") || strings.Contains(host, "podman.sock") {
+		return line
+	}
+	// Already has SELinux relabel option or explicit rw/ro — leave alone.
+	last := parts[len(parts)-1]
+	for _, opt := range []string{"Z", "z", "ro", "rw"} {
+		if last == opt {
+			return line
+		}
+	}
+	// Append :Z (private relabel; per-container isolation).
+	return line + ":Z"
+}
+
 // SanitizeCompose cleans up a Runtipi-format compose file for standalone use:
 //   - Removes tipi_main_network references (services & top-level)
 //   - Strips traefik.* and runtipi.* labels
+//   - Auto-appends :Z to host bind mounts so SELinux container_t can write
+//     to them on EL9/EL10 enforcing hosts (skips named volumes + sockets)
 func SanitizeCompose(compose string) string {
 	var out []string
 	scanner := bufio.NewScanner(strings.NewReader(compose))
@@ -184,7 +235,8 @@ func SanitizeCompose(compose string) string {
 			continue
 		}
 
-		out = append(out, line)
+		// Append :Z to host bind mounts (no-op for named volumes / sockets).
+		out = append(out, relabelHostBindMounts(line))
 	}
 
 	// Clean up empty networks/labels sections
