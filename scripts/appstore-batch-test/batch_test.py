@@ -110,9 +110,19 @@ def sanitize_compose(text: str) -> str:
     """
     out: list[str] = []
     skip_top_network = False
+    # Track entry/exit from a `volumes:` block so the bind-mount relabel
+    # doesn't apply to port mappings (same `host:container` shape).
+    volumes_indent = -1
 
     for line in text.splitlines():
         trimmed = line.strip()
+        indent = len(line) - len(line.lstrip(" \t"))
+
+        if trimmed == "volumes:":
+            volumes_indent = indent
+        elif volumes_indent >= 0 and trimmed and indent <= volumes_indent:
+            volumes_indent = -1
+        in_volumes = volumes_indent >= 0 and indent > volumes_indent
 
         # Strip traefik.* / runtipi.* labels in both mapping and list forms.
         if trimmed.startswith(("traefik.", "runtipi.")):
@@ -135,7 +145,11 @@ def sanitize_compose(text: str) -> str:
             skip_top_network = True
             continue
 
-        out.append(line)
+        # Mirror renderer.go relabelHostBindMount: append :Z to host-path
+        # bind mounts so container_t can write to them on EL9/EL10
+        # enforcing. Skips named volumes, the docker/podman socket, ports
+        # (in_volumes guard), and specs that already carry an option.
+        out.append(_relabel_host_bind(line, in_volumes))
 
     result = "\n".join(out)
     # Drop empty `networks:` / `labels:` sections that the strips above leave
@@ -143,7 +157,112 @@ def sanitize_compose(text: str) -> str:
     # children, so we have to do this — matches Go cleanEmptySection.
     result = _clean_empty_section(result, "networks:")
     result = _clean_empty_section(result, "labels:")
+    # Inject security_opt: [label=disable] for services that mount
+    # docker.sock / podman.sock — mirrors renderer.go injectSocketLabelDisable.
+    # Without this, EL9/EL10 enforcing silently denies container_t access
+    # to the var_run_t socket via dontaudit (no AVC logged) and the
+    # container fails with a "Could not connect to Docker Engine" error.
+    result = _inject_socket_label_disable(result)
     return result
+
+
+def _inject_socket_label_disable(content: str) -> str:
+    lines = content.split("\n")
+    services_indent = -1
+    services: list[dict] = []
+    cur: dict | None = None
+    in_volumes = False
+    vol_indent = -1
+
+    for i, line in enumerate(lines):
+        trimmed = line.strip()
+        indent = len(line) - len(line.lstrip(" \t"))
+
+        if services_indent < 0 and trimmed == "services:":
+            services_indent = indent
+            continue
+        if services_indent < 0:
+            continue
+
+        is_service_header = (
+            indent == services_indent + 2
+            and trimmed.endswith(":")
+            and " " not in trimmed
+        )
+        if is_service_header:
+            if cur is not None:
+                cur["end"] = i - 1
+                services.append(cur)
+            cur = {"start": i, "indent": indent, "mounts_sock": False}
+            in_volumes = False
+            vol_indent = -1
+            continue
+
+        if cur is not None and trimmed and not trimmed.startswith("#") and indent <= services_indent:
+            cur["end"] = i - 1
+            services.append(cur)
+            cur = None
+            services_indent = -1
+            continue
+
+        if cur is not None and trimmed == "volumes:" and indent == cur["indent"] + 2:
+            in_volumes = True
+            vol_indent = indent
+            continue
+        if in_volumes and trimmed and indent <= vol_indent:
+            in_volumes = False
+        if in_volumes and cur is not None:
+            if "docker.sock" in trimmed or "podman.sock" in trimmed:
+                cur["mounts_sock"] = True
+
+    if cur is not None:
+        cur["end"] = len(lines) - 1
+        services.append(cur)
+
+    inserts: list[tuple[int, str]] = []
+    for s in services:
+        if not s["mounts_sock"]:
+            continue
+        already = False
+        has_secopt = False
+        for j in range(s["start"] + 1, s["end"] + 1):
+            t = lines[j].strip()
+            if t == "security_opt:":
+                has_secopt = True
+            if has_secopt and t in ("- label=disable", '- "label=disable"', "- 'label=disable'"):
+                already = True
+                break
+        if already:
+            continue
+        body_indent = " " * (s["indent"] + 2)
+        list_indent = " " * (s["indent"] + 4)
+        inserts.append((s["start"] + 1, f"{body_indent}security_opt:\n{list_indent}- label=disable"))
+
+    if not inserts:
+        return content
+    for at, text in reversed(inserts):
+        lines.insert(at, text)
+    return "\n".join(lines)
+
+
+def _relabel_host_bind(line: str, in_volumes: bool) -> str:
+    if not in_volumes:
+        return line
+    trimmed = line.strip()
+    if not trimmed.startswith("- "):
+        return line
+    stripped = trimmed.removeprefix("- ").strip("\"'")
+    parts = stripped.split(":")
+    if len(parts) < 2:
+        return line
+    host = parts[0]
+    if not (host.startswith("/") or host.startswith("${")):
+        return line  # named volume
+    if "docker.sock" in host or "podman.sock" in host:
+        return line  # relabel breaks the socket
+    if parts[-1] in ("Z", "z", "ro", "rw"):
+        return line  # already suffixed
+    return line + ":Z"
 
 
 def _clean_empty_section(content: str, section_key: str) -> str:

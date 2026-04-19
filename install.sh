@@ -416,20 +416,15 @@ unqualified-search-registries = ['docker.io']
 short-name-mode = 'permissive'
 REGCONF
 
-    # SELinux boolean: app-store containers that bind-mount the Podman
-    # socket (portainer, dockge, dozzle, uptime-kuma, crowdsec, cup,
-    # beszel-agent, homarr-1) need container_t to communicate with the
-    # podman var_run socket. Default policy denies this; turning on
-    # `container_manage_cgroup` is the closest off-the-shelf boolean
-    # that grants the necessary access without writing a custom policy
-    # module. -P makes it persist across reboots.
-    if command -v setsebool &>/dev/null; then
-        # Best-effort: silently noop on hosts where SELinux is disabled
-        # (the boolean still gets recorded but has no effect). Don't
-        # fatal — install.sh must succeed on permissive/disabled SELinux.
-        setsebool -P container_manage_cgroup on 2>/dev/null || \
-            warn "setsebool container_manage_cgroup failed; docker.sock-mounting apps may need '--security-opt label=disable' (see docs/selinux.md)"
-    fi
+    # NOTE: docker.sock-mounting apps (portainer, dockge, dozzle, etc.)
+    # need `security_opt: ['label=disable']` per-service to bypass the
+    # silent SELinux dontaudit denial that blocks container_t from
+    # accessing var_run_t sockets. There is no off-the-shelf SELinux
+    # boolean that fixes this (container_manage_cgroup, container_use_*
+    # are all unrelated). The injection happens at compose-render time
+    # in plugins/appstore/renderer.go:injectSocketLabelDisable, not in
+    # install.sh — the renderer has the per-service context to know
+    # which compose services need it.
 
     # Container-install detection: install.sh is exercised inside a plain
     # Docker container by scripts/test-install.sh (no PID 1 = systemd, no

@@ -142,52 +142,53 @@ func FillDefaults(fields []FormField, values map[string]string) {
 	}
 }
 
-// relabelHostBindMounts walks volume bind specs in a sanitized compose and
-// appends `:Z` to host-path bind mounts so the container's container_t
-// SELinux domain can read/write them on EL9/EL10 enforcing hosts. Without
-// this, ${APP_DATA_DIR}/data:/data style mounts hit "permission denied"
-// at first write (verified on the v0.12 Phase 5 VPS smoke test — see
-// docs/selinux.md scenario 1).
+// relabelHostBindMount appends `:Z` to host-path bind mount specs so the
+// container's container_t SELinux domain can read/write them on EL9/EL10
+// enforcing hosts. Without this, ${APP_DATA_DIR}/data:/data style mounts
+// hit "permission denied" at first write (verified on the v0.12 Phase 5
+// VPS smoke test — see docs/selinux.md scenario 1).
 //
-// Skips:
+// inVolumes tells the function the line is positioned inside a `volumes:`
+// block — this is required because `host:container` is the shape used by
+// both volume binds AND port mappings, and we must not append :Z to a
+// `- ${APP_PORT}:9443` entry. The caller (SanitizeCompose) tracks YAML
+// context as it scans line-by-line.
+//
+// Skips, in addition to the inVolumes guard:
 //   - Named volumes (no leading / or ${ — Podman creates these and labels
 //     them container_file_t automatically).
-//   - Spec already containing :Z, :z, or :[ro|rw] explicit options to
-//     avoid double-suffixing or conflicting with the operator's intent.
-//   - The Podman/Docker socket bind mount specifically — relabeling the
-//     socket file breaks it (the socket needs its var_run_t label intact;
-//     access is controlled via `setsebool container_manage_cgroup` set in
-//     install.sh, not via per-mount relabel).
-func relabelHostBindMounts(line string) string {
+//   - Spec already containing :Z, :z, :ro, or :rw — avoid double-suffix
+//     or fighting the operator's intent.
+//   - The Podman/Docker socket bind mount — relabeling the socket file
+//     breaks it (the socket keeps its var_run_t label; access is granted
+//     via setsebool container_manage_cgroup in install.sh).
+func relabelHostBindMount(line string, inVolumes bool) string {
+	if !inVolumes {
+		return line
+	}
 	trimmed := strings.TrimSpace(line)
-	stripped := strings.TrimPrefix(trimmed, "- ")
-	stripped = strings.Trim(stripped, "\"'")
-	// Only handle list-form bind mount entries.
 	if !strings.HasPrefix(trimmed, "- ") {
 		return line
 	}
-	// Need a host:container[:opts] shape with at least one colon.
+	stripped := strings.TrimPrefix(trimmed, "- ")
+	stripped = strings.Trim(stripped, "\"'")
 	parts := strings.Split(stripped, ":")
 	if len(parts) < 2 {
 		return line
 	}
 	host := parts[0]
-	// Only host-path bind mounts get relabeled.
 	if !strings.HasPrefix(host, "/") && !strings.HasPrefix(host, "${") {
 		return line
 	}
-	// Skip the Podman/Docker socket — relabel breaks it.
 	if strings.Contains(host, "docker.sock") || strings.Contains(host, "podman.sock") {
 		return line
 	}
-	// Already has SELinux relabel option or explicit rw/ro — leave alone.
 	last := parts[len(parts)-1]
 	for _, opt := range []string{"Z", "z", "ro", "rw"} {
 		if last == opt {
 			return line
 		}
 	}
-	// Append :Z (private relabel; per-container isolation).
 	return line + ":Z"
 }
 
@@ -196,14 +197,40 @@ func relabelHostBindMounts(line string) string {
 //   - Strips traefik.* and runtipi.* labels
 //   - Auto-appends :Z to host bind mounts so SELinux container_t can write
 //     to them on EL9/EL10 enforcing hosts (skips named volumes + sockets)
+//   - Auto-adds `security_opt: ['label=disable']` to services that bind-mount
+//     docker.sock / podman.sock (Round-1 VPS finding: SELinux silently
+//     denies container_t access to var_run_t sockets via dontaudit, no
+//     remediation possible without per-container label disable). See
+//     docs/selinux.md scenario 4.
 func SanitizeCompose(compose string) string {
+	return injectSocketLabelDisable(sanitizeStripAndRelabel(compose))
+}
+
+// sanitizeStripAndRelabel runs the line-by-line strip + bind-mount relabel
+// pass. Split out from SanitizeCompose so the two-pass orchestration is
+// readable; not for external use.
+func sanitizeStripAndRelabel(compose string) string {
 	var out []string
 	scanner := bufio.NewScanner(strings.NewReader(compose))
 	skipTopNetwork := false
+	// volumesIndent is the indent (in space columns) of the current
+	// `volumes:` key. Lines deeper than this indent are bind specs that
+	// the relabel function should consider. Reset to -1 once we exit
+	// the block (line at <= indent that isn't a child item).
+	volumesIndent := -1
 
 	for scanner.Scan() {
 		line := scanner.Text()
 		trimmed := strings.TrimSpace(line)
+		indent := len(line) - len(strings.TrimLeft(line, " \t"))
+
+		// Track entry into / exit from a `volumes:` block.
+		if trimmed == "volumes:" {
+			volumesIndent = indent
+		} else if volumesIndent >= 0 && trimmed != "" && indent <= volumesIndent {
+			volumesIndent = -1
+		}
+		inVolumes := volumesIndent >= 0 && indent > volumesIndent
 
 		// Skip traefik and runtipi labels (both YAML mapping and list formats)
 		// Mapping:  traefik.enable: true
@@ -235,8 +262,9 @@ func SanitizeCompose(compose string) string {
 			continue
 		}
 
-		// Append :Z to host bind mounts (no-op for named volumes / sockets).
-		out = append(out, relabelHostBindMounts(line))
+		// Append :Z to host bind mounts (no-op for named volumes / sockets
+		// / lines outside a volumes: block such as ports).
+		out = append(out, relabelHostBindMount(line, inVolumes))
 	}
 
 	// Clean up empty networks/labels sections
@@ -244,6 +272,143 @@ func SanitizeCompose(compose string) string {
 	result = cleanEmptySection(result, "networks:")
 	result = cleanEmptySection(result, "labels:")
 	return result
+}
+
+// injectSocketLabelDisable scans the compose document for services that
+// bind-mount docker.sock or podman.sock and, for each one, ensures the
+// service has `security_opt: [label=disable]` so SELinux doesn't silently
+// deny the container's access to the socket on EL9/EL10 enforcing.
+//
+// Why label=disable instead of a per-mount :Z (like the regular bind mounts):
+// the Podman/Docker socket file MUST keep its var_run_t SELinux label intact
+// — relabeling breaks the socket. The only off-the-shelf way to let
+// container_t reach var_run_t is to disable SELinux labeling for the whole
+// container. This is a security-budget tradeoff, but the apps that mount
+// docker.sock are container-management tools (portainer, dockge, dozzle,
+// etc.) which are root-equivalent anyway.
+//
+// Idempotent: if a service already declares security_opt with label=disable
+// the function is a no-op for that service. Other security_opt entries are
+// preserved (label=disable is appended).
+func injectSocketLabelDisable(content string) string {
+	lines := strings.Split(content, "\n")
+
+	// Phase 1: identify each service block by its YAML range and whether
+	// its volumes mount the socket. Service detection: at indent S+2 where
+	// S is the indent of the `services:` key, a `<name>:` line starts a
+	// service. The service body runs until the next line at indent <= S+2
+	// that isn't blank/comment.
+	servicesIndent := -1
+	type svc struct{ start, end, indent int; mountsSock bool }
+	var svcs []svc
+	var cur *svc
+	inVolumes := false
+	volIndent := -1
+
+	for i, line := range lines {
+		trimmed := strings.TrimSpace(line)
+		indent := len(line) - len(strings.TrimLeft(line, " \t"))
+
+		// Top-level services: key.
+		if servicesIndent < 0 && trimmed == "services:" {
+			servicesIndent = indent
+			continue
+		}
+
+		// We're outside any services block — nothing to do.
+		if servicesIndent < 0 {
+			continue
+		}
+
+		// A new service header at services_indent + 2 closes any previous
+		// service we were tracking and opens a new one.
+		isServiceHeader := indent == servicesIndent+2 && strings.HasSuffix(trimmed, ":") && !strings.Contains(trimmed, " ")
+		if isServiceHeader {
+			if cur != nil {
+				cur.end = i - 1
+				svcs = append(svcs, *cur)
+			}
+			cur = &svc{start: i, indent: indent}
+			inVolumes = false
+			volIndent = -1
+			continue
+		}
+
+		// A line at <= servicesIndent that isn't blank/comment ends the
+		// services: block entirely.
+		if cur != nil && trimmed != "" && !strings.HasPrefix(trimmed, "#") && indent <= servicesIndent {
+			cur.end = i - 1
+			svcs = append(svcs, *cur)
+			cur = nil
+			servicesIndent = -1
+			continue
+		}
+
+		// Track volumes within the current service.
+		if cur != nil && trimmed == "volumes:" && indent == cur.indent+2 {
+			inVolumes = true
+			volIndent = indent
+			continue
+		}
+		if inVolumes && trimmed != "" && indent <= volIndent {
+			inVolumes = false
+		}
+		if inVolumes && cur != nil {
+			if strings.Contains(trimmed, "docker.sock") || strings.Contains(trimmed, "podman.sock") {
+				cur.mountsSock = true
+			}
+		}
+	}
+	if cur != nil {
+		cur.end = len(lines) - 1
+		svcs = append(svcs, *cur)
+	}
+
+	// Phase 2: for each socket-mounting service, decide if it already has
+	// security_opt with label=disable; if so skip, else inject right after
+	// the service header.
+	type insertion struct{ atLine int; text string }
+	var inserts []insertion
+	for _, s := range svcs {
+		if !s.mountsSock {
+			continue
+		}
+		alreadyHas := false
+		hasSecOpt := false
+		for j := s.start + 1; j <= s.end; j++ {
+			t := strings.TrimSpace(lines[j])
+			if t == "security_opt:" {
+				hasSecOpt = true
+			}
+			if hasSecOpt && (t == "- label=disable" || t == "- \"label=disable\"" || t == "- 'label=disable'") {
+				alreadyHas = true
+				break
+			}
+		}
+		if alreadyHas {
+			continue
+		}
+		// Insert immediately after the service header line.
+		bodyIndent := strings.Repeat(" ", s.indent+2)
+		listIndent := strings.Repeat(" ", s.indent+4)
+		inserts = append(inserts, insertion{
+			atLine: s.start + 1,
+			text:   bodyIndent + "security_opt:\n" + listIndent + "- label=disable",
+		})
+	}
+
+	if len(inserts) == 0 {
+		return content
+	}
+
+	// Apply insertions back-to-front so earlier indices stay valid.
+	result := lines
+	for i := len(inserts) - 1; i >= 0; i-- {
+		ins := inserts[i]
+		result = append(result[:ins.atLine],
+			append([]string{ins.text}, result[ins.atLine:]...)...)
+	}
+	return strings.Join(result, "\n")
 }
 
 // cleanEmptySection removes a YAML section that has no real content after it.
