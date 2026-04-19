@@ -886,14 +886,24 @@ CFEOF
 }
 
 setup_selinux_policy() {
-    # v0.13+: install the custom webcasa_t policy module so the service
-    # stops running under unconfined_service_t. No-op on hosts where
-    # SELinux is disabled or the .pp file isn't shipped.
+    # v0.13+: custom webcasa_t SELinux policy module. Shipped but
+    # **OPT-IN ONLY** because the baseline allow-rules are still being
+    # sized against real production workloads — exec'd children (caddy,
+    # curl, podman CLI) inherit webcasa_t and need more rules than the
+    # v0.13.0 module grants, so defaulting to install it would break
+    # every fresh install on SELinux-enforcing EL9/EL10 hosts.
+    #
+    # Enable via ENABLE_SELINUX_POLICY=1 env var (or the --enable-selinux-policy
+    # flag) only if you accept the preview status. Plain v0.13 install
+    # continues to run the service as unconfined_service_t (same as v0.12).
+    # See policy/README.md + docs/selinux.md for the full story.
+    if [[ "${ENABLE_SELINUX_POLICY:-0}" != "1" ]]; then
+        return 0
+    fi
     local pp
     pp=$(find "$SCRIPT_DIR/policy" -maxdepth 1 -name 'webcasa.pp' 2>/dev/null | head -1)
     if [[ -z "$pp" ]]; then
-        # Not shipped with this install (from-source build without policy tree,
-        # or pre-v0.13 archive). Remain on unconfined_service_t.
+        warn "ENABLE_SELINUX_POLICY=1 requested but policy/webcasa.pp not found in $SCRIPT_DIR/policy (run 'make' in policy/ first, or re-download the release tarball)"
         return 0
     fi
     if ! command -v getenforce &>/dev/null || [[ "$(getenforce 2>/dev/null)" == "Disabled" ]]; then
@@ -904,19 +914,17 @@ setup_selinux_policy() {
         warn "semodule missing (policycoreutils not installed?); skipping webcasa_t policy install"
         return 0
     fi
-    step "Installing webcasa_t SELinux policy"
+    step "Installing webcasa_t SELinux policy (preview)"
+    warn "webcasa_t policy is v0.13 PREVIEW. Iterating plugins (deploy/monitoring/backup/etc.) may trigger AVC denials. Capture with: ausearch -m AVC -ts recent | grep webcasa_t"
     semodule -i "$pp" 2>&1 | grep -v "^libsepol\." || true
-    # Label the binary + data dirs with the matching fcontexts.
     restorecon -Rv "$INSTALL_DIR/webcasa-server" "$CONFIG_DIR" "$DATA_DIR" "$LOG_DIR" 2>/dev/null || true
-    # Register the panel port with http_port_t so webcasa_t can bind it.
-    # (Only needed for non-default ports; 80/443 are already http_port_t.)
     if [[ -n "$PANEL_PORT" && "$PANEL_PORT" -ne 80 && "$PANEL_PORT" -ne 443 ]]; then
         if command -v semanage &>/dev/null; then
             semanage port -a -t http_port_t -p tcp "$PANEL_PORT" 2>/dev/null || \
                 semanage port -m -t http_port_t -p tcp "$PANEL_PORT" 2>/dev/null || true
         fi
     fi
-    success "webcasa_t policy installed"
+    success "webcasa_t policy installed (preview — monitor AVCs)"
 }
 
 setup_systemd() {
@@ -972,11 +980,11 @@ PrivateTmp=true
 AmbientCapabilities=CAP_NET_BIND_SERVICE
 CapabilityBoundingSet=CAP_NET_BIND_SERVICE
 
-# SELinux domain (v0.13+). Harmlessly ignored on hosts where SELinux is
-# disabled or the webcasa_t module isn't installed — systemd emits a
-# warning in those cases but the service still starts. Install-time
-# setup_selinux_policy() best-effort loads the module and labels files.
-SELinuxContext=system_u:system_r:webcasa_t:s0
+# SELinux domain (v0.13+ preview, off by default). The policy module
+# itself handles transition via init_daemon_domain() in the .te file, so
+# we don't need SELinuxContext= here even when the preview is enabled.
+# Left as a comment so operators know where to inject an override.
+# SELinuxContext=system_u:system_r:webcasa_t:s0
 
 # Logging
 StandardOutput=journal

@@ -1,8 +1,25 @@
-# WebCasa SELinux Policy
+# WebCasa SELinux Policy (v0.13 Preview — Opt-In)
 
-Custom SELinux Type Enforcement module that moves the WebCasa systemd
-service from `unconfined_service_t` (v0.12 default) to a dedicated
-`webcasa_t` domain with explicit allow rules.
+> ⚠️ **Status: PREVIEW, not shipped enabled by default in v0.13.**
+>
+> Enabling this module changes the WebCasa service domain from
+> `unconfined_service_t` to `webcasa_t`, which currently blocks some
+> plugin activity (certain `caddy` / `curl` child process paths,
+> plugin-specific file access). v0.12 and default v0.13 installs
+> continue to run under `unconfined_service_t` — same as every other
+> off-the-shelf systemd service.
+>
+> **Enable via**: `ENABLE_SELINUX_POLICY=1 bash install.sh ...`
+> or re-run install.sh with `ENABLE_SELINUX_POLICY=1` exported.
+>
+> **Don't use in production yet.** Report AVCs you hit to
+> `https://github.com/web-casa/webcasa/issues` with
+> `ausearch -m AVC -ts recent | grep webcasa_t` output so we can
+> size the allow-rule ruleset properly for v0.14.
+
+Custom SELinux Type Enforcement module that (when opted in) moves the
+WebCasa systemd service from `unconfined_service_t` (v0.12 default) to
+a dedicated `webcasa_t` domain with explicit allow rules.
 
 ## Why
 

@@ -276,9 +276,40 @@ sudo semanage port -l | grep -E '(^|\s)80\s'
 
 ---
 
-## 未来工作 (v0.13+ 候选)
+## webcasa_t 自定义 policy (v0.13 Preview — 默认关闭)
 
-当前 WebCasa 以 `unconfined_service_t` 运行，相当于"信任 webcasa 用户"。更严格的做法是**自定义 SELinux policy module**：
+v0.13 附带一个自定义 SELinux policy module (`policy/webcasa.te` → `webcasa.pp`)
+把 WebCasa 服务从 `unconfined_service_t` 切到专用 `webcasa_t` 域。**默认不启用**
+—— baseline 规则在首次 VPS 实测时发现若干 exec'd 子进程 (caddy / curl)
+继承 `webcasa_t` 后缺规则，需要更多迭代（可能要做 domain transition 拆到
+`webcasa_caddy_t` / `webcasa_podman_t` 等子域）。
+
+**启用**（建议先在非生产机验证）：
+
+```bash
+ENABLE_SELINUX_POLICY=1 bash install.sh ...
+```
+
+或升级已有 v0.13 安装：
+
+```bash
+cd /path/to/webcasa-source
+cd policy && make && sudo semodule -i webcasa.pp
+sudo restorecon -RvF /usr/local/bin/webcasa-server /etc/webcasa /var/lib/webcasa /var/log/webcasa
+sudo systemctl restart webcasa
+# Watch for AVCs:
+sudo ausearch -m AVC -ts recent | grep webcasa_t
+```
+
+**遇到 AVC 怎么办**：开 issue 贴 `ausearch` 输出，我们会把规则补进 `.te` 下一版。
+
+**v0.14 计划**：根据 v0.13 preview 用户反馈完善规则集，达到"所有 27 个高风险
+app-store app + 10 个插件全跑过不触 AVC"后，把 default 从 unconfined 切到
+webcasa_t。
+
+## 未来工作 (v0.14+ 候选)
+
+除了完善上面的 webcasa_t policy：
 
 - 声明 `webcasa_t` domain、`webcasa_exec_t` 二进制 type
 - 明确允许：读 `/etc/webcasa/*`、写 `/var/log/webcasa/*`、连 `container_var_run_t`、绑 http_port_t

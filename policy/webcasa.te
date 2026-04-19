@@ -46,13 +46,15 @@ require {
     type bin_t;
     type shell_exec_t;
     type sysctl_kernel_t;
+    type sysfs_t;             # /sys/* (SQLite reads hpage_pmd_size etc)
+    type cgroup_t;            # /sys/fs/cgroup/* (Go runtime probes)
     type proc_t;
     class capability { net_bind_service };
-    class file { read write open getattr setattr ioctl execute execute_no_trans create unlink rename };
+    class file { read write open getattr setattr ioctl execute execute_no_trans create unlink rename lock map };
     class dir { read write open getattr search add_name remove_name rmdir create setattr };
     class sock_file { read write open getattr };
     class unix_stream_socket { connectto create connect };
-    class tcp_socket { name_bind listen accept };
+    class tcp_socket { name_bind listen accept create bind getattr read write };
 }
 
 type webcasa_t;
@@ -78,7 +80,11 @@ allow webcasa_t webcasa_etc_t:dir { read search open getattr };
 allow webcasa_t webcasa_etc_t:file { read open getattr };
 
 allow webcasa_t webcasa_var_lib_t:dir { read write open getattr search add_name remove_name rmdir create setattr };
-allow webcasa_t webcasa_var_lib_t:file { read write open getattr setattr create unlink rename ioctl };
+# `lock` + `map` are required for SQLite WAL mode: modernc.org/sqlite calls
+# fcntl F_SETLK (lock) for journal coordination and mmap on the -shm file
+# (map). Missing either causes "database is locked" / "disk I/O error:
+# permission denied" at startup. Verified on v0.13 VPS Round.
+allow webcasa_t webcasa_var_lib_t:file { read write open getattr setattr create unlink rename ioctl lock map };
 
 allow webcasa_t webcasa_log_t:dir { read write open getattr search add_name remove_name };
 allow webcasa_t webcasa_log_t:file { read write open getattr setattr create unlink ioctl };
@@ -92,7 +98,7 @@ allow webcasa_t var_run_t:unix_stream_socket { connectto connect };
 # Bind the panel port (registered as http_port_t by default SELinux policy
 # after `semanage port -a -t http_port_t -p tcp 39921` in install.sh).
 allow webcasa_t self:capability net_bind_service;
-allow webcasa_t self:tcp_socket { name_bind listen accept };
+allow webcasa_t self:tcp_socket { create bind name_bind listen accept getattr read write };
 allow webcasa_t http_port_t:tcp_socket name_bind;
 
 # Execute CLIs (podman, podman-compose, docker shim, caddy, kopia).
@@ -100,12 +106,19 @@ allow webcasa_t http_port_t:tcp_socket name_bind;
 # keeps the forked process in webcasa_t (so its access still audits under
 # webcasa_t) — this is intentional; splitting each CLI into its own
 # domain is a v0.14+ refinement.
-allow webcasa_t bin_t:file { read getattr open execute execute_no_trans ioctl };
-allow webcasa_t shell_exec_t:file { read getattr open execute execute_no_trans };
+allow webcasa_t bin_t:file { read getattr open execute execute_no_trans ioctl map };
+allow webcasa_t shell_exec_t:file { read getattr open execute execute_no_trans map };
 
 # Read common system info the Go runtime / metrics plugin touches.
 allow webcasa_t proc_t:file { read getattr open };
 allow webcasa_t sysctl_kernel_t:file { read getattr open };
+# SQLite (modernc.org/sqlite) reads /sys/kernel/mm/transparent_hugepage/*
+# for buffer-alignment hinting on first connection. Go runtime also walks
+# /sys/fs/cgroup/ for cgroup v2 detection.
+allow webcasa_t sysfs_t:file { read getattr open };
+allow webcasa_t sysfs_t:dir { read getattr open search };
+allow webcasa_t cgroup_t:dir { read getattr open search };
+allow webcasa_t cgroup_t:file { read getattr open };
 
 ########################################
 #
