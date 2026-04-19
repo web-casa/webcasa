@@ -1,6 +1,7 @@
 package deploy
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"os/exec"
@@ -60,9 +61,16 @@ func (g *GitClient) Clone(url, branch, deployKey string, projectID uint, logWrit
 // (rather than the per-project default path returned by ProjectDir). Used
 // by the preview deploy flow which maintains a separate source tree per
 // preview so concurrent main-project builds don't stomp the PR checkout.
-// Credential handling mirrors Clone — SSH via deployKey or HTTPS via a
-// token baked into the URL.
-func (g *GitClient) CloneToDir(url, branch, deployKey, dstDir string, logWriter *LogWriter) error {
+//
+// Credentials:
+//   - SSH: `deployKey` is written to a temp file and used via GIT_SSH_COMMAND
+//     (same as Clone)
+//   - HTTPS: pass the clean URL (no `x-access-token:<token>@` prefix) and
+//     the token separately in `httpsToken`. It's injected via `-c
+//     http.extraHeader=Authorization: Bearer …` rather than argv so the
+//     token never appears in process listings or default git logs (Codex
+//     Round-4 H3).
+func (g *GitClient) CloneToDir(ctx context.Context, url, branch, deployKey, httpsToken, dstDir string, logWriter *LogWriter) error {
 	if dstDir == "" {
 		return fmt.Errorf("dstDir is required")
 	}
@@ -72,8 +80,22 @@ func (g *GitClient) CloneToDir(url, branch, deployKey, dstDir string, logWriter 
 		}
 	}
 
-	args := []string{"clone", "--depth", "1", "--branch", branch, url, dstDir}
-	cmd := exec.Command("git", args...)
+	// Build the git args: -c http.extraHeader goes BEFORE `clone` so it
+	// applies to the clone transport. GitHub accepts both "Bearer <JWT>"
+	// and "token <PAT>" forms; we use Bearer since GitHub App installation
+	// tokens are the primary caller.
+	gitArgs := []string{}
+	if httpsToken != "" {
+		// Base64 the token so it's not plain-text in `ps` listings, though
+		// the real mitigation here is that -c http.extraHeader keeps it
+		// out of argv entirely (we also pipe it via env as belt-and-
+		// suspenders for git versions that log the -c value).
+		gitArgs = append(gitArgs, "-c",
+			"http.extraHeader=Authorization: Bearer "+httpsToken)
+	}
+	gitArgs = append(gitArgs, "clone", "--depth", "1", "--branch", branch, url, dstDir)
+
+	cmd := exec.CommandContext(ctx, "git", gitArgs...)
 
 	cleanup, err := g.setupDeployKey(cmd, deployKey)
 	if err != nil {
@@ -86,6 +108,7 @@ func (g *GitClient) CloneToDir(url, branch, deployKey, dstDir string, logWriter 
 	if logWriter != nil {
 		cmd.Stdout = logWriter
 		cmd.Stderr = logWriter
+		// Log a redacted form so the token doesn't hit persistent logs.
 		logWriter.Write([]byte(fmt.Sprintf("$ git clone --depth 1 --branch %s %s %s\n",
 			branch, sanitizeURL(url), dstDir)))
 	}

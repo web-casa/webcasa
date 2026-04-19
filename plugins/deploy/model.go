@@ -114,16 +114,28 @@ func (Deployment) TableName() string {
 }
 
 // PreviewDeployment tracks an ephemeral deployment created from a GitHub PR.
+//
+// Uniqueness: (project_id, pr_number) must be unique. Enforced via a composite
+// unique index so the `GitHub sends two synchronize webhooks in ms` race can't
+// create duplicate rows for the same PR (Codex Round: C2).
+//
+// Port: persisted per-preview so a successful rebuild (PR synchronize) reuses
+// the same host port, keeping the Caddy upstream stable and avoiding port
+// overflow from a naive `20000 + previewID` formula (Codex Round: H5).
 type PreviewDeployment struct {
 	ID            uint      `gorm:"primaryKey" json:"id"`
-	ProjectID     uint      `gorm:"index;not null" json:"project_id"`
-	PRNumber      int       `gorm:"not null" json:"pr_number"`
+	ProjectID     uint      `gorm:"index;not null;uniqueIndex:ux_preview_project_pr" json:"project_id"`
+	PRNumber      int       `gorm:"not null;uniqueIndex:ux_preview_project_pr" json:"pr_number"`
 	Branch        string    `gorm:"size:128" json:"branch"`
 	Domain        string    `gorm:"size:255" json:"domain"`
 	ContainerName string    `gorm:"size:128" json:"container_name"`
+	ImageTag      string    `gorm:"size:128" json:"image_tag"` // webcasa-preview-<id>
+	Port          int       `gorm:"default:0" json:"port"`     // host port (allocated once, stored)
 	HostID        uint      `gorm:"default:0" json:"host_id"`
-	Status        string    `gorm:"size:16;default:running" json:"status"` // running, stopped, error
+	Status        string    `gorm:"size:16;default:pending" json:"status"` // pending | building | running | failed | cleanup_failed
+	FailureReason string    `gorm:"size:512" json:"failure_reason,omitempty"`
 	CreatedAt     time.Time `json:"created_at"`
+	UpdatedAt     time.Time `json:"updated_at"`
 	ExpiresAt     time.Time `json:"expires_at"`
 }
 

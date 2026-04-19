@@ -1408,15 +1408,22 @@ func (s *Service) StartPreviewGC() {
 	}()
 }
 
-// StopPreviewGC halts the daily GC loop.
+// StopPreviewGC halts the daily GC loop AND drains any in-flight preview
+// build goroutines. Called from plugin Stop(); the 30s drain deadline is
+// long enough for most `git clone`/`docker build` subprocesses to exit via
+// their context cancel, short enough not to stall the whole panel on
+// shutdown. Codex Round-5 H6 fix — previously runPreview goroutines could
+// outlive the plugin and write to a closed DB handle.
 func (s *Service) StopPreviewGC() {
 	s.previewGCMu.Lock()
-	defer s.previewGCMu.Unlock()
-	if s.previewGCStop == nil {
-		return
+	if s.previewGCStop != nil {
+		close(s.previewGCStop)
+		s.previewGCStop = nil
 	}
-	close(s.previewGCStop)
-	s.previewGCStop = nil
+	s.previewGCMu.Unlock()
+	if s.preview != nil {
+		s.preview.Stop(30 * time.Second)
+	}
 }
 
 // migrateDeployKeys encrypts any plaintext deploy keys found in the database.
