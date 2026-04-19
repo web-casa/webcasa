@@ -1,0 +1,122 @@
+policy_module(webcasa, 0.1.0)
+
+########################################
+#
+# WebCasa SELinux policy module (v0.13+)
+#
+# Migrates the WebCasa systemd service from the broad `unconfined_service_t`
+# domain (v0.12 default) to a dedicated `webcasa_t` domain with explicit
+# allow rules for exactly the host interactions WebCasa performs.
+#
+# Build:   make -f /usr/share/selinux/devel/Makefile webcasa.pp
+# Install: semodule -i webcasa.pp && restorecon -RvF /usr/local/bin/webcasa-server
+#
+# Verification on an enforcing host:
+#   ausearch -m AVC -ts recent 2>/dev/null | grep webcasa_t
+#   (should be empty after a full panel exercise: login, create host,
+#    list containers, install an app, tail logs)
+#
+# Known interactions the policy must allow:
+#   1. TCP bind on $PANEL_PORT (default 39921, http_port_t)
+#   2. Unix-socket connect to /run/podman/podman.sock (var_run_t — podman RPM
+#      installs it as var_run_t, not container_var_run_t; confirmed on
+#      AlmaLinux 9 + Podman 5.6)
+#   3. Read/write /var/lib/webcasa/{db,stacks,builds,logs}
+#   4. Read /etc/webcasa/*
+#   5. Execute caddy (caddy_exec_t on distros that have caddy-selinux; plain
+#      bin_t otherwise)
+#   6. Execute podman / podman-compose / docker (shim) CLIs
+#   7. Write journald (usual systemd service need)
+#   8. CAP_NET_BIND_SERVICE for the forked Caddy (preserved via
+#      AmbientCapabilities= in the systemd unit)
+#
+# This is v0.1.0 — expect audit2allow iteration on the first VPS run.
+
+########################################
+#
+# Declarations
+#
+
+require {
+    type var_run_t;           # /run/podman/podman.sock parent
+    type http_port_t;         # 80/443 and panel port for Caddy binding
+    type var_log_t;
+    type var_lib_t;
+    type etc_t;
+    type bin_t;
+    type shell_exec_t;
+    type sysctl_kernel_t;
+    type proc_t;
+    class capability { net_bind_service };
+    class file { read write open getattr setattr ioctl execute execute_no_trans create unlink rename };
+    class dir { read write open getattr search add_name remove_name rmdir create setattr };
+    class sock_file { read write open getattr };
+    class unix_stream_socket { connectto create connect };
+    class tcp_socket { name_bind listen accept };
+}
+
+type webcasa_t;
+type webcasa_exec_t;
+init_daemon_domain(webcasa_t, webcasa_exec_t)
+
+type webcasa_etc_t;
+files_type(webcasa_etc_t)
+
+type webcasa_var_lib_t;
+files_type(webcasa_var_lib_t)
+
+type webcasa_log_t;
+logging_log_file(webcasa_log_t)
+
+########################################
+#
+# WebCasa local policy
+#
+
+# Own files: config (read), data (rw), logs (rw)
+allow webcasa_t webcasa_etc_t:dir { read search open getattr };
+allow webcasa_t webcasa_etc_t:file { read open getattr };
+
+allow webcasa_t webcasa_var_lib_t:dir { read write open getattr search add_name remove_name rmdir create setattr };
+allow webcasa_t webcasa_var_lib_t:file { read write open getattr setattr create unlink rename ioctl };
+
+allow webcasa_t webcasa_log_t:dir { read write open getattr search add_name remove_name };
+allow webcasa_t webcasa_log_t:file { read write open getattr setattr create unlink ioctl };
+
+# Podman socket (var_run_t per AlmaLinux 9 + Podman 5.6). Per-file label on
+# /run/podman/podman.sock stays var_run_t — granted via class sock_file.
+allow webcasa_t var_run_t:dir search;
+allow webcasa_t var_run_t:sock_file { read write open getattr };
+allow webcasa_t var_run_t:unix_stream_socket { connectto connect };
+
+# Bind the panel port (registered as http_port_t by default SELinux policy
+# after `semanage port -a -t http_port_t -p tcp 39921` in install.sh).
+allow webcasa_t self:capability net_bind_service;
+allow webcasa_t self:tcp_socket { name_bind listen accept };
+allow webcasa_t http_port_t:tcp_socket name_bind;
+
+# Execute CLIs (podman, podman-compose, docker shim, caddy, kopia).
+# They all live in /usr/bin or /usr/local/bin as bin_t. execute_no_trans
+# keeps the forked process in webcasa_t (so its access still audits under
+# webcasa_t) — this is intentional; splitting each CLI into its own
+# domain is a v0.14+ refinement.
+allow webcasa_t bin_t:file { read getattr open execute execute_no_trans ioctl };
+allow webcasa_t shell_exec_t:file { read getattr open execute execute_no_trans };
+
+# Read common system info the Go runtime / metrics plugin touches.
+allow webcasa_t proc_t:file { read getattr open };
+allow webcasa_t sysctl_kernel_t:file { read getattr open };
+
+########################################
+#
+# Interfaces the policy exposes for other modules
+#
+# (Placeholder — v0.13 has no other custom policy modules calling into
+# webcasa_t. Keep here as convention for future expansion.)
+#
+
+# interface(`webcasa_admin', `
+#     gen_require(` type webcasa_t, webcasa_var_lib_t; ')
+#     allow $1 webcasa_t:process { signal signull };
+#     files_list_var_lib($1)
+# ')

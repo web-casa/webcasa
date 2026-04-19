@@ -157,6 +157,10 @@ var ErrDaemonConfigNotSupportedOnPodman = fmt.Errorf("daemon.json is Docker-spec
 func RestartDockerDaemon() error {
 	switch DetectRuntime() {
 	case RuntimeDocker:
+		// Legacy path: only reachable on hosts where Podman is not installed
+		// but the `docker` CLI is. v0.12+ users always hit the RuntimePodman
+		// branch below. See docs/08-podman-docker-shim-future.md for the
+		// long-term plan.
 		return exec.Command("systemctl", "restart", "docker").Run()
 	case RuntimePodman:
 		return ErrDaemonConfigNotSupportedOnPodman

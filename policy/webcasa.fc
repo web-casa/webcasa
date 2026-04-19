@@ -1,0 +1,7 @@
+# WebCasa SELinux file context definitions.
+# Applied at install time via `restorecon -Rv` on the paths below.
+
+/usr/local/bin/webcasa-server    --    gen_context(system_u:object_r:webcasa_exec_t,s0)
+/etc/webcasa(/.*)?                     gen_context(system_u:object_r:webcasa_etc_t,s0)
+/var/lib/webcasa(/.*)?                 gen_context(system_u:object_r:webcasa_var_lib_t,s0)
+/var/log/webcasa(/.*)?                 gen_context(system_u:object_r:webcasa_log_t,s0)
