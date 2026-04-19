@@ -66,10 +66,12 @@ func (g *GitClient) Clone(url, branch, deployKey string, projectID uint, logWrit
 //   - SSH: `deployKey` is written to a temp file and used via GIT_SSH_COMMAND
 //     (same as Clone)
 //   - HTTPS: pass the clean URL (no `x-access-token:<token>@` prefix) and
-//     the token separately in `httpsToken`. It's injected via `-c
-//     http.extraHeader=Authorization: Bearer …` rather than argv so the
-//     token never appears in process listings or default git logs (Codex
-//     Round-4 H3).
+//     the token separately in `httpsToken`. It is passed to git through
+//     the GIT_CONFIG_COUNT env-var ladder (env is NOT visible in `ps`),
+//     scoped to the requesting host only via `http.<host>.extraHeader`
+//     so the token cannot leak to an unexpected redirect target (Codex
+//     R6-H1; supersedes the earlier `-c http.extraHeader` approach that
+//     still embedded the secret in argv).
 func (g *GitClient) CloneToDir(ctx context.Context, url, branch, deployKey, httpsToken, dstDir string, logWriter *LogWriter) error {
 	if dstDir == "" {
 		return fmt.Errorf("dstDir is required")
@@ -80,29 +82,41 @@ func (g *GitClient) CloneToDir(ctx context.Context, url, branch, deployKey, http
 		}
 	}
 
-	// Build the git args: -c http.extraHeader goes BEFORE `clone` so it
-	// applies to the clone transport. GitHub accepts both "Bearer <JWT>"
-	// and "token <PAT>" forms; we use Bearer since GitHub App installation
-	// tokens are the primary caller.
-	gitArgs := []string{}
-	if httpsToken != "" {
-		// Base64 the token so it's not plain-text in `ps` listings, though
-		// the real mitigation here is that -c http.extraHeader keeps it
-		// out of argv entirely (we also pipe it via env as belt-and-
-		// suspenders for git versions that log the -c value).
-		gitArgs = append(gitArgs, "-c",
-			"http.extraHeader=Authorization: Bearer "+httpsToken)
-	}
-	gitArgs = append(gitArgs, "clone", "--depth", "1", "--branch", branch, url, dstDir)
-
+	gitArgs := []string{"clone", "--depth", "1", "--branch", branch, url, dstDir}
 	cmd := exec.CommandContext(ctx, "git", gitArgs...)
 
+	// Start from the base environment so setupDeployKey's GIT_SSH_COMMAND
+	// is preserved. If only httpsToken is set, setupDeployKey is a no-op
+	// and cmd.Env stays at nil (inherit) until we append below.
 	cleanup, err := g.setupDeployKey(cmd, deployKey)
 	if err != nil {
 		return err
 	}
 	if cleanup != nil {
 		defer cleanup()
+	}
+
+	if httpsToken != "" {
+		// Use GIT_CONFIG_COUNT env-var ladder rather than `-c <kv>` argv.
+		// Env vars are NOT exposed in `ps` on Linux (unlike argv). Scope
+		// the extra header to the repo's host so a redirect to a
+		// different origin doesn't inherit the Authorization header.
+		host := extractHost(url)
+		headerKey := "http.extraHeader"
+		if host != "" {
+			// http.<origin>.extraHeader targets only requests to that origin.
+			headerKey = fmt.Sprintf("http.https://%s/.extraHeader", host)
+		}
+		env := cmd.Env
+		if env == nil {
+			env = os.Environ()
+		}
+		env = append(env,
+			"GIT_CONFIG_COUNT=1",
+			"GIT_CONFIG_KEY_0="+headerKey,
+			"GIT_CONFIG_VALUE_0=Authorization: Bearer "+httpsToken,
+		)
+		cmd.Env = env
 	}
 
 	if logWriter != nil {
@@ -116,6 +130,27 @@ func (g *GitClient) CloneToDir(ctx context.Context, url, branch, deployKey, http
 		return fmt.Errorf("git clone failed: %w", err)
 	}
 	return nil
+}
+
+// extractHost returns the host portion of an HTTPS URL (e.g.
+// "github.com" for "https://github.com/owner/repo.git"), or "" if the
+// URL isn't in a recognizable HTTPS form. Used to scope git's
+// extraHeader config to the requesting origin only.
+func extractHost(u string) string {
+	idx := strings.Index(u, "://")
+	if idx == -1 {
+		return ""
+	}
+	rest := u[idx+3:]
+	// Strip any user:pass@ prefix (shouldn't be present in the clean URL
+	// path used for preview, but defensive).
+	if at := strings.Index(rest, "@"); at != -1 {
+		rest = rest[at+1:]
+	}
+	if slash := strings.Index(rest, "/"); slash != -1 {
+		rest = rest[:slash]
+	}
+	return rest
 }
 
 // Pull performs a git pull in the project directory.

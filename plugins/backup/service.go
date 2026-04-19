@@ -63,17 +63,23 @@ func NewService(db *gorm.DB, dataDir string, logger *slog.Logger) *Service {
 // TriggerAsync runs a backup in a tracked goroutine. Safe to call from
 // event handlers / cron callbacks — registers with the service WaitGroup
 // so Stop() can drain them.
+//
+// R6-M2 fix: check rootCtx under the mutex BEFORE calling wg.Add, so a
+// late trigger arriving after Stop() started cannot race a fresh
+// counter increment past wg.Wait(). sync.WaitGroup races when Add is
+// called concurrently with Wait while the counter might hit zero.
 func (s *Service) TriggerAsync(source string) {
+	s.mu.Lock()
+	if s.rootCtx == nil || s.rootCtx.Err() != nil {
+		s.mu.Unlock()
+		s.logger.Info("skip backup trigger during shutdown", "source", source)
+		return
+	}
 	s.wg.Add(1)
+	s.mu.Unlock()
+
 	go func() {
 		defer s.wg.Done()
-		// Drop the trigger if the service is already stopping — avoids
-		// starting a kopia subprocess that will be immediately signalled
-		// to die.
-		if s.rootCtx.Err() != nil {
-			s.logger.Info("skip backup trigger during shutdown", "source", source)
-			return
-		}
 		if _, err := s.RunBackup(source); err != nil {
 			s.logger.Error("triggered backup failed", "source", source, "err", err)
 		}
@@ -111,9 +117,17 @@ func (s *Service) Start() error {
 // generous for a single running kopia snapshot — longer than that and
 // we'd rather bail than block panel shutdown. Mirrors the preview
 // service Stop() drain pattern.
+//
+// Takes s.mu before cancelling rootCtx so it serializes with
+// TriggerAsync's pre-Add ctx-check: either TriggerAsync commits to
+// wg.Add before cancel wins the lock (and will complete in the drain),
+// or cancel wins first and the late TriggerAsync sees ctx.Err() != nil
+// and returns without touching the WaitGroup (R6-M2 correctness).
 func (s *Service) Stop() {
 	s.scheduler.Stop()
+	s.mu.Lock()
 	s.rootCancel()
+	s.mu.Unlock()
 	done := make(chan struct{})
 	go func() { s.wg.Wait(); close(done) }()
 	select {
@@ -336,7 +350,16 @@ func (s *Service) RunBackup(trigger string) (*BackupSnapshot, error) {
 
 	s.addLog(snapshot.ID, "info", "Backup started (trigger: "+trigger+")")
 
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Minute)
+	// R6-H4 fix: derive from rootCtx so Service.Stop() cancels in-flight
+	// kopia subprocesses instead of waiting the full 30m timeout.
+	// rootCtx is set up in NewService and cancelled in Stop().
+	baseCtx := s.rootCtx
+	if baseCtx == nil {
+		// Defensive: should always be non-nil post-NewService, but avoid
+		// panicking if someone constructs Service without the constructor.
+		baseCtx = context.Background()
+	}
+	ctx, cancel := context.WithTimeout(baseCtx, 30*time.Minute)
 	defer cancel()
 
 	// Ensure repository is connected.

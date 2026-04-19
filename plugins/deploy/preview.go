@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"net"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -145,21 +146,47 @@ func (ps *PreviewService) CreatePreview(projectID uint, prNumber int, branch str
 		// ID to work with. Phase 2: backfill ID-derived fields. Two-phase
 		// keeps names unique even across projects with identical slugs
 		// (Codex H1) without needing a pre-ID hash.
+		//
+		// R6-H2 fix: catch unique-index violation on Create and fall
+		// through to the rebuild path. Two concurrent opened/synchronize
+		// webhooks both reach the RecordNotFound branch and race into
+		// Create; the second one's DB-level ON CONFLICT aborts with a
+		// generic error that we can't distinguish from a real failure
+		// without this retry.
 		preview = PreviewDeployment{
 			ProjectID: projectID,
 			PRNumber:  prNumber,
 			Branch:    branch,
 			Status:    "pending",
 			ExpiresAt: newExpiry,
+			Slot:      -1, // no slot active yet — first deploy picks slot 0
 		}
 		if err := ps.db.Create(&preview).Error; err != nil {
+			// Likely a unique-index violation from a racing webhook.
+			// Retry the lookup — if it's now there, update the existing
+			// row and fall through.
+			var existing PreviewDeployment
+			if rerr := ps.db.Where("project_id = ? AND pr_number = ?", projectID, prNumber).First(&existing).Error; rerr == nil {
+				ps.logger.Info("preview row created by concurrent webhook; updating",
+					"project", project.Name, "pr", prNumber)
+				ps.db.Model(&existing).Updates(map[string]interface{}{
+					"branch":         branch,
+					"status":         "pending",
+					"expires_at":     newExpiry,
+					"failure_reason": "",
+				})
+				existing.Branch = branch
+				existing.Status = "pending"
+				preview = existing
+				break
+			}
 			return nil, fmt.Errorf("create preview record: %w", err)
 		}
 		// Derive stable IDs. Domain + container + image tag all include
 		// the preview ID so two projects with identical sanitized names
-		// don't collide (H1). Port is persisted so `synchronize` reuses
-		// the allocation (H5).
-		port, err := ps.allocatePort(preview.ID)
+		// don't collide (H1). BasePort is persisted so synchronize
+		// reuses the same two-slot port pair indefinitely (H5 + R6-C1).
+		basePort, err := ps.allocateBasePort(preview.ID)
 		if err != nil {
 			ps.db.Delete(&preview)
 			return nil, fmt.Errorf("allocate port: %w", err)
@@ -167,15 +194,13 @@ func (ps *PreviewService) CreatePreview(projectID uint, prNumber int, branch str
 		slug := sanitizeForDomain(project.Name)
 		previewDomain := fmt.Sprintf("pr-%d-%s-%d.%s", prNumber, slug, preview.ID, domain)
 		ps.db.Model(&preview).Updates(map[string]interface{}{
-			"domain":         previewDomain,
-			"container_name": fmt.Sprintf("webcasa-preview-%d", preview.ID),
-			"image_tag":      fmt.Sprintf("webcasa-preview-%d", preview.ID),
-			"port":           port,
+			"domain":    previewDomain,
+			"image_tag": fmt.Sprintf("webcasa-preview-%d", preview.ID),
+			"base_port": basePort,
 		})
 		preview.Domain = previewDomain
-		preview.ContainerName = fmt.Sprintf("webcasa-preview-%d", preview.ID)
 		preview.ImageTag = fmt.Sprintf("webcasa-preview-%d", preview.ID)
-		preview.Port = port
+		preview.BasePort = basePort
 	default:
 		return nil, fmt.Errorf("lookup existing preview: %w", err)
 	}
@@ -231,29 +256,36 @@ func (ps *PreviewService) clearJob(previewID uint, job *previewJob) {
 	}
 }
 
-// allocatePort picks a host port in the [20000, 30000) range that isn't
-// already used by another preview. Stored on the row so subsequent
-// rebuilds (synchronize) reuse the same port and keep the Caddy upstream
-// stable.
+// allocateBasePort picks a slot-0 base port in [20000, 25000) that isn't
+// taken by another preview. Slot-1 port is always base+5000, landing in
+// [25000, 30000). Because BasePort has a unique index, two previews are
+// guaranteed non-colliding on both slot ports.
 //
-// Uses a deterministic starting point (20000 + previewID mod 10000) and
-// probes forward until a free slot is found. Gives reasonable spread
-// without a central atomic counter.
-func (ps *PreviewService) allocatePort(previewID uint) (int, error) {
+// Uses a deterministic starting point for spread without a central
+// atomic counter. Bounded at 5000 slots; ample for any realistic
+// preview workload.
+func (ps *PreviewService) allocateBasePort(previewID uint) (int, error) {
 	const base = 20000
-	const rng = 10000
+	const rng = 5000
 	start := base + int(previewID%uint(rng))
 	for i := 0; i < rng; i++ {
 		candidate := base + ((start - base + i) % rng)
 		var count int64
 		ps.db.Model(&PreviewDeployment{}).
-			Where("port = ? AND id != ?", candidate, previewID).
+			Where("base_port = ? AND id != ?", candidate, previewID).
 			Count(&count)
 		if count == 0 {
 			return candidate, nil
 		}
 	}
-	return 0, fmt.Errorf("no free preview port in [%d, %d)", base, base+rng)
+	return 0, fmt.Errorf("no free preview base port in [%d, %d)", base, base+rng)
+}
+
+// slotName returns the canonical container name for a given preview +
+// slot. Deterministic so DeletePreview can target both slots without
+// tracking the inactive one's state.
+func slotName(previewID uint, slot int) string {
+	return fmt.Sprintf("webcasa-preview-%d-p%d", previewID, slot)
 }
 
 // runPreview executes the full build-run-expose pipeline asynchronously.
@@ -309,9 +341,10 @@ func (ps *PreviewService) runPreview(jobCtx context.Context, previewID, projectI
 		ps.markFailed(previewID, fmt.Sprintf("git credentials: %v", err))
 		return
 	}
-	// H3 fix: pass the clean URL + token separately. CloneToDir injects
-	// the token via `-c http.extraHeader` instead of baking it into argv,
-	// so the token doesn't leak to `ps` / process listings.
+	// H3/R6-H1 fix: pass the clean URL + token separately. CloneToDir
+	// delivers the token via the GIT_CONFIG_COUNT env-var ladder
+	// (invisible to `ps`) scoped to the requesting origin — so the
+	// token never lands in argv and cannot leak on redirect.
 	if err := ps.svc.git.CloneToDir(ctx, project.GitURL, branch, deployKey, httpsToken, srcDir, logWriter); err != nil {
 		ps.markFailed(previewID, fmt.Sprintf("git clone: %v", err))
 		return
@@ -347,76 +380,91 @@ func (ps *PreviewService) runPreview(jobCtx context.Context, previewID, projectI
 		EnvVar{Key: "WEBCASA_PREVIEW_BRANCH", Value: branch},
 	)
 
-	// H2 fix: staging-then-swap. Start the new container under a staging
-	// name (new port) + update the Caddy upstream FIRST, then tear down
-	// the old container. If the new container fails to start, the old
-	// one keeps serving traffic — failed synchronize doesn't break a
-	// previously-working preview.
-	stagingName := preview.ContainerName + "-staging"
-	stagingPort := preview.Port + 10000 // separate port during swap
-	ps.svc.docker.StopAndRemove(stagingName)
-	if _, err := ps.svc.docker.RunWithName(ctx, stagingName, imageTag, stagingPort, envVars); err != nil {
+	// R6-C1 fix: two-slot alternation. Slot 0 binds BasePort, slot 1
+	// binds BasePort+5000. Each deploy flips to the unused slot so the
+	// old container keeps serving while the new one comes up, and we
+	// never need to rename+remap ports (which the old implementation
+	// did incorrectly — docker rename doesn't move port bindings, so
+	// Caddy was pointed at a port nothing was listening on).
+	//
+	// currentSlot == -1 on first run → nextSlot = 0
+	// currentSlot == 0             → nextSlot = 1
+	// currentSlot == 1             → nextSlot = 0
+	nextSlot := 0
+	if preview.Slot == 0 {
+		nextSlot = 1
+	}
+	nextPort := preview.BasePort
+	if nextSlot == 1 {
+		nextPort = preview.BasePort + 5000
+	}
+	nextContainer := slotName(preview.ID, nextSlot)
+
+	// Remove any leftover from a previous failed attempt in the same slot.
+	ps.svc.docker.StopAndRemove(nextContainer)
+	if _, err := ps.svc.docker.RunWithName(ctx, nextContainer, imageTag, nextPort, envVars); err != nil {
 		ps.markFailed(previewID, fmt.Sprintf("run staging container: %v", err))
 		return
 	}
-	// Give the container a few seconds to bind its port before swapping
-	// traffic. No healthcheck integration yet — Phase B concern.
-	select {
-	case <-ctx.Done():
-		ps.svc.docker.StopAndRemove(stagingName)
+
+	// R6-H3 fix: proper TCP readiness probe instead of a flat 3s sleep.
+	// Give the container up to 30s to bind its port; fail fast if it
+	// crashes immediately. Uses the same port dialing probe as the main
+	// deploy healthcheck — Phase B will layer HTTP-level checks on top.
+	if err := waitForPortOpen(ctx, nextPort, 30*time.Second); err != nil {
+		ps.svc.docker.StopAndRemove(nextContainer)
+		ps.markFailed(previewID, fmt.Sprintf("staging container failed to bind port %d: %v", nextPort, err))
 		return
-	case <-time.After(3 * time.Second):
 	}
 
 	// Create the host on first run, or update existing host's upstream to
-	// point at the staging port.
+	// point at the new slot's port. Old slot (if any) keeps serving
+	// until this call returns; so failed upstream update leaves the old
+	// version live.
 	if preview.HostID == 0 {
 		hostID, err := ps.coreAPI.CreateHost(pluginpkg.CreateHostRequest{
 			Domain:       preview.Domain,
 			HostType:     "proxy",
-			UpstreamAddr: fmt.Sprintf("localhost:%d", stagingPort),
+			UpstreamAddr: fmt.Sprintf("localhost:%d", nextPort),
 			TLSEnabled:   true,
 			HTTPRedirect: true,
 			WebSocket:    true,
 			Compression:  true,
 		})
 		if err != nil {
-			ps.svc.docker.StopAndRemove(stagingName)
+			ps.svc.docker.StopAndRemove(nextContainer)
 			ps.markFailed(previewID, fmt.Sprintf("create host: %v", err))
 			return
 		}
 		preview.HostID = hostID
 		ps.db.Model(&preview).Update("host_id", hostID)
 	} else {
-		if err := ps.coreAPI.UpdateHostUpstream(preview.HostID, fmt.Sprintf("localhost:%d", stagingPort)); err != nil {
-			ps.svc.docker.StopAndRemove(stagingName)
+		if err := ps.coreAPI.UpdateHostUpstream(preview.HostID, fmt.Sprintf("localhost:%d", nextPort)); err != nil {
+			ps.svc.docker.StopAndRemove(nextContainer)
 			ps.markFailed(previewID, fmt.Sprintf("update host upstream: %v", err))
 			return
 		}
 	}
 
-	// Traffic now points at staging. Tear down the old container + rename
-	// staging → canonical.
-	ps.svc.docker.StopAndRemove(preview.ContainerName)
-	if err := ps.renameContainer(ctx, stagingName, preview.ContainerName); err != nil {
-		// Rename failed — point Caddy back to the staging name via its
-		// port (it's still running). Record the state as running but
-		// with a diagnostic.
-		ps.logger.Warn("rename staging → canonical failed; keeping staging port in Caddy",
-			"preview_id", previewID, "err", err)
-	} else {
-		// Swap Caddy back to the canonical port now that the container
-		// has its canonical name.
-		_ = ps.coreAPI.UpdateHostUpstream(preview.HostID, fmt.Sprintf("localhost:%d", preview.Port))
+	// Caddy now points at the new slot. Stop + remove the previous slot
+	// container; this is the only destructive step and it only runs
+	// AFTER traffic has moved.
+	if preview.Slot >= 0 {
+		oldContainer := slotName(preview.ID, preview.Slot)
+		ps.svc.docker.StopAndRemove(oldContainer)
 	}
 
+	// Persist the new active slot atomically with status=running.
 	ps.db.Model(&preview).Updates(map[string]interface{}{
+		"slot":           nextSlot,
+		"port":           nextPort,
+		"container_name": nextContainer,
 		"status":         "running",
 		"failure_reason": "",
 	})
 	ps.logger.Info("preview deployment running",
 		"project", project.Name, "pr", preview.PRNumber,
-		"domain", preview.Domain, "port", preview.Port)
+		"domain", preview.Domain, "port", nextPort, "slot", nextSlot)
 }
 
 // setStatus updates the preview row's status atomically and returns false
@@ -431,20 +479,50 @@ func (ps *PreviewService) setStatus(previewID uint, status, failureReason string
 	return res.RowsAffected > 0
 }
 
-// renameContainer renames a container via podman. Uses the same CLI the
-// runner already relies on. Returns nil if the target already has the
-// canonical name (idempotent).
-func (ps *PreviewService) renameContainer(ctx context.Context, oldName, newName string) error {
-	if oldName == newName {
-		return nil
+// waitForPortOpen polls the loopback port every 500ms until a TCP
+// connection succeeds or the timeout elapses. Returns nil on success.
+// Used as a simple readiness probe for freshly-started preview
+// containers — replaces the previous fixed 3s sleep (R6-H3).
+func waitForPortOpen(ctx context.Context, port int, timeout time.Duration) error {
+	deadline := time.Now().Add(timeout)
+	addr := fmt.Sprintf("127.0.0.1:%d", port)
+	for time.Now().Before(deadline) {
+		if ctx.Err() != nil {
+			return ctx.Err()
+		}
+		conn, err := net.DialTimeout("tcp", addr, 1*time.Second)
+		if err == nil {
+			conn.Close()
+			return nil
+		}
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-time.After(500 * time.Millisecond):
+		}
 	}
-	return exec.CommandContext(ctx, "docker", "rename", oldName, newName).Run()
+	return fmt.Errorf("timeout after %s waiting for port %d", timeout, port)
 }
 
 // removeImage force-removes a previously built image. Used during cleanup
 // on failure/delete so images don't accumulate.
 func removeImage(ctx context.Context, imageTag string) {
 	_ = exec.CommandContext(ctx, "docker", "rmi", "-f", imageTag).Run()
+}
+
+// isNotFoundErr classifies an error as "the target resource didn't
+// exist". Container / image cleanup must be idempotent — if the item
+// was never created (e.g. build failed before Run) we don't want to
+// flag that as a cleanup failure that traps the row in cleanup_failed
+// forever (R6-M1).
+func isNotFoundErr(err error) bool {
+	if err == nil {
+		return false
+	}
+	s := strings.ToLower(err.Error())
+	return strings.Contains(s, "no such container") ||
+		strings.Contains(s, "not found") ||
+		strings.Contains(s, "no such object")
 }
 
 // markFailed records the reason on the row and flips status to "failed".
@@ -498,15 +576,13 @@ func (ps *PreviewService) DeletePreview(id uint) error {
 		}
 	}
 
-	// 2b. Containers: both canonical + any leftover staging from a half-
-	// done swap.
-	if preview.ContainerName != "" {
-		if err := ps.coreAPI.DockerRemoveContainer(preview.ContainerName, true); err != nil {
-			errs = append(errs, fmt.Sprintf("remove container: %v", err))
-		}
-		if err := ps.coreAPI.DockerRemoveContainer(preview.ContainerName+"-staging", true); err != nil {
-			// Staging missing is the common case — only log verbose failure.
-			ps.logger.Debug("staging container already gone", "err", err)
+	// 2b. Containers: remove both slot containers. Either may not exist
+	// if the preview never got past the build step or was in the middle
+	// of a flip; "not found" is not a cleanup failure (R6-M1 fix).
+	for _, slot := range []int{0, 1} {
+		name := slotName(id, slot)
+		if err := ps.coreAPI.DockerRemoveContainer(name, true); err != nil && !isNotFoundErr(err) {
+			errs = append(errs, fmt.Sprintf("remove container %s: %v", name, err))
 		}
 	}
 

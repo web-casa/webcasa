@@ -123,14 +123,27 @@ func (Deployment) TableName() string {
 // the same host port, keeping the Caddy upstream stable and avoiding port
 // overflow from a naive `20000 + previewID` formula (Codex Round: H5).
 type PreviewDeployment struct {
-	ID            uint      `gorm:"primaryKey" json:"id"`
-	ProjectID     uint      `gorm:"index;not null;uniqueIndex:ux_preview_project_pr" json:"project_id"`
-	PRNumber      int       `gorm:"not null;uniqueIndex:ux_preview_project_pr" json:"pr_number"`
-	Branch        string    `gorm:"size:128" json:"branch"`
-	Domain        string    `gorm:"size:255" json:"domain"`
-	ContainerName string    `gorm:"size:128" json:"container_name"`
-	ImageTag      string    `gorm:"size:128" json:"image_tag"` // webcasa-preview-<id>
-	Port          int       `gorm:"default:0" json:"port"`     // host port (allocated once, stored)
+	ID            uint   `gorm:"primaryKey" json:"id"`
+	ProjectID     uint   `gorm:"index;not null;uniqueIndex:ux_preview_project_pr" json:"project_id"`
+	PRNumber      int    `gorm:"not null;uniqueIndex:ux_preview_project_pr" json:"pr_number"`
+	Branch        string `gorm:"size:128" json:"branch"`
+	Domain        string `gorm:"size:255" json:"domain"`
+	ContainerName string `gorm:"size:128" json:"container_name"` // reflects the currently-active slot container name
+	ImageTag      string `gorm:"size:128" json:"image_tag"`      // webcasa-preview-<id>
+	// Port: the currently-serving host port. Equals BasePort when Slot==0,
+	// BasePort+5000 when Slot==1. Updated atomically with ContainerName +
+	// Slot on each successful swap.
+	Port int `gorm:"default:0" json:"port"`
+	// BasePort: the port slot-0 container binds to. Allocated once at
+	// create-time in [20000, 25000); the "alt" slot-1 container binds to
+	// BasePort+5000 (lands in [25000, 30000)). Never changes after
+	// allocation. Two slots let us alternate each deploy without ever
+	// rebinding the same port while both containers briefly coexist
+	// during the Caddy upstream swap (Codex R6-C1 fix).
+	BasePort int `gorm:"default:0;uniqueIndex:ux_preview_base_port" json:"base_port"`
+	// Slot: which slot is currently serving — 0 or 1, or -1 before the
+	// first successful deploy.
+	Slot          int       `gorm:"default:-1" json:"slot"`
 	HostID        uint      `gorm:"default:0" json:"host_id"`
 	Status        string    `gorm:"size:16;default:pending" json:"status"` // pending | building | running | failed | cleanup_failed
 	FailureReason string    `gorm:"size:512" json:"failure_reason,omitempty"`
