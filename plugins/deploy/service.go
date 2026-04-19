@@ -69,6 +69,16 @@ type Service struct {
 
 	// Git polling scheduler (opt-in per project; see Project.GitPollEnabled).
 	poller *Poller
+
+	// PreviewService handles ephemeral per-PR preview deployments (v0.14+).
+	// Populated after NewService returns so preview can borrow a complete
+	// Service pointer.
+	preview *PreviewService
+
+	// previewGCStop is closed by StopPreviewGC to shut down the daily GC
+	// loop. Guarded by previewGCMu so Start/Stop can race safely.
+	previewGCMu   sync.Mutex
+	previewGCStop chan struct{}
 }
 
 // NewService creates a new deploy service.
@@ -110,6 +120,16 @@ func NewService(db *gorm.DB, coreAPI pluginpkg.CoreAPI, eventBus *pluginpkg.Even
 	// Build the poller after the service struct is fully initialised so it
 	// can borrow s.db / s.logger / s.GetGitCredentials.
 	svc.poller = NewPoller(svc)
+
+	// Preview GC lifecycle channels.
+	// (declared as struct fields below via inline init — see StartPreviewGC)
+
+	// PreviewService sits on top of the fully-wired Service: it reads
+	// project state via svc.GetProject, reuses the port allocator, and
+	// kicks off builds through the standard Build() path. Keep
+	// construction here so handlers that receive Service get a ready-to-use
+	// preview field.
+	svc.preview = NewPreviewService(db, svc, coreAPI, logger)
 
 	return svc
 }
@@ -1353,6 +1373,50 @@ func (s *Service) StartGitPoller() {
 // StopGitPoller halts the polling loop and waits for in-flight ticks to drain.
 func (s *Service) StopGitPoller() {
 	s.poller.Stop()
+}
+
+// StartPreviewGC starts a daily GC loop that tears down preview
+// deployments past their `expires_at`. Safe to call before any previews
+// exist — the loop just walks an empty query when there's nothing to
+// clean. Runs one pass immediately on start so a stop-start cycle of
+// the plugin catches stale previews without waiting 24h.
+func (s *Service) StartPreviewGC() {
+	s.previewGCMu.Lock()
+	defer s.previewGCMu.Unlock()
+	if s.previewGCStop != nil {
+		return // already running
+	}
+	stop := make(chan struct{})
+	s.previewGCStop = stop
+	go func() {
+		// First pass on startup.
+		if n := s.preview.CleanupExpired(); n > 0 {
+			s.logger.Info("preview GC: cleaned up expired previews", "count", n)
+		}
+		t := time.NewTicker(24 * time.Hour)
+		defer t.Stop()
+		for {
+			select {
+			case <-stop:
+				return
+			case <-t.C:
+				if n := s.preview.CleanupExpired(); n > 0 {
+					s.logger.Info("preview GC: cleaned up expired previews", "count", n)
+				}
+			}
+		}
+	}()
+}
+
+// StopPreviewGC halts the daily GC loop.
+func (s *Service) StopPreviewGC() {
+	s.previewGCMu.Lock()
+	defer s.previewGCMu.Unlock()
+	if s.previewGCStop == nil {
+		return
+	}
+	close(s.previewGCStop)
+	s.previewGCStop = nil
 }
 
 // migrateDeployKeys encrypts any plaintext deploy keys found in the database.
