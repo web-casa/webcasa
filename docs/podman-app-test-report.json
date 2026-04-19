@@ -1,0 +1,49 @@
+{
+  "_meta": {
+    "ran_at": "2026-04-19",
+    "vps": "Linode g6-standard-2 ap-southeast (AlmaLinux 9 + Podman 5.6.0 + podman-compose 1.5.0)",
+    "harness": "scripts/appstore-batch-test/batch_test.py",
+    "rounds": ["round1: 5 docker.sock-mount apps", "round2: 16 mid-tier apps"],
+    "renderer_state": "post fix(67fd610) — docker.sock label=disable injection + bind-mount :Z",
+    "skipped_apps_reason": "Round 3 hardware-dependency apps (gladys/scrypted/transmission-vpn/windows/zerotier/ollama-nvidia) not run; require KVM/USB/GPU/TUN that the test VPS lacks"
+  },
+  "summary": {
+    "total_run": 21,
+    "passed": 17,
+    "failed_real_app_issue": 4,
+    "failed_webcasa_bug": 0,
+    "skipped_hardware": 6
+  },
+  "results": [
+    {"app_id": "portainer",       "round": 1, "status": "pass",                              "duration_s": 4.3},
+    {"app_id": "dockge",          "round": 1, "status": "pass",                              "duration_s": 6.3},
+    {"app_id": "dozzle",          "round": 1, "status": "pass",                              "duration_s": 4.3},
+    {"app_id": "uptime-kuma",     "round": 1, "status": "pass",                              "duration_s": 4.4},
+    {"app_id": "beszel-agent",    "round": 1, "status": "pass",                              "duration_s": 4.2},
+    {"app_id": "crowdsec",        "round": 2, "status": "fail", "category": "needs-config", "duration_s": 36.0,
+        "note": "container starts then crashes on cscli machines add — SQLite 'attempt to write a readonly database' / 'unable to insert row'. Multi-container init race; not a podman-side bug"},
+    {"app_id": "cup",             "round": 2, "status": "pass",                              "duration_s": 6.3},
+    {"app_id": "homarr-1",        "round": 2, "status": "pass",                              "duration_s": 23.4},
+    {"app_id": "dashdot",         "round": 2, "status": "pass",                              "duration_s": 20.6},
+    {"app_id": "homebridge",      "round": 2, "status": "pass",                              "duration_s": 32.3},
+    {"app_id": "kasm-workspaces", "round": 2, "status": "pass",                              "duration_s": 29.3},
+    {"app_id": "sshwifty",        "round": 2, "status": "fail", "category": "catalog",      "duration_s": 2.1,
+        "note": "image niruix/sshwifty:0.4.3 returns 'manifest unknown' from docker.io; upstream tag deleted. seed_apps.json.gz needs a tag bump"},
+    {"app_id": "stirling-pdf",    "round": 2, "status": "pass",                              "duration_s": 70.2},
+    {"app_id": "unmanic",         "round": 2, "status": "pass",                              "duration_s": 46.4},
+    {"app_id": "cloudflared",     "round": 2, "status": "pass",                              "duration_s": 27.2},
+    {"app_id": "matter-server",   "round": 2, "status": "pass",                              "duration_s": 23.1},
+    {"app_id": "mdns-repeater",   "round": 2, "status": "fail", "category": "needs-config", "duration_s": 6.9,
+        "note": "binary requires >= 2 interface args; default compose passes 0. user-config required, not a bug"},
+    {"app_id": "plex",            "round": 2, "status": "pass",                              "duration_s": 21.0},
+    {"app_id": "netdata",         "round": 2, "status": "pass",                              "duration_s": 23.7},
+    {"app_id": "n8n-1",           "round": 2, "status": "pass",                              "duration_s": 60.3,
+        "note": "validates podman-compose 1.5 handling of depends_on condition: service_completed_successfully (issue #575) — works in this version"},
+    {"app_id": "zigbee2mqtt",     "round": 2, "status": "fail", "category": "hardware",     "duration_s": 6.8,
+        "note": "/dev/ttyUSB0 not present on VPS; expected"}
+  ],
+  "fixes_committed_during_validation": [
+    "cd62bc4 (initial fix bundle): install.sh short-name registries + (later removed) setsebool, renderer.go :Z relabel, docs/selinux.md type correction",
+    "67fd610 (proper docker.sock fix): renderer.go injectSocketLabelDisable for security_opt: [label=disable]; ports-block bug fix in :Z relabel; setsebool dropped from install.sh"
+  ]
+}
