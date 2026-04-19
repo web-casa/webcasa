@@ -195,34 +195,28 @@ fatal，日志典型如：
 工作正常，证实 socket 本身是好的 —— 问题在容器内 `container_t` 域无法跨 SELinux
 策略边界访问宿主 `var_run_t` 的 socket。
 
-**v0.12 默认修法**：install.sh 启用了 `container_manage_cgroup` boolean，绝大多数
-情况下放行：
-
-```bash
-sudo getsebool container_manage_cgroup
-# container_manage_cgroup --> on
-```
-
-如果你重装 / 恢复备份后这个 boolean 被还原成 off，重新打开：
-
-```bash
-sudo setsebool -P container_manage_cgroup on
-```
-
-**仍然不行的场景** 给问题容器加 `--security-opt label=disable`：
+**v0.12 默认修法**：app-store 渲染器（`plugins/appstore/renderer.go`）在安装时
+自动给任何挂载 docker.sock / podman.sock 的 service 注入：
 
 ```yaml
-services:
-  portainer:
-    image: portainer/portainer-ce:2.39
-    security_opt:
-      - label=disable
-    volumes:
-      - /var/run/docker.sock:/var/run/docker.sock
+security_opt:
+  - label=disable
 ```
 
-代价：该容器完全跳过 SELinux 标签隔离（其他容器仍受策略保护）。可以接受 —
-docker.sock-mount 类应用本来就是有 root 等价的"管理类"容器。
+这会关闭**该单个容器**的 SELinux 标签隔离，允许它访问 `var_run_t` socket。
+其他容器仍受完整策略保护。这是 v0.12 发布前 VPS 实测推翻了"用 SELinux
+boolean 修"的猜测后的结论 —— `container_manage_cgroup`、`container_use_*`
+等现成 boolean 都与 `var_run_t` socket 访问无关，实测无效；写自定义 policy
+module 又超出发布时间表。
+
+代价：挂 docker.sock 的容器（portainer / dockge / dozzle / uptime-kuma /
+crowdsec / cup / beszel-agent / homarr-1）在 SELinux 层面等价于"非隔离"。
+这类应用本来就是 root-equivalent 管理工具，标签隔离能带来的额外防护有限。
+
+**自己写的 compose** (不经过 renderer) 需要手动加这两行。
+
+**不应该做**：改 `/etc/selinux/config` 把 SELinux 整机切到 permissive 或
+disabled —— 这等于把标签隔离对所有容器全部关闭，remediation 远超必要。
 
 ### 场景 5：重装 / 恢复备份后 `/run/podman/podman.sock` 连不上
 

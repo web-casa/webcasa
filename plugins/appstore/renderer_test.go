@@ -143,6 +143,28 @@ volumes:
 			// only one occurrence: counted via assertion below
 		},
 		{
+			// Critical: Codex Round-4 finding. 7 apps in the catalogue
+			// (archivebox, linkstack, mixpost-pro, nitter, photoprism,
+			// searxng, zipline) quote their volume entries. A naive
+			// append produced `- "...":Z` which is invalid YAML. :Z
+			// must land INSIDE the closing quote.
+			name: "double-quoted bind mount → :Z inside the quotes",
+			in: `services:
+  app:
+    image: example/app:1
+    volumes:
+      - "${APP_DATA_DIR}/data:/data"
+      - '/opt/app/logs:/logs'`,
+			mustHave: []string{
+				`- "${APP_DATA_DIR}/data:/data:Z"`,
+				`- '/opt/app/logs:/logs:Z'`,
+			},
+			mustMiss: []string{
+				`"${APP_DATA_DIR}/data:/data":Z`,
+				`'/opt/app/logs:/logs':Z`,
+			},
+		},
+		{
 			// Phase 5 Round 3 finding: gladys mounts /dev:/dev. Podman
 			// refuses `SELinux relabeling of /dev`, container stuck in
 			// Created with no logs. Skip pseudofs/device paths entirely.
@@ -207,6 +229,60 @@ volumes:
 				}
 			}
 		})
+	}
+}
+
+// TestSanitizeCompose_ServiceIndent4 — compose files that use 4-space
+// indentation for service definitions (legal YAML, found in the wild)
+// must still have socket-mounting services detected. Codex Round-4
+// High: previous implementation hard-coded `services_indent + 2` and
+// silently skipped 4-space-indented services.
+func TestSanitizeCompose_ServiceIndent4(t *testing.T) {
+	in := `services:
+    portainer:
+        image: portainer/portainer-ce:2.39
+        volumes:
+            - /var/run/docker.sock:/var/run/docker.sock
+            - ${APP_DATA_DIR}/data:/data`
+	got := SanitizeCompose(in)
+	if !strings.Contains(got, "security_opt:") {
+		t.Errorf("4-space indent service did NOT receive security_opt:\n%s", got)
+	}
+	if !strings.Contains(got, "- label=disable") {
+		t.Errorf("4-space indent service did NOT receive label=disable:\n%s", got)
+	}
+	// Host bind also needs :Z under the 4-space service.
+	if !strings.Contains(got, "${APP_DATA_DIR}/data:/data:Z") {
+		t.Errorf("4-space indent bind mount not relabeled:\n%s", got)
+	}
+}
+
+// TestSanitizeCompose_SecurityOptMerge — Codex Round-4 High: a service
+// that already has security_opt with OTHER options (not label=disable)
+// must get label=disable APPENDED to the existing list, not a duplicate
+// security_opt: block that would produce invalid YAML or drop existing
+// entries.
+func TestSanitizeCompose_SecurityOptMerge(t *testing.T) {
+	in := `services:
+  portainer:
+    image: portainer/portainer-ce:2.39
+    security_opt:
+      - seccomp=unconfined
+      - apparmor=unconfined
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock`
+	got := SanitizeCompose(in)
+	if n := strings.Count(got, "security_opt:"); n != 1 {
+		t.Errorf("expected exactly 1 security_opt: block (merge), got %d:\n%s", n, got)
+	}
+	for _, must := range []string{
+		"- seccomp=unconfined",
+		"- apparmor=unconfined",
+		"- label=disable",
+	} {
+		if !strings.Contains(got, must) {
+			t.Errorf("missing %q after merge:\n%s", must, got)
+		}
 	}
 }
 

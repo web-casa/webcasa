@@ -171,7 +171,25 @@ func relabelHostBindMount(line string, inVolumes bool) string {
 		return line
 	}
 	stripped := strings.TrimPrefix(trimmed, "- ")
-	stripped = strings.Trim(stripped, "\"'")
+
+	// Detect and remember whether the spec was quoted so we can re-quote
+	// after appending :Z. Earlier versions appended :Z after the closing
+	// quote, producing `- "host:container":Z` which is a YAML list item
+	// whose scalar ends at the closing quote — the :Z then looks like a
+	// flow-style key and compose parsers reject the file. Seven apps in
+	// the 269-entry catalogue use the quoted form (archivebox, linkstack,
+	// mixpost-pro, nitter, photoprism, searxng, zipline).
+	var quote byte
+	if len(stripped) >= 2 {
+		if stripped[0] == '"' && stripped[len(stripped)-1] == '"' {
+			quote = '"'
+			stripped = stripped[1 : len(stripped)-1]
+		} else if stripped[0] == '\'' && stripped[len(stripped)-1] == '\'' {
+			quote = '\''
+			stripped = stripped[1 : len(stripped)-1]
+		}
+	}
+
 	parts := strings.Split(stripped, ":")
 	if len(parts) < 2 {
 		return line
@@ -199,6 +217,15 @@ func relabelHostBindMount(line string, inVolumes bool) string {
 		if last == opt {
 			return line
 		}
+	}
+
+	// Rebuild the line preserving indent + quote state. We must find where
+	// the spec ends in the ORIGINAL line (after the "- " and optional
+	// opening quote) and insert :Z there — editing `line` directly avoids
+	// losing any indentation the caller had.
+	prefix := line[:len(line)-len(trimmed)] + "- "
+	if quote != 0 {
+		return prefix + string(quote) + stripped + ":Z" + string(quote)
 	}
 	return line + ":Z"
 }
@@ -304,49 +331,89 @@ func sanitizeStripAndRelabel(compose string) string {
 func injectSocketLabelDisable(content string) string {
 	lines := strings.Split(content, "\n")
 
-	// Phase 1: identify each service block by its YAML range and whether
-	// its volumes mount the socket. Service detection: at indent S+2 where
-	// S is the indent of the `services:` key, a `<name>:` line starts a
-	// service. The service body runs until the next line at indent <= S+2
-	// that isn't blank/comment.
+	// Phase 1: identify each service block. A service header is any line
+	// *deeper* than `services:` whose trimmed form ends with ":" and
+	// whose key looks like a YAML identifier — we intentionally DON'T
+	// require services_indent+2 (Codex High: 4-space-indented composes
+	// were silently skipped). Inline comments after the colon are
+	// allowed (`app:  # my service`). The service body continues until
+	// we see another line at the service's own indent with the same
+	// header shape, or a line at <= services_indent that's not a comment.
 	servicesIndent := -1
-	type svc struct{ start, end, indent int; mountsSock bool }
+	type svc struct {
+		start, end, indent        int
+		mountsSock                bool
+		secOptIndex               int // line number of existing `security_opt:` (-1 if none)
+		secOptIndent              int // indent of that line
+		secOptListItemIndent      int // indent of the first `- …` item under it (-1 if none)
+		hasLabelDisable           bool
+	}
 	var svcs []svc
 	var cur *svc
 	inVolumes := false
 	volIndent := -1
+	inSecOpt := false
+
+	isServiceHeader := func(trimmed string, indent int) bool {
+		if servicesIndent < 0 || indent <= servicesIndent {
+			return false
+		}
+		// Strip inline comment.
+		code := trimmed
+		if i := strings.Index(code, "#"); i >= 0 {
+			code = strings.TrimSpace(code[:i])
+		}
+		if !strings.HasSuffix(code, ":") {
+			return false
+		}
+		key := strings.TrimSuffix(code, ":")
+		if key == "" {
+			return false
+		}
+		// YAML keys with spaces are usually quoted or nested mappings,
+		// not plain service names. Reject them to avoid false positives
+		// on lines like `labels:\n  traefik.enable: true` — the latter
+		// is nested, but its indent would be deeper than the service it
+		// belongs to, so the shallowest matching indent wins (first
+		// header after `services:` sets svc.indent).
+		if strings.ContainsAny(key, " \t") {
+			return false
+		}
+		// Only accept lines at the *shallowest* indent we've seen so far
+		// for services — the first service header under services: sets
+		// that level, and any deeper-indented mapping key is a child.
+		if cur != nil && indent != cur.indent {
+			return false
+		}
+		return true
+	}
 
 	for i, line := range lines {
 		trimmed := strings.TrimSpace(line)
 		indent := len(line) - len(strings.TrimLeft(line, " \t"))
 
-		// Top-level services: key.
 		if servicesIndent < 0 && trimmed == "services:" {
 			servicesIndent = indent
 			continue
 		}
-
-		// We're outside any services block — nothing to do.
 		if servicesIndent < 0 {
 			continue
 		}
 
-		// A new service header at services_indent + 2 closes any previous
-		// service we were tracking and opens a new one.
-		isServiceHeader := indent == servicesIndent+2 && strings.HasSuffix(trimmed, ":") && !strings.Contains(trimmed, " ")
-		if isServiceHeader {
+		if isServiceHeader(trimmed, indent) {
 			if cur != nil {
 				cur.end = i - 1
 				svcs = append(svcs, *cur)
 			}
-			cur = &svc{start: i, indent: indent}
+			cur = &svc{start: i, indent: indent, secOptIndex: -1, secOptListItemIndent: -1}
 			inVolumes = false
 			volIndent = -1
+			inSecOpt = false
 			continue
 		}
 
-		// A line at <= servicesIndent that isn't blank/comment ends the
-		// services: block entirely.
+		// Exit services: block when we hit a line at or shallower than
+		// services_indent that isn't blank/comment.
 		if cur != nil && trimmed != "" && !strings.HasPrefix(trimmed, "#") && indent <= servicesIndent {
 			cur.end = i - 1
 			svcs = append(svcs, *cur)
@@ -355,18 +422,49 @@ func injectSocketLabelDisable(content string) string {
 			continue
 		}
 
-		// Track volumes within the current service.
-		if cur != nil && trimmed == "volumes:" && indent == cur.indent+2 {
+		if cur == nil {
+			continue
+		}
+
+		// Track volumes: for docker.sock detection.
+		if trimmed == "volumes:" && indent == cur.indent+(len(line)-len(strings.TrimLeft(line, " \t")))-cur.indent {
+			// The above is a no-op sanity guard; simpler condition below.
+		}
+		if trimmed == "volumes:" {
 			inVolumes = true
 			volIndent = indent
+			inSecOpt = false
 			continue
 		}
 		if inVolumes && trimmed != "" && indent <= volIndent {
 			inVolumes = false
 		}
-		if inVolumes && cur != nil {
+		if inVolumes {
 			if strings.Contains(trimmed, "docker.sock") || strings.Contains(trimmed, "podman.sock") {
 				cur.mountsSock = true
+			}
+		}
+
+		// Track existing security_opt block within this service.
+		if trimmed == "security_opt:" {
+			cur.secOptIndex = i
+			cur.secOptIndent = indent
+			inSecOpt = true
+			inVolumes = false
+			continue
+		}
+		if inSecOpt {
+			if trimmed != "" && indent <= cur.secOptIndent {
+				inSecOpt = false
+			} else if strings.HasPrefix(trimmed, "- ") {
+				if cur.secOptListItemIndent < 0 {
+					cur.secOptListItemIndent = indent
+				}
+				item := strings.TrimSpace(strings.TrimPrefix(trimmed, "- "))
+				item = strings.Trim(item, "\"'")
+				if item == "label=disable" {
+					cur.hasLabelDisable = true
+				}
 			}
 		}
 	}
@@ -375,44 +473,49 @@ func injectSocketLabelDisable(content string) string {
 		svcs = append(svcs, *cur)
 	}
 
-	// Phase 2: for each socket-mounting service, decide if it already has
-	// security_opt with label=disable; if so skip, else inject right after
-	// the service header.
-	type insertion struct{ atLine int; text string }
+	// Phase 2: decide the insertion per socket-mounting service.
+	//   - already has `label=disable` → skip
+	//   - has `security_opt:` without label=disable → append a list item
+	//     at the same indent as the existing items (Codex High: previous
+	//     behaviour injected a duplicate `security_opt:` block, which
+	//     either dropped existing entries like `seccomp=unconfined` or
+	//     produced invalid duplicate-key YAML).
+	//   - no `security_opt:` → insert a new block right after the service
+	//     header, using service-indent+2 for the key and service-indent+4
+	//     for the list item.
+	type insertion struct {
+		atLine int
+		text   string
+	}
 	var inserts []insertion
 	for _, s := range svcs {
-		if !s.mountsSock {
+		if !s.mountsSock || s.hasLabelDisable {
 			continue
 		}
-		alreadyHas := false
-		hasSecOpt := false
-		for j := s.start + 1; j <= s.end; j++ {
-			t := strings.TrimSpace(lines[j])
-			if t == "security_opt:" {
-				hasSecOpt = true
+		if s.secOptIndex >= 0 {
+			listIndent := s.secOptListItemIndent
+			if listIndent < 0 {
+				// security_opt: exists but has no items yet (e.g. an
+				// empty or commented-only list). Use 2 extra spaces.
+				listIndent = s.secOptIndent + 2
 			}
-			if hasSecOpt && (t == "- label=disable" || t == "- \"label=disable\"" || t == "- 'label=disable'") {
-				alreadyHas = true
-				break
-			}
+			inserts = append(inserts, insertion{
+				atLine: s.secOptIndex + 1,
+				text:   strings.Repeat(" ", listIndent) + "- label=disable",
+			})
+		} else {
+			inserts = append(inserts, insertion{
+				atLine: s.start + 1,
+				text: strings.Repeat(" ", s.indent+2) + "security_opt:\n" +
+					strings.Repeat(" ", s.indent+4) + "- label=disable",
+			})
 		}
-		if alreadyHas {
-			continue
-		}
-		// Insert immediately after the service header line.
-		bodyIndent := strings.Repeat(" ", s.indent+2)
-		listIndent := strings.Repeat(" ", s.indent+4)
-		inserts = append(inserts, insertion{
-			atLine: s.start + 1,
-			text:   bodyIndent + "security_opt:\n" + listIndent + "- label=disable",
-		})
 	}
 
 	if len(inserts) == 0 {
 		return content
 	}
 
-	// Apply insertions back-to-front so earlier indices stay valid.
 	result := lines
 	for i := len(inserts) - 1; i >= 0; i-- {
 		ins := inserts[i]
