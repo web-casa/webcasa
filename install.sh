@@ -885,8 +885,43 @@ CFEOF
     fi
 }
 
+setup_selinux_policy() {
+    # v0.13+: install the custom webcasa_t policy module so the service
+    # stops running under unconfined_service_t. No-op on hosts where
+    # SELinux is disabled or the .pp file isn't shipped.
+    local pp
+    pp=$(find "$SCRIPT_DIR/policy" -maxdepth 1 -name 'webcasa.pp' 2>/dev/null | head -1)
+    if [[ -z "$pp" ]]; then
+        # Not shipped with this install (from-source build without policy tree,
+        # or pre-v0.13 archive). Remain on unconfined_service_t.
+        return 0
+    fi
+    if ! command -v getenforce &>/dev/null || [[ "$(getenforce 2>/dev/null)" == "Disabled" ]]; then
+        info "SELinux disabled — skipping webcasa_t policy install"
+        return 0
+    fi
+    if ! command -v semodule &>/dev/null; then
+        warn "semodule missing (policycoreutils not installed?); skipping webcasa_t policy install"
+        return 0
+    fi
+    step "Installing webcasa_t SELinux policy"
+    semodule -i "$pp" 2>&1 | grep -v "^libsepol\." || true
+    # Label the binary + data dirs with the matching fcontexts.
+    restorecon -Rv "$INSTALL_DIR/webcasa-server" "$CONFIG_DIR" "$DATA_DIR" "$LOG_DIR" 2>/dev/null || true
+    # Register the panel port with http_port_t so webcasa_t can bind it.
+    # (Only needed for non-default ports; 80/443 are already http_port_t.)
+    if [[ -n "$PANEL_PORT" && "$PANEL_PORT" -ne 80 && "$PANEL_PORT" -ne 443 ]]; then
+        if command -v semanage &>/dev/null; then
+            semanage port -a -t http_port_t -p tcp "$PANEL_PORT" 2>/dev/null || \
+                semanage port -m -t http_port_t -p tcp "$PANEL_PORT" 2>/dev/null || true
+        fi
+    fi
+    success "webcasa_t policy installed"
+}
+
 setup_systemd() {
     step "Setting up systemd service"
+    setup_selinux_policy
 
     cat > /etc/systemd/system/webcasa.service <<SVCEOF
 [Unit]
@@ -936,6 +971,12 @@ PrivateTmp=true
 # needed (no CAP_SYS_ADMIN, no CAP_NET_ADMIN, etc.).
 AmbientCapabilities=CAP_NET_BIND_SERVICE
 CapabilityBoundingSet=CAP_NET_BIND_SERVICE
+
+# SELinux domain (v0.13+). Harmlessly ignored on hosts where SELinux is
+# disabled or the webcasa_t module isn't installed — systemd emits a
+# warning in those cases but the service still starts. Install-time
+# setup_selinux_policy() best-effort loads the module and labels files.
+SELinuxContext=system_u:system_r:webcasa_t:s0
 
 # Logging
 StandardOutput=journal

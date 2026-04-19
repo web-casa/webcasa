@@ -106,6 +106,9 @@ func RuntimeVersion() string {
 			return strings.TrimSpace(string(out))
 		}
 	case RuntimeDocker:
+		// Legacy path for hosts that still have Docker (pre-v0.12 installs);
+		// v0.12+ always reaches the RuntimePodman branch. See
+		// docs/08-podman-docker-shim-future.md.
 		if out, err := exec.Command("docker", "--version").Output(); err == nil {
 			return strings.TrimSpace(string(out))
 		}

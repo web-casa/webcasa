@@ -45,6 +45,8 @@ export default function ProjectCreate() {
         domain: '',
         port: 0,
         deploy_mode: '',
+        build_type: '', // auto | dockerfile | nixpacks | paketo | railpack | static; empty = legacy dockerfile
+
         health_check_path: '/',
         health_check_timeout: 30,
         health_check_retries: 3,
@@ -482,7 +484,30 @@ export default function ProjectCreate() {
                             </Text>
                         </Box>
 
-                        {form.deploy_mode === 'docker' && form.framework !== 'dockerfile' && (
+                        {form.deploy_mode === 'docker' && (
+                            <Box>
+                                <Text size="2" weight="medium" mb="1">{t('deploy.build_type')}</Text>
+                                <Select.Root
+                                    value={form.build_type || 'auto'}
+                                    onValueChange={v => updateForm('build_type', v === 'auto' ? '' : v)}
+                                >
+                                    <Select.Trigger />
+                                    <Select.Content>
+                                        <Select.Item value="auto">{t('deploy.build_type_auto')}</Select.Item>
+                                        <Select.Item value="dockerfile">{t('deploy.build_type_dockerfile')}</Select.Item>
+                                        <Select.Item value="nixpacks">{t('deploy.build_type_nixpacks')}</Select.Item>
+                                        <Select.Item value="paketo">{t('deploy.build_type_paketo')}</Select.Item>
+                                        <Select.Item value="railpack">{t('deploy.build_type_railpack')}</Select.Item>
+                                        <Select.Item value="static">{t('deploy.build_type_static')}</Select.Item>
+                                    </Select.Content>
+                                </Select.Root>
+                                <Text size="1" color="gray" mt="1">
+                                    {t(`deploy.build_type_hint_${form.build_type || 'auto'}`)}
+                                </Text>
+                            </Box>
+                        )}
+
+                        {form.deploy_mode === 'docker' && (form.build_type === '' || form.build_type === 'dockerfile') && form.framework !== 'dockerfile' && (
                             <Callout.Root size="1">
                                 <Callout.Text>{t('deploy.docker_needs_dockerfile')}</Callout.Text>
                             </Callout.Root>
