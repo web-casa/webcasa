@@ -66,13 +66,12 @@ func (p *Plugin) Init(ctx *pluginpkg.Context) error {
 	r.GET("/logs", p.handler.ListLogs)
 
 	// Subscribe to backup.trigger event (from AI tool or other plugins).
+	// Use TriggerAsync so the goroutine is tracked by Service.wg —
+	// Plugin.Stop() then drains it instead of leaving it to write to a
+	// DB that's about to close.
 	ctx.EventBus.Subscribe("backup.trigger", func(e pluginpkg.Event) {
 		ctx.Logger.Info("Backup triggered via event", "source", e.Source)
-		go func() {
-			if _, err := p.svc.RunBackup("ai-triggered"); err != nil {
-				ctx.Logger.Error("AI-triggered backup failed", "err", err)
-			}
-		}()
+		p.svc.TriggerAsync("ai-triggered")
 	})
 
 	ctx.Logger.Info("Backup plugin routes registered")

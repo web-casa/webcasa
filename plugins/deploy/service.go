@@ -1059,6 +1059,15 @@ func (s *Service) Rollback(projectID uint, buildNum int) error {
 			return fmt.Errorf("docker rollback failed: %w", runErr)
 		}
 		containerName := s.docker.ContainerName(projectID)
+		// C1-class fix: Rollback may race with DeleteProject. Verify the
+		// project row still exists before committing the rolled-back
+		// state — otherwise we've just started an orphan container that
+		// nothing in the panel tracks. If the row is gone, tear the new
+		// container back down and report the race.
+		if err := s.db.First(&Project{}, projectID).Error; err != nil {
+			s.docker.StopAndRemove(containerName)
+			return fmt.Errorf("project deleted during rollback; new container removed: %w", err)
+		}
 		s.db.Model(&Project{}).Where("id = ?", projectID).Updates(map[string]interface{}{
 			"status":         "running",
 			"docker_image":   imageTag,
