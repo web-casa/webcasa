@@ -298,6 +298,83 @@ def load_apps(seed_path: Path) -> list[dict[str, Any]]:
     return data
 
 
+def check_image_availability(apps: list[dict[str, Any]], reports: list["AppReport"]) -> None:
+    """For every service image across all apps, run `skopeo inspect` and
+    flag any that fail as an `image-unreachable` critical finding.
+
+    Why a dedicated function rather than folding into audit_compose:
+        - Network round-trips (not static analysis) — want to keep the
+          default `scripts/compose-audit.py` run fast and offline
+        - skopeo errors have a distinct class of meaning vs YAML-shape
+          findings; aggregating them separately keeps the JSON report
+          readable
+        - One app can have multiple services with distinct images; we
+          check each but dedupe identical refs across apps
+
+    Requires `skopeo` on PATH. Falls back to a clear error if missing.
+    """
+    import shutil
+    import re
+    import subprocess
+
+    if not shutil.which("skopeo"):
+        print("warning: skopeo not on PATH; --check-images skipped", file=sys.stderr)
+        return
+
+    # Collect every unique image ref → which apps use it.
+    image_re = re.compile(r"^\s*image:\s*(.+?)\s*$")
+    ref_to_apps: dict[str, list[str]] = {}
+    for app in apps:
+        compose = app.get("compose_file", "")
+        app_id = app.get("app_id", "<unknown>")
+        for line in compose.splitlines():
+            m = image_re.match(line)
+            if not m:
+                continue
+            ref = m.group(1).strip().strip("\"'")
+            # Resolve bare ${VAR} templates — if the image is fully
+            # templated it can't be checked without rendering, so skip.
+            if "${" in ref and "}" in ref and not ref.split(":")[0].strip("/${}"):
+                continue
+            # Attach docker.io/ prefix if bare (same as registries.conf.d
+            # short-name resolution would do at runtime).
+            if "/" not in ref.split(":")[0] and not ref.startswith("localhost"):
+                ref = "docker.io/" + ref
+            elif ref.count("/") == 1 and not ref.startswith(("docker.io/", "quay.io/", "ghcr.io/", "registry.", "localhost")):
+                ref = "docker.io/" + ref
+            ref_to_apps.setdefault(ref, []).append(app_id)
+
+    total = len(ref_to_apps)
+    print(f"Checking {total} unique image refs via skopeo inspect ...", file=sys.stderr)
+    app_to_failed_refs: dict[str, list[tuple[str, str]]] = {}
+    for i, (ref, app_ids) in enumerate(sorted(ref_to_apps.items()), 1):
+        try:
+            r = subprocess.run(
+                ["skopeo", "inspect", "--raw", f"docker://{ref}"],
+                capture_output=True, text=True, timeout=30,
+            )
+            if r.returncode != 0:
+                reason = (r.stderr or r.stdout).strip().split("\n")[-1][:180]
+                for a in app_ids:
+                    app_to_failed_refs.setdefault(a, []).append((ref, reason))
+        except subprocess.TimeoutExpired:
+            for a in app_ids:
+                app_to_failed_refs.setdefault(a, []).append((ref, "skopeo timed out after 30s"))
+        if i % 20 == 0:
+            print(f"  [{i}/{total}] ...", file=sys.stderr)
+
+    # Emit findings into the existing reports.
+    for rep in reports:
+        if rep.app_id in app_to_failed_refs:
+            for ref, reason in app_to_failed_refs[rep.app_id]:
+                rep.findings.append(Finding(
+                    severity="critical",
+                    code="image-unreachable",
+                    message=f"image {ref!r} failed skopeo inspect: {reason}",
+                    path="services.*.image",
+                ))
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument(
@@ -317,6 +394,14 @@ def main() -> int:
         action="store_true",
         help="Treat warnings as failure too (exit 1 if any warning present)",
     )
+    ap.add_argument(
+        "--check-images",
+        action="store_true",
+        help="Preflight every image ref via `skopeo inspect` to catch "
+             "upstream-deleted tags (the sshwifty / scrypted failure mode "
+             "from v0.12 Round-2/3). Slow — does 269 network round-trips. "
+             "Adds `image-unreachable` findings; exit 1 if any found.",
+    )
     args = ap.parse_args()
 
     if not args.seed.exists():
@@ -331,6 +416,11 @@ def main() -> int:
         if compose:
             rep.findings = audit_compose(compose)
         reports.append(rep)
+
+    # Optional image-availability preflight. Separate from the static
+    # audit so a no-network dev run stays fast.
+    if args.check_images:
+        check_image_availability(apps, reports)
 
     # ── Aggregate ─────────────────────────────────────────────────────────
     total = len(reports)

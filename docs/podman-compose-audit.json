@@ -1,17 +1,17 @@
 {
   "summary": {
-    "total": 269,
+    "total": 267,
     "critical": 0,
-    "warning_only": 10,
-    "info_only": 25,
+    "warning_only": 9,
+    "info_only": 24,
     "clean": 234,
     "histogram": {
       "docker-sock-mount": 13,
-      "network-host": 9,
-      "needs-rootful": 8,
+      "network-host": 8,
+      "needs-rootful": 6,
       "dep-completed-condition": 3,
       "elevated-caps": 6,
-      "device-passthrough": 6,
+      "device-passthrough": 5,
       "gpu-reservation-ignored": 1
     }
   },
@@ -318,40 +318,6 @@
           "code": "docker-sock-mount",
           "path": "services.portainer.volumes",
           "message": "Mounts the container runtime socket. v0.12 ships /var/run/docker.sock as a symlink to the Podman rootful socket; verify Docker-API consumers work against Podman's compat endpoint."
-        }
-      ]
-    },
-    {
-      "app_id": "scrypted",
-      "findings": [
-        {
-          "severity": "info",
-          "code": "needs-rootful",
-          "path": "services.scrypted.privileged",
-          "message": "`privileged: true` requires the rootful Podman socket; v0.12 ships rootful by default so this is supported."
-        },
-        {
-          "severity": "warning",
-          "code": "network-host",
-          "path": "services.scrypted.network_mode",
-          "message": "network_mode: host shares the host namespace; verify the app's ports do not collide with WebCasa (39921), Caddy (80/443), or other installed services."
-        },
-        {
-          "severity": "info",
-          "code": "device-passthrough",
-          "path": "services.scrypted.devices",
-          "message": "Maps host device(s) into the container. Verify the device node exists on the target host and that the `webcasa`/`podman` group has read/write access (udev rules for /dev/ttyUSB*, /dev/net/tun, etc.)."
-        }
-      ]
-    },
-    {
-      "app_id": "sshwifty",
-      "findings": [
-        {
-          "severity": "info",
-          "code": "needs-rootful",
-          "path": "services.sshwifty.privileged",
-          "message": "`privileged: true` requires the rootful Podman socket; v0.12 ships rootful by default so this is supported."
         }
       ]
     },

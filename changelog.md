@@ -6,6 +6,42 @@
 
 ---
 
+## [0.12.1] - 2026-04-19
+
+### Patch release — Tier 1 cleanup
+
+Collected during the v0.12.0 VPS validation week but below the bar to
+block that release. No behavioural changes for working apps; this is
+catalog maintenance + tooling polish.
+
+#### Catalog cleanup
+- **Removed** `sshwifty` and `scrypted` from the seed catalogue. Both
+  upstream images (`niruix/sshwifty:0.4.3`, `koush/scrypted:20`) were
+  deleted from docker.io before v0.12.0 and surface as `manifest unknown`
+  on any install attempt. Seed corpus now 267 apps (was 269). Pinned
+  tags for these had no working replacement at release time.
+
+#### Tooling
+- `scripts/compose-audit.py --check-images` (new): opt-in `skopeo inspect`
+  preflight that flags any image ref whose upstream has disappeared. Adds
+  an `image-unreachable` critical finding per affected app. Run it
+  pre-release to catch future `sshwifty`-class regressions before they
+  reach a VPS validation round. Slow (~269 network round-trips) so
+  gated behind an explicit flag.
+
+#### Internal
+- Python `cleanEmptySection` in `scripts/appstore-batch-test/batch_test.py`
+  now matches the Go implementation byte-for-byte. The earlier version
+  advanced the cursor by one line after skipping an empty section,
+  carrying blank/comment children into the output — a 1-2 line drift
+  per affected compose vs what the Go renderer produces in production.
+  New `plugins/appstore/cmd/sanitize-all` helper + a corpus parity
+  check (6860 lines each, zero diff over all 267 apps).
+- `scripts/appstore-batch-test/batch_test.py DEFAULT_APPS`: dropped
+  sshwifty + scrypted; 6/8 privileged tier (was 8/8).
+
+---
+
 ## [0.12.0] - 2026-04-19
 
 ### "Podman Only Edition" — Clean Break from Docker to Podman 5.6
