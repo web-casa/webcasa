@@ -260,6 +260,10 @@ def _relabel_host_bind(line: str, in_volumes: bool) -> str:
         return line  # named volume
     if "docker.sock" in host or "podman.sock" in host:
         return line  # relabel breaks the socket
+    # Pseudo-fs / device nodes — Podman refuses to relabel these.
+    for prefix in ("/dev", "/sys", "/proc", "/run/udev"):
+        if host == prefix or host.startswith(prefix + "/"):
+            return line
     if parts[-1] in ("Z", "z", "ro", "rw"):
         return line  # already suffixed
     return line + ":Z"
@@ -421,43 +425,52 @@ def run_one(app_id: str, app: dict, timeout_s: int, keep: bool, port: int) -> Re
                     stderr_tail=up.stderr[-800:],
                 )
 
-            # Give the containers a moment to settle — podman-compose returns
-            # as soon as `podman run` acks, but actual readiness is later.
-            time.sleep(3)
-
-            # Verify at least one container is Up. We don't try to parse
-            # healthchecks: the audit already classified GPU/network/etc
-            # quirks, so here we just need "container started and stayed
-            # running for ~3s".
-            ps = subprocess.run(
-                base + ["ps", "--format", "json"],
-                capture_output=True, text=True, timeout=30,
-            )
-            # podman-compose json output can be line-delimited or array.
-            # Parse leniently.
+            # Wait for at least one container to reach Running state.
+            # Single-shot 3s sleep + ps was racy: heavyweight images
+            # (transmission-vpn, kasm-workspaces) sometimes pass through
+            # a brief Created → starting transition that the snapshot
+            # missed, producing a false FAIL on a container that was
+            # actually fine. Poll for up to ~10s instead, exiting as
+            # soon as we see Running. Healthcheck-readiness still isn't
+            # part of the bar — the audit already flagged GPU/network/
+            # etc quirks, all we need here is "container actually
+            # started and is staying up".
             running = False
-            out = ps.stdout.strip()
-            if out:
-                try:
-                    arr = json.loads(out) if out.startswith("[") else [
-                        json.loads(line) for line in out.splitlines() if line
-                    ]
-                    for entry in arr:
-                        state = (entry.get("State") or entry.get("state") or "").lower()
-                        if state in ("running", "up"):
-                            running = True
-                            break
-                except json.JSONDecodeError:
-                    # Fall back to string sniff for older podman-compose
-                    running = "Up" in ps.stdout or "running" in ps.stdout.lower()
+            ps_stdout = ""
+            ps_stderr = ""
+            for _ in range(10):
+                time.sleep(1)
+                ps = subprocess.run(
+                    base + ["ps", "--format", "json"],
+                    capture_output=True, text=True, timeout=30,
+                )
+                ps_stdout = ps.stdout
+                ps_stderr = ps.stderr
+                out = ps.stdout.strip()
+                if out:
+                    try:
+                        arr = json.loads(out) if out.startswith("[") else [
+                            json.loads(line) for line in out.splitlines() if line
+                        ]
+                        for entry in arr:
+                            state = (entry.get("State") or entry.get("state") or "").lower()
+                            if state in ("running", "up"):
+                                running = True
+                                break
+                    except json.JSONDecodeError:
+                        running = "Up" in ps.stdout or "running" in ps.stdout.lower()
+                if running:
+                    break
 
             cleanup_err = cleanup()
             if not running:
+                # Use the LAST ps output we saw (most likely state).
+                last_out = ps_stdout[-800:] or ps_stderr[-800:]
                 return Result(
                     app_id=app_id, status="fail",
                     duration_s=time.monotonic() - start,
                     error="no container reached running state",
-                    stderr_tail=ps.stdout[-800:] or ps.stderr[-800:],
+                    stderr_tail=last_out,
                 )
             if cleanup_err:
                 # up + ps succeeded but teardown didn't. Downgrading to fail

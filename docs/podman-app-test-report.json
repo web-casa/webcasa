@@ -3,16 +3,16 @@
     "ran_at": "2026-04-19",
     "vps": "Linode g6-standard-2 ap-southeast (AlmaLinux 9 + Podman 5.6.0 + podman-compose 1.5.0)",
     "harness": "scripts/appstore-batch-test/batch_test.py",
-    "rounds": ["round1: 5 docker.sock-mount apps", "round2: 16 mid-tier apps"],
-    "renderer_state": "post fix(67fd610) — docker.sock label=disable injection + bind-mount :Z",
-    "skipped_apps_reason": "Round 3 hardware-dependency apps (gladys/scrypted/transmission-vpn/windows/zerotier/ollama-nvidia) not run; require KVM/USB/GPU/TUN that the test VPS lacks"
+    "rounds": ["round1: 5 docker.sock-mount apps", "round2: 16 mid-tier apps", "round3: 4 hardware-dependent apps (TUN/USB/IoT)"],
+    "renderer_state": "post round-3 fix — also skip /dev /sys /proc /run/udev in :Z relabel (gladys mounted /dev:/dev)",
+    "skipped_apps_reason": "windows requires nested KVM (Linode dedicated CPU plan only); ollama-nvidia requires NVIDIA GPU"
   },
   "summary": {
-    "total_run": 21,
-    "passed": 17,
-    "failed_real_app_issue": 4,
+    "total_run": 25,
+    "passed": 20,
+    "failed_real_app_issue": 5,
     "failed_webcasa_bug": 0,
-    "skipped_hardware": 6
+    "skipped_hardware": 2
   },
   "results": [
     {"app_id": "portainer",       "round": 1, "status": "pass",                              "duration_s": 4.3},
@@ -40,10 +40,22 @@
     {"app_id": "n8n-1",           "round": 2, "status": "pass",                              "duration_s": 60.3,
         "note": "validates podman-compose 1.5 handling of depends_on condition: service_completed_successfully (issue #575) — works in this version"},
     {"app_id": "zigbee2mqtt",     "round": 2, "status": "fail", "category": "hardware",     "duration_s": 6.8,
-        "note": "/dev/ttyUSB0 not present on VPS; expected"}
+        "note": "/dev/ttyUSB0 not present on VPS; expected"},
+    {"app_id": "transmission-vpn", "round": 3, "status": "pass",                              "duration_s": 4.0,
+        "note": "Linode VM has /dev/net/tun by default; container started cleanly"},
+    {"app_id": "zerotier",         "round": 3, "status": "pass",                              "duration_s": 2.7},
+    {"app_id": "gladys",           "round": 3, "status": "pass",                              "duration_s": 62.1,
+        "note": "first attempt failed with 'SELinux relabeling of /dev is not allowed' — fixed in renderer by skipping /dev /sys /proc /run/udev in :Z relabel"},
+    {"app_id": "scrypted",         "round": 3, "status": "fail", "category": "catalog",      "duration_s": 2.1,
+        "note": "image koush/scrypted:20 returns 'manifest unknown' from docker.io; same class as sshwifty"}
+  ],
+  "skipped_with_reason": [
+    {"app_id": "windows",       "reason": "needs /dev/kvm (nested virt); standard Linode shared-CPU plans do not expose it"},
+    {"app_id": "ollama-nvidia", "reason": "needs NVIDIA GPU; CDI configuration covered in docs/nvidia-gpu.md"}
   ],
   "fixes_committed_during_validation": [
     "cd62bc4 (initial fix bundle): install.sh short-name registries + (later removed) setsebool, renderer.go :Z relabel, docs/selinux.md type correction",
-    "67fd610 (proper docker.sock fix): renderer.go injectSocketLabelDisable for security_opt: [label=disable]; ports-block bug fix in :Z relabel; setsebool dropped from install.sh"
+    "67fd610 (proper docker.sock fix): renderer.go injectSocketLabelDisable for security_opt: [label=disable]; ports-block bug fix in :Z relabel; setsebool dropped from install.sh",
+    "round-3 fix: renderer.go skips /dev /sys /proc /run/udev in :Z relabel (Podman refuses to relabel pseudofs); harness ps-readiness check is now a 10s poll instead of single 3s sleep to handle heavyweight images that briefly transition through Created"
   ]
 }

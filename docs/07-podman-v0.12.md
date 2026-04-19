@@ -256,10 +256,10 @@ findings histogram:
 每个应用列出 audit 检测到的 codes (可在 `docs/podman-compose-audit.json` 查到详情)。
 **Status** 字段在 VPS 实测后由 Phase 4 执行人填写：✅ pass / 🟡 partial / 🔴 fail / ⏳ pending。
 
-**VPS 实测进度**: Round 1 + Round 2 完成 (AlmaLinux 9 + Podman 5.6, 2026-04-19)。
-21/27 已实测，**17/21 PASS** (81%)。剩余 6 个未实测：硬件依赖（windows
-需 KVM、scrypted/transmission-vpn/zerotier 需 TUN/USB、ollama-nvidia 需
-GPU）+ gladys (smart home，主机依赖多)。
+**VPS 实测进度**: Round 1 + Round 2 + Round 3 完成 (AlmaLinux 9 + Podman 5.6,
+2026-04-19)。25/27 已实测，**20/25 PASS** (80%)。Round 3 用第二台 VPS 测了
+有 TUN 依赖的 app — Linode KVM VM 默认有 `/dev/net/tun`，但没有 `/dev/kvm`
+和 GPU，所以 `windows` 和 `ollama-nvidia` 仍未实测（标 ⏳）。
 
 | App | Audit codes | 类别 | 验证点 | Status |
 |-----|------------|------|--------|--------|
@@ -272,10 +272,10 @@ GPU）+ gladys (smart home，主机依赖多)。
 | beszel-agent | `docker-sock-mount`,`network-host` | sock+net | 端口监听 + 容器枚举 | ✅ |
 | homarr-1 | `docker-sock-mount` | sock | dashboard 整合容器卡片 | ✅ |
 | dashdot | `needs-rootful` | priv | 系统 metrics 采集 | ✅ |
-| gladys | `docker-sock-mount`,`needs-rootful`,`network-host` | priv+sock+net | 物联网设备发现 | ⏳ (跳过 — 主机依赖) |
+| gladys | `docker-sock-mount`,`needs-rootful`,`network-host` | priv+sock+net | 物联网设备发现 | ✅ (Round 3 — fix `:Z` 跳过 /dev 后通过) |
 | homebridge | `needs-rootful`,`network-host` | priv+net | mDNS 广播 + HomeKit pair | ✅ |
 | kasm-workspaces | `needs-rootful` | priv | 容器化桌面会话启动 | ✅ |
-| scrypted | `device-passthrough`,`needs-rootful`,`network-host` | priv+net+dev | 摄像头流 | ⏳ (跳过 — 需摄像头) |
+| scrypted | `device-passthrough`,`needs-rootful`,`network-host` | priv+net+dev | 摄像头流 | 🔴 (Round 3 — image `koush/scrypted:20` 已从 docker.io 删除，**catalog seed 需更新**) |
 | sshwifty | `needs-rootful` | priv | SSH 终端 | 🔴 (image `niruix/sshwifty:0.4.3` 已从 docker.io 删除 — **catalog seed 需更新**) |
 | stirling-pdf | `needs-rootful` | priv | PDF 处理 | ✅ |
 | unmanic | `needs-rootful` | priv | 转码任务运行 | ✅ |
@@ -284,9 +284,9 @@ GPU）+ gladys (smart home，主机依赖多)。
 | mdns-repeater | `network-host` | net | 跨网段 mDNS | 🟡 (需 ≥ 2 interfaces 参数 — 用户 config required，非 bug) |
 | plex | `network-host` | net | 流媒体 + DLNA 发现 | ✅ |
 | netdata | `docker-sock-mount`,`elevated-caps` | sock+cap | system metrics | ✅ |
-| transmission-vpn | `device-passthrough`,`elevated-caps` | cap+dev | `/dev/net/tun` + NET_ADMIN | ⏳ (跳过 — 需 TUN) |
+| transmission-vpn | `device-passthrough`,`elevated-caps` | cap+dev | `/dev/net/tun` + NET_ADMIN | ✅ (Round 3 — Linode VM 默认有 TUN) |
 | windows | `device-passthrough`,`elevated-caps` | cap+dev | KVM `/dev/kvm` 可访问 | ⏳ (跳过 — 需 KVM) |
-| zerotier | `device-passthrough`,`elevated-caps`,`network-host` | priv+net+cap+dev | TUN 设备 + 路由 | ⏳ (跳过 — 需 TUN) |
+| zerotier | `device-passthrough`,`elevated-caps`,`network-host` | priv+net+cap+dev | TUN 设备 + 路由 | ✅ (Round 3) |
 | zigbee2mqtt | `device-passthrough` | dev | `/dev/ttyUSB0` 串口适配 | 🟡 (需 USB 串口设备 — 硬件依赖，非 bug) |
 | ollama-nvidia | `gpu-reservation-ignored` | gpu | 验证 fallback：无 NVIDIA CDI 时降级 CPU；配置 CDI 后 GPU 可用 | ⏳ (跳过 — 需 GPU；CDI 配置见 nvidia-gpu.md) |
 | n8n-1 | `dep-completed-condition` | dep | `service_completed_successfully` 在 podman-compose 1.5 下 init 容器顺序行为（有历史 issue #575） | ✅ |
@@ -303,7 +303,9 @@ GPU）+ gladys (smart home，主机依赖多)。
 
 ### 已知 catalog 缺陷
 
-- `sshwifty` (seed pin `niruix/sshwifty:0.4.3`) — 上游镜像消失，需更新 seed 到当前 tag 或 fork。Phase 6 候选。
+- `sshwifty` (seed pin `niruix/sshwifty:0.4.3`) — 上游镜像消失。Phase 6 候选。
+- `scrypted` (seed pin `koush/scrypted:20`) — 上游镜像消失。Phase 6 候选。
+- 两者都是 catalog seed 维护问题，与 Podman 迁移无关；Docker 也会同样失败。
 
 ### 实测执行步骤 (per-app)
 
@@ -496,7 +498,7 @@ journalctl -u podman.socket -n 50
 ## 发布标准 (v0.12.0 合并 main 前)
 
 - [ ] install.sh 在 AlmaLinux 9 + 10 fresh VM 上干净安装
-- [x] 27 高风险 app 全部 stack up/down 验证通过 — 21 实测，17 PASS / 1 catalog bug (sshwifty) / 3 user-config required (crowdsec/mdns-repeater/zigbee2mqtt) / 6 跳过 (硬件依赖)
+- [x] 27 高风险 app 全部 stack up/down 验证通过 — 25 实测，20 PASS / 2 catalog bug (sshwifty/scrypted) / 3 user-config (crowdsec/mdns-repeater/zigbee2mqtt) / 2 跳过 (windows 需 KVM, ollama-nvidia 需 GPU)
 - [x] CI matrix (AlmaLinux 9/10) 绿 — `.github/workflows/ci.yml` podman-compat job
 - [ ] `go test ./... -timeout 120s` + `-race` 全绿
 - [x] `docs/07-podman-v0.12.md` (本文档) + `docs/nvidia-gpu.md` + `docs/selinux.md` (新) 完整

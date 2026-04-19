@@ -143,6 +143,34 @@ volumes:
 			// only one occurrence: counted via assertion below
 		},
 		{
+			// Phase 5 Round 3 finding: gladys mounts /dev:/dev. Podman
+			// refuses `SELinux relabeling of /dev`, container stuck in
+			// Created with no logs. Skip pseudofs/device paths entirely.
+			name: "pseudofs paths (/dev, /sys, /proc, /run/udev) NOT relabeled",
+			in: `services:
+  gladys:
+    image: example/iot:1
+    volumes:
+      - /dev:/dev
+      - /sys:/sys
+      - /proc/sys/net:/proc/sys/net
+      - /run/udev:/run/udev:ro
+      - ${APP_DATA_DIR}/data:/data`,
+			mustHave: []string{
+				"- /dev:/dev",
+				"- /sys:/sys",
+				"- /proc/sys/net:/proc/sys/net",
+				"- /run/udev:/run/udev:ro",
+				"- ${APP_DATA_DIR}/data:/data:Z", // regular paths still relabeled
+			},
+			mustMiss: []string{
+				"/dev:/dev:Z",
+				"/sys:/sys:Z",
+				"/proc/sys/net:/proc/sys/net:Z",
+				"/run/udev:/run/udev:ro:Z",
+			},
+		},
+		{
 			// Regression: an earlier version naively appended :Z to any
 			// host:container shape, which corrupted port mappings.
 			name: "ports block (same shape as bind) is NOT relabeled",

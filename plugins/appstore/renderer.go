@@ -183,6 +183,17 @@ func relabelHostBindMount(line string, inVolumes bool) string {
 	if strings.Contains(host, "docker.sock") || strings.Contains(host, "podman.sock") {
 		return line
 	}
+	// Pseudo-filesystems and device nodes — Podman explicitly refuses to
+	// relabel these (`SELinux relabeling of /dev is not allowed`), and
+	// /sys / /proc would be equally inappropriate to touch. Any path
+	// rooted at one of these is left bare. Verified on Phase 5 VPS Round
+	// 3 with the gladys app, which mounts /dev:/dev — :Z made
+	// `podman create` fail with exit 0 but Status=Created and no logs.
+	for _, prefix := range []string{"/dev", "/sys", "/proc", "/run/udev"} {
+		if host == prefix || strings.HasPrefix(host, prefix+"/") {
+			return line
+		}
+	}
 	last := parts[len(parts)-1]
 	for _, opt := range []string{"Z", "z", "ro", "rw"} {
 		if last == opt {
