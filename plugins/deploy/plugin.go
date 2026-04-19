@@ -112,6 +112,12 @@ func (p *Plugin) Init(ctx *pluginpkg.Context) error {
 	r.GET("/projects/:id/deployments", p.handler.GetDeployments)
 	r.GET("/projects/:id/logs", p.handler.GetBuildLog)
 
+	// Preview deployments (v0.14+). Webhook is unauthenticated (signed);
+	// list is read-only; delete is admin because it tears down Caddy
+	// hosts and containers.
+	r.GET("/projects/:id/previews", p.handler.ListPreviews)
+	a.DELETE("/previews/:previewId", p.handler.DeletePreview)
+
 	// GitHub OAuth endpoints
 	a.GET("/github/config", p.handler.GetGitHubConfig)
 	a.PUT("/github/config", p.handler.SaveGitHubConfig)
@@ -146,10 +152,12 @@ func (p *Plugin) Init(ctx *pluginpkg.Context) error {
 	return nil
 }
 
-// Start is called after Init. Starts the cron scheduler and git poller.
+// Start is called after Init. Starts the cron scheduler, git poller, and
+// the preview-deployment GC loop.
 func (p *Plugin) Start() error {
 	p.svc.StartCronScheduler()
 	p.svc.StartGitPoller()
+	p.svc.StartPreviewGC()
 	return nil
 }
 
@@ -157,6 +165,7 @@ func (p *Plugin) Start() error {
 func (p *Plugin) Stop() error {
 	p.svc.StopGitPoller()
 	p.svc.StopCronScheduler()
+	p.svc.StopPreviewGC()
 	return nil
 }
 

@@ -56,6 +56,45 @@ func (g *GitClient) Clone(url, branch, deployKey string, projectID uint, logWrit
 	return nil
 }
 
+// CloneToDir clones a git repository into an arbitrary destination directory
+// (rather than the per-project default path returned by ProjectDir). Used
+// by the preview deploy flow which maintains a separate source tree per
+// preview so concurrent main-project builds don't stomp the PR checkout.
+// Credential handling mirrors Clone — SSH via deployKey or HTTPS via a
+// token baked into the URL.
+func (g *GitClient) CloneToDir(url, branch, deployKey, dstDir string, logWriter *LogWriter) error {
+	if dstDir == "" {
+		return fmt.Errorf("dstDir is required")
+	}
+	if _, err := os.Stat(dstDir); err == nil {
+		if err := os.RemoveAll(dstDir); err != nil {
+			return fmt.Errorf("cleanup existing dir: %w", err)
+		}
+	}
+
+	args := []string{"clone", "--depth", "1", "--branch", branch, url, dstDir}
+	cmd := exec.Command("git", args...)
+
+	cleanup, err := g.setupDeployKey(cmd, deployKey)
+	if err != nil {
+		return err
+	}
+	if cleanup != nil {
+		defer cleanup()
+	}
+
+	if logWriter != nil {
+		cmd.Stdout = logWriter
+		cmd.Stderr = logWriter
+		logWriter.Write([]byte(fmt.Sprintf("$ git clone --depth 1 --branch %s %s %s\n",
+			branch, sanitizeURL(url), dstDir)))
+	}
+	if err := cmd.Run(); err != nil {
+		return fmt.Errorf("git clone failed: %w", err)
+	}
+	return nil
+}
+
 // Pull performs a git pull in the project directory.
 // If httpsURL is non-empty, the remote origin is temporarily updated to use the fresh
 // token-authenticated URL (for GitHub App auth where tokens expire after 1 hour).

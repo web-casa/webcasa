@@ -396,6 +396,14 @@ func (h *Handler) Webhook(c *gin.Context) {
 		}
 	}
 
+	// Route GitHub pull_request events to the preview-deploy pipeline.
+	// GitHub sends `X-GitHub-Event: pull_request`. Other events (push,
+	// ping, issue_comment, etc.) fall through to the existing push path.
+	if c.GetHeader("X-GitHub-Event") == "pull_request" {
+		h.handlePullRequestWebhook(c, &project)
+		return
+	}
+
 	if !project.AutoDeploy {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "auto-deploy is disabled"})
 		return
@@ -410,6 +418,67 @@ func (h *Handler) Webhook(c *gin.Context) {
 		return
 	}
 	c.JSON(http.StatusOK, gin.H{"ok": true, "message": "build triggered"})
+}
+
+// handlePullRequestWebhook processes GitHub `pull_request` webhook events
+// for the preview deploy feature. Events of interest:
+//   - opened / reopened / synchronize → create or rebuild the preview env
+//   - closed                          → tear down the preview env
+//
+// Other pull_request actions (labeled, assigned, review_requested, …) are
+// acknowledged with 200 but ignored; GitHub retries on non-2xx so we must
+// not return an error for "uninteresting" action values.
+func (h *Handler) handlePullRequestWebhook(c *gin.Context, project *Project) {
+	if !project.PreviewEnabled {
+		c.JSON(http.StatusOK, gin.H{"ok": true, "message": "preview deployments disabled for this project"})
+		return
+	}
+
+	var payload struct {
+		Action      string `json:"action"`
+		Number      int    `json:"number"`
+		PullRequest struct {
+			Head struct {
+				Ref string `json:"ref"`
+				SHA string `json:"sha"`
+			} `json:"head"`
+		} `json:"pull_request"`
+	}
+	if err := c.ShouldBindJSON(&payload); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid pull_request payload: " + err.Error()})
+		return
+	}
+
+	switch payload.Action {
+	case "opened", "reopened", "synchronize":
+		preview, err := h.svc.preview.CreatePreview(project.ID, payload.Number, payload.PullRequest.Head.Ref)
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+			return
+		}
+		c.JSON(http.StatusOK, gin.H{
+			"ok":         true,
+			"preview_id": preview.ID,
+			"domain":     preview.Domain,
+			"status":     preview.Status,
+		})
+	case "closed":
+		// Find the preview (by project + PR number) and tear it down.
+		var preview PreviewDeployment
+		if err := h.svc.db.Where("project_id = ? AND pr_number = ?", project.ID, payload.Number).First(&preview).Error; err != nil {
+			// No preview existed for this PR — that's fine, 200 OK.
+			c.JSON(http.StatusOK, gin.H{"ok": true, "message": "no preview to clean up"})
+			return
+		}
+		if err := h.svc.preview.DeletePreview(preview.ID); err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+			return
+		}
+		c.JSON(http.StatusOK, gin.H{"ok": true, "message": "preview torn down"})
+	default:
+		// Uninteresting action — ack so GitHub stops retrying.
+		c.JSON(http.StatusOK, gin.H{"ok": true, "message": "action ignored: " + payload.Action})
+	}
 }
 
 // DetectFramework GET /api/plugins/deploy/detect
@@ -436,6 +505,38 @@ func (h *Handler) GetFrameworks(c *gin.Context) {
 		presets = append(presets, p)
 	}
 	c.JSON(http.StatusOK, presets)
+}
+
+// ListPreviews GET /api/plugins/deploy/projects/:id/previews
+// Returns the active + historical preview deployments for a project. Used
+// by the Project detail page to render a "Previews" tab.
+func (h *Handler) ListPreviews(c *gin.Context) {
+	id, err := parseUintParam(c, "id")
+	if err != nil {
+		return
+	}
+	previews, err := h.svc.preview.ListByProject(id)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"previews": previews})
+}
+
+// DeletePreview DELETE /api/plugins/deploy/previews/:previewId (admin)
+// Manually tears down a preview (Caddy host + container + DB row). Called
+// by the UI "Delete" button on the Previews tab. Automatic teardown on
+// PR close goes through the webhook path and doesn't hit this endpoint.
+func (h *Handler) DeletePreview(c *gin.Context) {
+	id, err := parseUintParam(c, "previewId")
+	if err != nil {
+		return
+	}
+	if err := h.svc.preview.DeletePreview(id); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"message": "preview deleted"})
 }
 
 // GetWebhookInfo GET /api/plugins/deploy/projects/:id/webhook (admin only)

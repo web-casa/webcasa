@@ -75,6 +75,37 @@ func (r *DockerRunner) BuildImage(ctx context.Context, dir string, projectID uin
 	return imageTag, nil
 }
 
+// BuildImageWithTag builds an image with an explicitly-supplied tag rather
+// than the projectID/buildNum-derived one. Used by the preview deploy flow
+// where each preview gets its own tag (`webcasa-preview-<id>`) so old preview
+// images can be pruned independently of the main project image.
+func (r *DockerRunner) BuildImageWithTag(ctx context.Context, dir, imageTag string, logWriter *LogWriter, buildType string) error {
+	bt := buildType
+	if bt == "auto" || bt == "" {
+		bt = builders.DetectBuilder(dir)
+	}
+	if logWriter != nil {
+		logWriter.Write([]byte(fmt.Sprintf("==> Building with %s: %s\n", bt, imageTag)))
+	}
+	binName, args, err := builders.BuildCommand(bt, dir, imageTag)
+	if err != nil {
+		return fmt.Errorf("builder setup failed: %w", err)
+	}
+	cmd := exec.CommandContext(ctx, binName, args...)
+	cmd.Dir = dir
+	if logWriter != nil {
+		cmd.Stdout = logWriter
+		cmd.Stderr = logWriter
+	}
+	if err := cmd.Run(); err != nil {
+		return fmt.Errorf("%s build failed: %w", bt, err)
+	}
+	if logWriter != nil {
+		logWriter.Write([]byte(fmt.Sprintf("==> Image built: %s\n", imageTag)))
+	}
+	return nil
+}
+
 // RunOptions holds optional settings for running a container.
 type RunOptions struct {
 	MemoryLimitMB int // 0 = unlimited
