@@ -497,12 +497,12 @@ journalctl -u podman.socket -n 50
 
 ## 发布标准 (v0.12.0 合并 main 前)
 
-- [ ] install.sh 在 AlmaLinux 9 + 10 fresh VM 上干净安装
+- [x] install.sh 在 AlmaLinux 9 + 10 fresh VM 上干净安装 — Phase 1 VPS + Phase 5 Round 1/2/3 全通过
 - [x] 27 高风险 app 全部 stack up/down 验证通过 — 25 实测，20 PASS / 2 catalog bug (sshwifty/scrypted) / 3 user-config (crowdsec/mdns-repeater/zigbee2mqtt) / 2 跳过 (windows 需 KVM, ollama-nvidia 需 GPU)
 - [x] CI matrix (AlmaLinux 9/10) 绿 — `.github/workflows/ci.yml` podman-compat job
-- [ ] `go test ./... -timeout 120s` + `-race` 全绿
+- [x] `go test ./... -timeout 120s` + `-race` 全绿 — 每次 push 本地 + CI 双跑
 - [x] `docs/07-podman-v0.12.md` (本文档) + `docs/nvidia-gpu.md` + `docs/selinux.md` (新) 完整
-- [ ] `changelog.md` [0.12.0] 节含 breaking change warning
-- [ ] `VERSION` + `web/package.json` → 0.12.0
-- [ ] README "supported runtime: Podman 5.6+" 更新
-- [ ] GitHub Release notes 链接迁移说明 (即使无用户，为未来 star watcher 准备)
+- [x] `changelog.md` [0.12.0] 节含 breaking change warning — 见 changelog.md 顶部
+- [x] `VERSION` + `web/package.json` → 0.12.0
+- [x] README "supported runtime: Podman 5.6+" 更新 — 已在 Phase 3 改为 runtime 感知 + GPU 指引 link
+- [x] GitHub Release notes 链接迁移说明 — 草稿在 `docs/release-notes-v0.12.0.md`，发布时复制到 GitHub Release body

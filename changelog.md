@@ -6,6 +6,127 @@
 
 ---
 
+## [0.12.0] - 2026-04-19
+
+### "Podman Only Edition" — Clean Break from Docker to Podman 5.6
+
+v0.12 是一次向前兼容的**运行时切换**：从 Docker Engine 换成 Podman 5.6 (RHEL
+AppStream)。用户安装过 v0.11 的机器需要重跑 `install.sh`；v0.11 维护与 v0.12
+发布同时 EOL。v0.12 目标是在 EL9/EL10 主机上**默认零 SELinux 摩擦**，app-store
+的 269 个应用零修改可用（经 4 轮 VPS 实测验证）。
+
+> ⚠️ **Breaking change warning**: 运行时从 Docker → Podman。现有 `docker` / `docker-compose`
+> CLI 通过 `podman-docker` shim 和 `podman-compose` 继续可用，**但后台引擎不同**。
+> 已持有的 Docker 容器/镜像/网络/卷需按 `docs/07-podman-v0.12.md` 迁移说明重建。
+
+#### 为什么切换
+
+- **RHEL 10 Docker 启动失败**: iptables 内核模块 deprecated，Docker 29 报
+  `Extension addrtype revision 0 not supported`，官方修复需手动 `dnf install
+  kernel-modules-extra` + `modprobe`，破坏一键安装体验
+- **Podman 在 RHEL 原生**: AppStream 内置、无 daemon、SELinux / systemd / cgroupv2
+  深度集成、长期支持承诺
+- **SDK 兼容窗口充足**: Docker Go SDK v27 + `client.WithAPIVersionNegotiation()`
+  自动协商到 Podman v1.41/v1.43，WebCasa 代码零 API 层改动
+
+#### 5 Phase 交付 + 4 轮 VPS 实测 + 5 轮 Codex Review
+
+| Phase | 内容 |
+|---|---|
+| Phase 1 | install.sh Podman 改造 (AppStream + EPEL 自动启用 podman-compose) + 专用 `webcasa` 用户 + systemd CI 兼容 |
+| Phase 2 | Runtime 检测层 (`plugins/docker/runtime.go`) + daemon.json Podman 感知（短路错误而非假装生效） + plugin.go 重写 |
+| Phase 3 | UI + i18n + README 品牌切换 ("Docker" → runtime-aware 标签)；daemon-config 表单在 Podman 下 fieldset disabled |
+| Phase 4 | App Store 静态审计 (`scripts/compose-audit.py`) — 269 apps 对 podman-compose 1.5 兼容性分析；27-app 高风险验证矩阵 |
+| Phase 5 | SELinux 运维文档 + NVIDIA GPU/CDI 指引 + 4 个 Podman integration 测试 + AlmaLinux 9/10 CI 矩阵 |
+
+#### 跨插件审计 (举一反三)
+
+Docker plugin 全量 Codex review 后，把发现的两类 HIGH 模式扩展到全仓库：
+
+- **WebSocket 认证**: `?token=<jwt>` URL 参数 → `Sec-WebSocket-Protocol` subprotocol
+  header 全插件统一 (`auth.WSUpgradeResponseHeader` helper)；filemanager /
+  database / monitoring / docker 四个 WS handler 全迁移
+- **Shell pipeline 子进程 kill**: 新 `internal/execx` 包提供 `CommandContext` /
+  `BashContext` 带 `Setpgid + Cancel hook + WaitDelay`，docker installer /
+  backup kopia installer / firewalld installer / deploy builder / deploy cron /
+  cronjob task runner / AI agent shell exec 全迁移，SSE 断开时整个 pipeline 树
+  被 SIGKILL，不再留孤儿进程
+
+#### Docker 插件安全与正确性加固
+
+Docker 插件全量 review 发现 20 findings（2 High + 13 Medium + 5 Low），分 4 组修复：
+
+- **Group A (安全+并发)**: WebSocket token 移出 URL；`/logs` 路由从 viewer 提到
+  operator；PullImage 用 `distribution/reference.ParseNormalizedNamed` 验证；
+  Volume bind 拒绝 `:` 字符；Plugin struct `sync.RWMutex` 覆盖所有可变状态；
+  Install 子进程走 `exec.CommandContext` + 进程组 kill；DetectRuntime 缓存
+  可失效（`ResetRuntimeCache`）
+- **Group B (install SSE 生命周期)**: `AbortController` + reader cancel + mounted
+  flag + timer tracking — 离开页面中途不再泄露 fetch / setState / timer
+- **Group C (健壮性)**: Stack create/delete 事务化 (DB 失败时清理 on-disk
+  artifacts)；`viewLogs` reqId 竞态守卫；WebSocket unmount cleanup；
+  status-fetch 失败与 "runtime missing" 区分（给 retry callout 而非假装未装）
+- **Group D (UX/i18n/a11y)**: `alert()` → 内联 Callout；`DockerSettings` Podman
+  锁用 `<fieldset disabled>`（键盘焦点跳过，不再只挡鼠标）；Badge + 搜索行
+  role + tabIndex + Enter/Space 键盘激活；3 个英文硬编码 → `t()`
+
+#### App Store 兼容性 (269 apps)
+
+**静态审计** (`docs/podman-compose-audit.json`):
+- ✅ Clean: 234 (87%)
+- 🟡 Warning: 10 (`network_mode: host` 9 个 + `gpu-reservation-ignored` 1 个 ollama-nvidia)
+- 🔵 Info-only: 25 (sock mount / rootful / device passthrough)
+- 🔴 Critical: 0
+
+**VPS 实测** (Round 1 + 2 + 3，AlmaLinux 9 + Podman 5.6，25/27 apps):
+- ✅ PASS: 20
+- 🔴 Catalog bug: 2 (sshwifty / scrypted — 上游 image tag 已从 docker.io 删除)
+- 🟡 User-config required: 3 (crowdsec SQLite race / mdns-repeater 参数 / zigbee2mqtt USB)
+- ⏳ 硬件依赖未测: 2 (windows 需 KVM / ollama-nvidia 需 GPU；文档齐全)
+
+**实测产出的生产 bug 修复** (7 个，通过 4 轮 VPS 验证发现):
+- `install.sh`: `/etc/containers/registries.conf.d/999-webcasa-shortnames.conf`
+  设 `short-name-mode = permissive`，否则 269 app 全部因 "short-name resolution
+  enforced but cannot prompt without a TTY" 拒绝拉取
+- `plugins/appstore/renderer.go SanitizeCompose`:
+  - Host bind mount 自动追加 `:Z`（带 `volumes:` YAML 块上下文守卫，不误伤
+    端口映射；跳过命名卷、pseudofs `/dev /sys /proc /run/udev` 和 socket）
+  - 引号形式 `- "host:container"` 把 `:Z` 插到**引号内**（7 个 catalog app
+    用这种写法）
+  - 支持任意缩进深度的 service header（非只认 2-space）
+  - 挂 docker.sock/podman.sock 的 service 自动注入 `security_opt: [label=disable]`
+    （SELinux silent-deny 的唯一可行修法；已有 `security_opt` 智能 merge，
+    不产生重复 key）
+- `docs/selinux.md`: 修正 socket SELinux type 为 `var_run_t`（不是
+  `container_var_run_t`）；场景 4 改为指向 renderer 自动注入，不再推荐被
+  实测推翻的 `setsebool container_manage_cgroup`
+
+#### Phase 5 集成测试
+
+新 `plugins/docker/podman_integration_test.go` + CI `podman-compat` job（AlmaLinux 9/10 矩阵）:
+- `TestPodmanSocketCompat` — Go SDK ↔ Podman 兼容 API 协商
+- `TestDockerShimTransparency` — `docker version` / `docker compose version` 走 shim
+- `TestSocketSymlinkIntegrity` — `/var/run/docker.sock` 符号链接完整性
+- `TestAppStoreBatchUpDown` — 单独 `scripts/appstore-batch-test/batch_test.py`
+  harness（需 `WEBCASA_RUN_PODMAN_TESTS=1` 环境变量 + 真实 Podman 主机）
+
+#### 文档
+
+- 新增 `docs/07-podman-v0.12.md` — 完整设计文档（决策快照、架构变更、实施路线图、风险登记册、rootless 风险分析附录、27-app 验证矩阵）
+- 新增 `docs/selinux.md` — EL9/EL10 + Podman SELinux 运维指南（4 个 denial 场景 + 诊断命令 + "禁用 SELinux 是 ❌ 不要做" 段落）
+- 新增 `docs/nvidia-gpu.md` — NVIDIA CDI 配置指引（ollama-nvidia 等 GPU 应用）
+- 新增 `docs/podman-compose-audit.json` — 机器可读 269-app 兼容性报告
+- 新增 `docs/podman-app-test-report.json` — 4 轮 VPS 实测结果报告
+
+#### Known issues (Phase 6 候选)
+
+- Catalog seed 两个镜像上游已删: `sshwifty` (niruix/sshwifty:0.4.3), `scrypted` (koush/scrypted:20)
+- Rootless Podman 评估（v0.13+）— v0.12 采用 rootful 规避 14 个兼容性风险（详见 07-podman-v0.12.md 附录 A）
+- `install.sh --gpu=nvidia` 标志自动化 NVIDIA CDI 配置 — 目前需手动 3 步
+- 自定义 SELinux policy module (`webcasa_t` 域) — 当前以 `unconfined_service_t` 运行
+
+---
+
 ## [0.11.0] - 2026-04-17
 
 ### "Safe Wins Edition" — 8 个低风险 additive-only 特性 + 6 轮 Codex Review
