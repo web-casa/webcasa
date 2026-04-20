@@ -6,6 +6,90 @@
 
 ---
 
+## [0.14.0] - 2026-04-19
+
+### Preview Deploy Phase A: ephemeral per-PR preview environments
+
+GitHub PR webhook → ephemeral subdomain (`pr-N-slug-id.<wildcard>`) →
+isolated container build + Caddy reverse-proxy host. PR `closed` →
+full teardown. Backend-complete; frontend "Previews" tab and
+build-log streaming arrive in Phase B.
+
+#### What ships
+- `pull_request` webhook handler (HMAC-verified, shares the existing
+  webhook token + secret) routes `opened` / `reopened` /
+  `synchronize` to a build-and-expose pipeline; `closed` to full
+  teardown.
+- `PreviewDeployment` table tracks per-PR state with composite unique
+  index `(project_id, pr_number)`, allocated `BasePort` in
+  `[20000, 25000)`, two-slot alternation (slot 0 = BasePort, slot 1 =
+  BasePort+5000), and a monotonic `Generation` token for fence-style
+  concurrency control.
+- Admin endpoints: `GET /projects/:id/previews`,
+  `DELETE /previews/:previewId`. PR detail page surfaces the live
+  domain + status.
+- Daily GC sweeps preview rows past `expires_at` regardless of
+  status (default 7 days, configurable per project).
+- Plugin lifecycle: `PreviewService.Stop()` cancels in-flight
+  goroutines via root context + WaitGroup with 30s drain ceiling so
+  plugin teardown doesn't leave zombie git/podman children.
+
+#### Concurrency model
+
+Twelve rounds of Codex review hardened the design against every
+race we could enumerate:
+
+- **Two-slot alternation**: each rebuild flips to the unused slot;
+  Caddy upstream tracks the live port; old container stops only
+  after traffic moves.
+- **Generation token** on every DB write
+  (`setStatus` / `markFailed` / `host_id` / final slot update):
+  `CreatePreview` and `DeletePreview` both bump generation; stale
+  goroutines whose ctx-cancel arrived too late find their writes
+  rejected with `RowsAffected==0` and tear down their own staging
+  container instead of corrupting state.
+- **createMu serialization**: per-`PreviewService` mutex covers
+  `upsert + jobs-map atomic swap` (CreatePreview) and
+  `bump + capture + job-snapshot + cleanup` (DeletePreview). Drain
+  windows release the lock so unrelated webhooks aren't blocked.
+- **TCP readiness probe** (`waitForPortOpen`, 500ms tick / 30s cap)
+  before swapping Caddy upstream — a crashing container fails fast
+  instead of receiving traffic.
+- **Token-via-env** for HTTPS clones (`GIT_CONFIG_COUNT` ladder,
+  scoped to `http.https://<host>/.extraHeader`) so PR auth tokens
+  never appear in `ps` output or `git remote -v`.
+
+#### Bug-bash audit trail
+
+12 review rounds, **43 findings landed** (3 Critical / 22 High /
+14 Medium / 4 Low), 3 Mediums consciously deferred to v0.15
+(per-preview lock for `R11-M1`, main-Build token-via-env for
+`R8-M4`). The squashed branch is preserved on `main` as a single
+merge for blame-readability; full per-round commit history is in
+`fix/v0.14-preview-codex-review` (9 commits) for anyone tracing the
+fix evolution.
+
+#### Migration
+
+Pre-v0.14 `PreviewDeployment` rows (none in production — Phase A
+was unreleased) are dropped on first start by a guard in
+`Init()` that detects the missing `base_port` column. Other plugin
+data unaffected.
+
+#### Known limitations (v0.15)
+
+- `R8-M4`: main `Build()` still uses `ConvertToHTTPS` which embeds
+  the GitHub App token in the URL (visible to `git remote -v`).
+  Preview path uses the env-var approach; main path migration is
+  multi-file refactor scoped to v0.15.
+- `R11-M1`: `createMu` is per-PreviewService, so DeletePreview's
+  destructive cleanup phase briefly blocks unrelated CreatePreview
+  webhooks. Acceptable at single-project / low-PR-rate volumes;
+  planned `sync.Map`-based per-`(project_id, pr_number)` lock is
+  v0.15.
+
+---
+
 ## [0.13.0] - 2026-04-19
 
 ### Podman refinements: Nixpacks UI + SELinux preview + shim future plan
