@@ -140,7 +140,12 @@ type PreviewDeployment struct {
 	// allocation. Two slots let us alternate each deploy without ever
 	// rebinding the same port while both containers briefly coexist
 	// during the Caddy upstream swap (Codex R6-C1 fix).
-	BasePort int `gorm:"default:0;uniqueIndex:ux_preview_base_port" json:"base_port"`
+	//
+	// NOT unique-indexed: a unique index combined with the post-Create
+	// backfill pattern caused two simultaneous creates to both insert
+	// base_port=0, then the second backfill collide. Allocation is now
+	// serialized in-process by PreviewService.createMu (R7-H1 fix).
+	BasePort int `gorm:"default:0" json:"base_port"`
 	// Slot: which slot is currently serving — 0 or 1, or -1 before the
 	// first successful deploy.
 	Slot          int       `gorm:"default:-1" json:"slot"`

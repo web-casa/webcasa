@@ -93,6 +93,26 @@ func (g *GitHubAppAuth) GetCloneToken(appID int64, privateKeyPEM string, install
 	return g.GetInstallationToken(jwt, installationID)
 }
 
+// ConvertSSHToCleanHTTPS converts an SSH git URL to its clean HTTPS form
+// (no embedded credentials), or strips embedded credentials from an
+// existing HTTPS URL. Used by callers that authenticate via separate
+// channels (env vars, headers) rather than baking the token into the
+// URL — preview deploys take this path so the token doesn't surface
+// in argv (R6-H1) or in `git remote -v` output (R7-H3).
+func ConvertSSHToCleanHTTPS(gitURL string) string {
+	if strings.HasPrefix(gitURL, "git@github.com:") {
+		repo := strings.TrimPrefix(gitURL, "git@github.com:")
+		return "https://github.com/" + repo
+	}
+	if idx := strings.Index(gitURL, "://"); idx != -1 {
+		rest := gitURL[idx+3:]
+		if at := strings.Index(rest, "@"); at != -1 {
+			return gitURL[:idx+3] + rest[at+1:]
+		}
+	}
+	return gitURL
+}
+
 // ConvertToHTTPS converts a git URL (SSH or HTTPS) to HTTPS format with token auth.
 func ConvertToHTTPS(gitURL, token string) string {
 	// Handle SSH URLs: git@github.com:user/repo.git
