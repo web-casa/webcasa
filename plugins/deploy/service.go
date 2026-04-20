@@ -323,8 +323,15 @@ func (s *Service) DeleteProject(id uint) error {
 	// before destroying project's own resources). Delegates to
 	// PreviewService.DeletePreview which handles both slot containers,
 	// Caddy host, image, srcDir, logDir, then row (R7-M1).
+	//
+	// R10-M1 fix: the Find query's error must NOT be swallowed.
+	// Previously a DB error would leave `previews` empty and we'd
+	// continue destroying project resources unaware that orphan
+	// preview rows + external resources still exist.
 	var previews []PreviewDeployment
-	s.db.Where("project_id = ?", id).Find(&previews)
+	if err := s.db.Where("project_id = ?", id).Find(&previews).Error; err != nil {
+		return fmt.Errorf("list previews for project %d: %w (project NOT deleted; cannot verify preview state)", id, err)
+	}
 	for _, p := range previews {
 		if err := s.preview.DeletePreview(p.ID); err != nil {
 			return fmt.Errorf("delete preview %d during project cleanup: %w (project NOT deleted; resolve preview state and retry)", p.ID, err)

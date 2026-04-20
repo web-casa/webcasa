@@ -683,14 +683,29 @@ func isNotFoundErr(err error) bool {
 // R9-H1 fix: gated on `WHERE generation = ?` so a stale runPreview
 // from a cancelled-but-not-drained trigger cannot overwrite a fresh
 // trigger's "running" state with its own "failed" tail.
+//
+// R10-L1 fix: when the generation guard rejects our write (RowsAffected
+// == 0), the failure was logically subsumed by a fresh trigger — log
+// at debug level instead of error so dashboards aren't flooded with
+// "preview deployment failed" entries that didn't actually persist.
 func (ps *PreviewService) markFailed(previewID uint, gen int, reason string) {
-	ps.logger.Error("preview deployment failed", "id", previewID, "gen", gen, "reason", reason)
-	ps.db.Model(&PreviewDeployment{}).
+	res := ps.db.Model(&PreviewDeployment{}).
 		Where("id = ? AND generation = ?", previewID, gen).
 		Updates(map[string]interface{}{
 			"status":         "failed",
 			"failure_reason": truncate(reason, 500),
 		})
+	if res.Error != nil {
+		ps.logger.Error("preview deployment failed (DB write error)",
+			"id", previewID, "gen", gen, "reason", reason, "err", res.Error)
+		return
+	}
+	if res.RowsAffected == 0 {
+		ps.logger.Debug("preview failure not persisted (generation advanced; superseded by newer trigger)",
+			"id", previewID, "gen", gen, "reason", reason)
+		return
+	}
+	ps.logger.Error("preview deployment failed", "id", previewID, "gen", gen, "reason", reason)
 }
 
 func truncate(s string, n int) string {
@@ -703,51 +718,90 @@ func truncate(s string, n int) string {
 // DeletePreview removes a preview deployment and cleans up all resources:
 // Caddy host, container (+ staging), image, source dir, log dir, and row.
 //
-// Order matters:
-//  1. Cancel any in-flight runPreview goroutine (so it doesn't race us on
-//     container create / host create after we've torn it all down — C1)
-//  2. Remove external resources (host, containers, image, dirs)
-//  3. Delete DB row IFF all external cleanups succeeded. Partial failures
-//     leave the row in status=cleanup_failed so admins can see + retry
-//     manually (Codex M1)
+// Generation discipline (R9 + R10):
+//  1. Bump generation FIRST → fences any stale runPreview goroutine.
+//  2. Re-read to capture deleteGen — the generation owned by THIS delete.
+//  3. cancelJob (drain). On timeout, mark cleanup_failed under deleteGen
+//     so a concurrent CreatePreview that has bumped past us doesn't get
+//     its pending state overwritten.
+//  4. Take createMu before destructive cleanup so no new CreatePreview
+//     can bump generation while we're tearing down external resources.
+//  5. Re-verify deleteGen under the lock; if a CreatePreview snuck in
+//     between cancelJob and createMu, abort cleanup — the new owner
+//     will manage the row's lifecycle.
+//  6. Cleanup external resources. Final row Delete is conditional on
+//     `WHERE generation = deleteGen` so a same-microsecond race that
+//     somehow slipped past createMu still cannot delete the new
+//     trigger's row.
 func (ps *PreviewService) DeletePreview(id uint) error {
 	var preview PreviewDeployment
 	if err := ps.db.First(&preview, id).Error; err != nil {
 		return fmt.Errorf("preview not found: %w", err)
 	}
 
-	// R9-H2 fix: bump generation BEFORE cancelling. Any stale runPreview
-	// goroutine that's mid-flight has captured the old generation; once
-	// we increment, all its WHERE generation = snapshot writes fail
-	// RowsAffected==0. So even if cancelJob's drain times out, the
-	// stale finisher cannot overwrite our cleanup_failed marker with a
-	// running status, and cannot bind host_id to a soon-to-be-deleted
-	// row. The bump succeeds even on a racing concurrent CreatePreview
-	// (which also bumps); whoever wins the last bump owns the row.
-	ps.db.Model(&PreviewDeployment{}).
+	// 1. Bump generation. Any in-flight runPreview's WHERE generation =
+	// snapshot writes fail RowsAffected==0 once this commits.
+	bres := ps.db.Model(&PreviewDeployment{}).
 		Where("id = ?", id).
 		Update("generation", gorm.Expr("generation + 1"))
+	if bres.Error != nil {
+		return fmt.Errorf("preview %d: bump generation: %w", id, bres.Error)
+	}
+	if bres.RowsAffected == 0 {
+		return fmt.Errorf("preview %d: row vanished before delete", id)
+	}
 
-	// 1. Cancel in-flight build and wait for it to drain. R8-H2 fix:
-	// if the goroutine doesn't drain in 30s we MUST NOT proceed —
-	// otherwise it can call CreateHost / UpdateHostUpstream after
-	// we've torn down everything else, leaving an orphan Caddy host
-	// + container that survive the row deletion.
+	// 2. Capture deleteGen. Re-read because gorm's Update doesn't return
+	// the new value, and a concurrent CreatePreview might bump again
+	// before we read; in that case our "delete" is logically subsumed
+	// by the new create and we should bail.
+	var refreshed PreviewDeployment
+	if err := ps.db.Select("id", "generation").First(&refreshed, id).Error; err != nil {
+		return fmt.Errorf("preview %d: re-read after bump: %w", id, err)
+	}
+	deleteGen := refreshed.Generation
+
+	// 3. Cancel + drain in-flight build. Timeout marks cleanup_failed
+	// under deleteGen so we can't overwrite a fresh CreatePreview's
+	// state (R10-H1).
 	if !ps.cancelJob(id) {
-		ps.db.Model(&PreviewDeployment{}).Where("id = ?", id).Updates(map[string]interface{}{
-			"status":         "cleanup_failed",
-			"failure_reason": "in-flight build did not drain in 30s; retry delete after build completes",
-		})
+		res := ps.db.Model(&PreviewDeployment{}).
+			Where("id = ? AND generation = ?", id, deleteGen).
+			Updates(map[string]interface{}{
+				"status":         "cleanup_failed",
+				"failure_reason": "in-flight build did not drain in 30s; retry delete after build completes",
+			})
+		if res.RowsAffected == 0 {
+			return fmt.Errorf("preview %d: drain timeout AND superseded by concurrent create; aborting", id)
+		}
 		return fmt.Errorf("preview %d: in-flight build did not drain in 30s; retry delete after build completes", id)
 	}
 
+	// 4. Hold createMu for the destructive cleanup phase. CreatePreview
+	// also takes this lock for its upsert; while we hold it, no new
+	// trigger can bump generation. Brief — only the synchronous
+	// cleanup ops, not the 30s drain above.
+	ps.createMu.Lock()
+	defer ps.createMu.Unlock()
+
+	// 5. Re-verify ownership under the lock. If a CreatePreview raced
+	// past us between cancelJob and createMu acquisition, abort —
+	// they own the row's external resources now.
+	if err := ps.db.Select("id", "generation").First(&refreshed, id).Error; err != nil {
+		return fmt.Errorf("preview %d: re-verify before cleanup: %w", id, err)
+	}
+	if refreshed.Generation != deleteGen {
+		return fmt.Errorf("preview %d: superseded by concurrent create (gen %d → %d); aborting cleanup", id, deleteGen, refreshed.Generation)
+	}
+
+	// 6. Destructive cleanup. Order: host (so subdomain stops pointing
+	// at a soon-to-die container) → containers (both slots) → image
+	// → on-disk dirs.
 	ctx, cancel := context.WithTimeout(ps.rootCtx, 60*time.Second)
 	defer cancel()
 
 	var errs []string
 
-	// 2a. Caddy host — remove first so the subdomain stops pointing at a
-	// soon-to-be-dead container.
 	if preview.HostID > 0 {
 		if err := ps.coreAPI.DeleteHost(preview.HostID); err != nil {
 			ps.logger.Warn("delete preview host failed", "host_id", preview.HostID, "err", err)
@@ -755,9 +809,6 @@ func (ps *PreviewService) DeletePreview(id uint) error {
 		}
 	}
 
-	// 2b. Containers: remove both slot containers. Either may not exist
-	// if the preview never got past the build step or was in the middle
-	// of a flip; "not found" is not a cleanup failure (R6-M1 fix).
 	for _, slot := range []int{0, 1} {
 		name := slotName(id, slot)
 		if err := ps.coreAPI.DockerRemoveContainer(name, true); err != nil && !isNotFoundErr(err) {
@@ -765,13 +816,10 @@ func (ps *PreviewService) DeletePreview(id uint) error {
 		}
 	}
 
-	// 2c. Image (preview images are never shared across PRs).
 	if preview.ImageTag != "" {
 		removeImage(ctx, preview.ImageTag)
 	}
 
-	// 2d. On-disk dirs — H4 fix. Both trees are under $data/, known
-	// locations, safe to RemoveAll.
 	srcDir := filepath.Join(ps.svc.dataDir, "preview-sources", fmt.Sprintf("preview_%d", id))
 	logDir := filepath.Join(ps.svc.dataDir, "logs", fmt.Sprintf("preview_%d", id))
 	if err := os.RemoveAll(srcDir); err != nil {
@@ -781,20 +829,36 @@ func (ps *PreviewService) DeletePreview(id uint) error {
 		errs = append(errs, fmt.Sprintf("remove log dir: %v", err))
 	}
 
-	// 3. DB row. If external cleanup had failures, keep the row in
-	// cleanup_failed so the UI surfaces the problem — otherwise we'd
-	// silently orphan the external resources.
+	// 7. DB row. cleanup_failed and Delete both gated by deleteGen
+	// (R10-H1, R10-H2). Even though createMu prevents new bumps, the
+	// gen guard is belt-and-suspenders against any future refactor
+	// that releases the lock earlier.
 	if len(errs) > 0 {
-		ps.db.Model(&preview).Updates(map[string]interface{}{
-			"status":         "cleanup_failed",
-			"failure_reason": strings.Join(errs, "; "),
-		})
+		res := ps.db.Model(&PreviewDeployment{}).
+			Where("id = ? AND generation = ?", id, deleteGen).
+			Updates(map[string]interface{}{
+				"status":         "cleanup_failed",
+				"failure_reason": strings.Join(errs, "; "),
+			})
+		if res.RowsAffected == 0 {
+			ps.logger.Warn("preview cleanup_failed write skipped (gen advanced under lock — should be impossible)",
+				"id", id, "expected_gen", deleteGen)
+		}
 		ps.logger.Warn("preview cleanup partial failure; row retained as cleanup_failed",
 			"id", id, "errs", errs)
 		return fmt.Errorf("preview cleanup partial failure: %s", strings.Join(errs, "; "))
 	}
-	if err := ps.db.Delete(&PreviewDeployment{}, id).Error; err != nil {
-		return fmt.Errorf("delete record: %w", err)
+
+	dres := ps.db.Where("id = ? AND generation = ?", id, deleteGen).
+		Delete(&PreviewDeployment{})
+	if dres.Error != nil {
+		return fmt.Errorf("delete record: %w", dres.Error)
+	}
+	if dres.RowsAffected == 0 {
+		// Should be impossible given createMu but log as defense in depth.
+		ps.logger.Warn("preview row delete skipped (gen advanced under lock — should be impossible)",
+			"id", id, "expected_gen", deleteGen)
+		return fmt.Errorf("preview %d: superseded between cleanup and row delete", id)
 	}
 	ps.logger.Info("preview deployment deleted", "id", id, "domain", preview.Domain)
 	return nil
