@@ -148,7 +148,15 @@ type PreviewDeployment struct {
 	BasePort int `gorm:"default:0" json:"base_port"`
 	// Slot: which slot is currently serving — 0 or 1, or -1 before the
 	// first successful deploy.
-	Slot          int       `gorm:"default:-1" json:"slot"`
+	Slot int `gorm:"default:-1" json:"slot"`
+	// Generation: monotonically increasing token bumped on every
+	// CreatePreview (rebuild trigger) and DeletePreview. runPreview
+	// snapshots the generation on entry; ALL its DB writes (setStatus,
+	// markFailed, host_id update, final slot update) are gated on
+	// `WHERE generation = snapshot`. A stale runPreview whose drain
+	// timed out cannot clobber the row state because the row's
+	// generation has advanced. Codex R9-H1/H2 fix.
+	Generation    int       `gorm:"default:0" json:"generation"`
 	HostID        uint      `gorm:"default:0" json:"host_id"`
 	Status        string    `gorm:"size:16;default:pending" json:"status"` // pending | building | running | failed | cleanup_failed
 	FailureReason string    `gorm:"size:512" json:"failure_reason,omitempty"`

@@ -307,13 +307,31 @@ func (s *Service) UpdateProject(id uint, updates map[string]interface{}) error {
 }
 
 // DeleteProject deletes a project and cleans up resources.
+//
+// Order matters (R9-M1): preview cleanup runs FIRST. If a preview's
+// in-flight build hasn't drained, DeletePreview returns an error and
+// we abort before destroying any of the project's own resources —
+// the project row stays, the admin can wait for the build then retry,
+// and nothing has been irrecoverably destroyed in the meantime.
 func (s *Service) DeleteProject(id uint) error {
 	project, err := s.GetProject(id)
 	if err != nil {
 		return err
 	}
 
-	// Stop process / container
+	// 1. Preview deployments first (R9-M1 — must succeed or we abort
+	// before destroying project's own resources). Delegates to
+	// PreviewService.DeletePreview which handles both slot containers,
+	// Caddy host, image, srcDir, logDir, then row (R7-M1).
+	var previews []PreviewDeployment
+	s.db.Where("project_id = ?", id).Find(&previews)
+	for _, p := range previews {
+		if err := s.preview.DeletePreview(p.ID); err != nil {
+			return fmt.Errorf("delete preview %d during project cleanup: %w (project NOT deleted; resolve preview state and retry)", p.ID, err)
+		}
+	}
+
+	// 2. Stop process / container
 	if project.DeployMode == "docker" {
 		containerName := s.docker.ContainerName(id)
 		s.docker.StopAndRemove(containerName)
@@ -321,20 +339,20 @@ func (s *Service) DeleteProject(id uint) error {
 		s.proc.Uninstall(id)
 	}
 
-	// Delete reverse proxy host if created
+	// 3. Delete reverse proxy host if created
 	if project.HostID > 0 {
 		s.coreAPI.DeleteHost(project.HostID)
 		s.coreAPI.ReloadCaddy()
 	}
 
-	// Remove source code
+	// 4. Remove source code
 	os.RemoveAll(s.git.ProjectDir(id))
 
-	// Remove logs and build cache
+	// 5. Remove logs and build cache
 	os.RemoveAll(s.builder.LogDir(id))
 	s.builder.ClearCache(id)
 
-	// Stop and remove extra processes
+	// 6. Stop and remove extra processes
 	var extraProcs []ExtraProcess
 	s.db.Where("project_id = ?", id).Find(&extraProcs)
 	for _, proc := range extraProcs {
@@ -345,26 +363,11 @@ func (s *Service) DeleteProject(id uint) error {
 		}
 	}
 
-	// Remove cron jobs from scheduler
+	// 7. Remove cron jobs from scheduler
 	var cronJobs []CronJob
 	s.db.Where("project_id = ?", id).Find(&cronJobs)
 	for _, job := range cronJobs {
 		s.cron.RemoveJob(job.ID)
-	}
-
-	// Clean up preview deployments. Delegate to PreviewService.DeletePreview
-	// so the full Phase A teardown runs: cancel in-flight job, both slot
-	// containers (slot 0 + slot 1), Caddy host, image, srcDir, logDir,
-	// then row. Inlining a partial sweep here would miss the inactive
-	// slot, build/source dirs, and image — which is exactly the R7-M1
-	// finding from Codex Round-7.
-	var previews []PreviewDeployment
-	s.db.Where("project_id = ?", id).Find(&previews)
-	for _, p := range previews {
-		if err := s.preview.DeletePreview(p.ID); err != nil {
-			s.logger.Warn("delete preview during project cleanup failed; continuing",
-				"preview_id", p.ID, "err", err)
-		}
 	}
 
 	// Delete DB records

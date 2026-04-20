@@ -197,17 +197,21 @@ func (ps *PreviewService) upsertPreviewRow(project *Project, prNumber int, branc
 	err := ps.db.Where("project_id = ? AND pr_number = ?", project.ID, prNumber).First(&preview).Error
 	if err == nil {
 		// Rebuild path. Preserve BasePort + Slot so the running container
-		// keeps serving until runPreview swaps it out.
+		// keeps serving until runPreview swaps it out. Bump Generation
+		// (R9-H1) so any stale runPreview from the previous trigger
+		// fails its WHERE generation = snapshot writes.
 		if uerr := ps.db.Model(&preview).Updates(map[string]interface{}{
 			"branch":         branch,
 			"status":         "pending",
 			"expires_at":     expiry,
 			"failure_reason": "",
+			"generation":     gorm.Expr("generation + 1"),
 		}).Error; uerr != nil {
 			return preview, false, fmt.Errorf("update existing preview: %w", uerr)
 		}
 		preview.Branch = branch
 		preview.Status = "pending"
+		preview.Generation++
 		return preview, false, nil
 	}
 	if err != gorm.ErrRecordNotFound {
@@ -223,12 +227,13 @@ func (ps *PreviewService) upsertPreviewRow(project *Project, prNumber int, branc
 	// sees uncommitted siblings and the rollback on failure releases
 	// the port for retry.
 	preview = PreviewDeployment{
-		ProjectID: project.ID,
-		PRNumber:  prNumber,
-		Branch:    branch,
-		Status:    "pending",
-		ExpiresAt: expiry,
-		Slot:      -1,
+		ProjectID:  project.ID,
+		PRNumber:   prNumber,
+		Branch:     branch,
+		Status:     "pending",
+		ExpiresAt:  expiry,
+		Slot:       -1,
+		Generation: 1, // first deploy is generation 1; rebuild path will bump.
 	}
 	var raceFallback *PreviewDeployment
 	txErr := ps.db.Transaction(func(tx *gorm.DB) error {
@@ -274,11 +279,13 @@ func (ps *PreviewService) upsertPreviewRow(project *Project, prNumber int, branc
 			"status":         "pending",
 			"expires_at":     expiry,
 			"failure_reason": "",
+			"generation":     gorm.Expr("generation + 1"),
 		}).Error; uerr != nil {
 			return *raceFallback, false, fmt.Errorf("update existing preview after race: %w", uerr)
 		}
 		raceFallback.Branch = branch
 		raceFallback.Status = "pending"
+		raceFallback.Generation++
 		return *raceFallback, false, nil
 	}
 
@@ -378,13 +385,20 @@ func (ps *PreviewService) runPreview(jobCtx context.Context, previewID, projectI
 		ps.logger.Info("runPreview: preview row gone, exiting", "id", previewID)
 		return
 	}
+	// R9-H1/H2: snapshot generation. Every DB write below is gated on
+	// `WHERE generation = gen`. A subsequent CreatePreview rebuild or
+	// DeletePreview will bump generation, causing all our writes to
+	// fail RowsAffected==0 — at which point we tear down any external
+	// resources we created and exit clean.
+	gen := preview.Generation
+
 	project, err := ps.svc.GetProject(projectID)
 	if err != nil {
-		ps.markFailed(previewID, fmt.Sprintf("project lookup: %v", err))
+		ps.markFailed(previewID, gen, fmt.Sprintf("project lookup: %v", err))
 		return
 	}
-	if !ps.setStatus(previewID, "building", "") {
-		return // row deleted between First() and Update()
+	if !ps.setStatus(previewID, gen, "building", "") {
+		return // row deleted or generation advanced between First() and Update()
 	}
 
 	// Per-preview log file. `cat $data/logs/preview_<id>/build.log` today;
@@ -398,7 +412,7 @@ func (ps *PreviewService) runPreview(jobCtx context.Context, previewID, projectI
 
 	srcDir := filepath.Join(ps.svc.dataDir, "preview-sources", fmt.Sprintf("preview_%d", previewID))
 	if err := os.MkdirAll(filepath.Dir(srcDir), 0755); err != nil {
-		ps.markFailed(previewID, fmt.Sprintf("mkdir parent: %v", err))
+		ps.markFailed(previewID, gen, fmt.Sprintf("mkdir parent: %v", err))
 		return
 	}
 
@@ -406,7 +420,7 @@ func (ps *PreviewService) runPreview(jobCtx context.Context, previewID, projectI
 	// App / GitHub OAuth / plain HTTPS).
 	authMethod, deployKey, httpsToken, err := ps.svc.GetGitCredentials(project)
 	if err != nil {
-		ps.markFailed(previewID, fmt.Sprintf("git credentials: %v", err))
+		ps.markFailed(previewID, gen, fmt.Sprintf("git credentials: %v", err))
 		return
 	}
 	// R7-H3 fix: when auth_method is github_app/github_oauth, the project
@@ -419,7 +433,7 @@ func (ps *PreviewService) runPreview(jobCtx context.Context, previewID, projectI
 	if (authMethod == "github_app" || authMethod == "github_oauth") && httpsToken != "" {
 		converted, cerr := ConvertSSHToCleanHTTPS(project.GitURL)
 		if cerr != nil {
-			ps.markFailed(previewID, fmt.Sprintf("convert git URL to HTTPS for token auth: %v", cerr))
+			ps.markFailed(previewID, gen, fmt.Sprintf("convert git URL to HTTPS for token auth: %v", cerr))
 			return
 		}
 		cloneURL = converted
@@ -430,7 +444,7 @@ func (ps *PreviewService) runPreview(jobCtx context.Context, previewID, projectI
 	// (invisible to `ps`) scoped to the requesting origin — so the
 	// token never lands in argv and cannot leak on redirect.
 	if err := ps.svc.git.CloneToDir(ctx, cloneURL, branch, deployKey, httpsToken, srcDir, logWriter); err != nil {
-		ps.markFailed(previewID, fmt.Sprintf("git clone: %v", err))
+		ps.markFailed(previewID, gen, fmt.Sprintf("git clone: %v", err))
 		return
 	}
 	if ctx.Err() != nil {
@@ -439,20 +453,26 @@ func (ps *PreviewService) runPreview(jobCtx context.Context, previewID, projectI
 
 	imageTag := preview.ImageTag
 	if err := ps.svc.docker.BuildImageWithTag(ctx, srcDir, imageTag, logWriter, project.BuildType); err != nil {
-		ps.markFailed(previewID, fmt.Sprintf("build: %v", err))
+		ps.markFailed(previewID, gen, fmt.Sprintf("build: %v", err))
 		return
 	}
 	if ctx.Err() != nil {
 		return
 	}
 
-	// Re-read the row in case a concurrent DeletePreview fired while we
-	// were building. If the row is gone, abort before creating any
-	// external resources (C1 fix).
+	// Re-read the row in case a concurrent DeletePreview / CreatePreview
+	// rebuild fired while we were building. Generation mismatch on the
+	// re-read means a fresh trigger has taken over; tear down what we
+	// built and exit (R9-H1).
 	if err := ps.db.First(&preview, previewID).Error; err != nil {
 		ps.logger.Info("runPreview: row deleted during build; aborting before host creation", "id", previewID)
-		// Clean up whatever we built so it doesn't linger.
 		ps.svc.docker.StopAndRemove(preview.ContainerName)
+		removeImage(ctx, imageTag)
+		return
+	}
+	if preview.Generation != gen {
+		ps.logger.Info("runPreview: generation advanced during build; new trigger took over",
+			"id", previewID, "snapshot_gen", gen, "current_gen", preview.Generation)
 		removeImage(ctx, imageTag)
 		return
 	}
@@ -490,7 +510,7 @@ func (ps *PreviewService) runPreview(jobCtx context.Context, previewID, projectI
 		return
 	}
 	if _, err := ps.svc.docker.RunWithName(ctx, nextContainer, imageTag, nextPort, envVars); err != nil {
-		ps.markFailed(previewID, fmt.Sprintf("run staging container: %v", err))
+		ps.markFailed(previewID, gen, fmt.Sprintf("run staging container: %v", err))
 		return
 	}
 
@@ -500,7 +520,7 @@ func (ps *PreviewService) runPreview(jobCtx context.Context, previewID, projectI
 	// deploy healthcheck — Phase B will layer HTTP-level checks on top.
 	if err := waitForPortOpen(ctx, nextPort, 30*time.Second); err != nil {
 		ps.svc.docker.StopAndRemove(nextContainer)
-		ps.markFailed(previewID, fmt.Sprintf("staging container failed to bind port %d: %v", nextPort, err))
+		ps.markFailed(previewID, gen, fmt.Sprintf("staging container failed to bind port %d: %v", nextPort, err))
 		return
 	}
 
@@ -529,15 +549,28 @@ func (ps *PreviewService) runPreview(jobCtx context.Context, previewID, projectI
 		})
 		if err != nil {
 			ps.svc.docker.StopAndRemove(nextContainer)
-			ps.markFailed(previewID, fmt.Sprintf("create host: %v", err))
+			ps.markFailed(previewID, gen, fmt.Sprintf("create host: %v", err))
+			return
+		}
+		// R9-H1: write host_id under generation guard. If our generation
+		// is stale, the host we just created is an orphan — undo it
+		// rather than leak a Caddy host pointing at a soon-to-be-killed
+		// container.
+		hres := ps.db.Model(&PreviewDeployment{}).
+			Where("id = ? AND generation = ?", previewID, gen).
+			Update("host_id", hostID)
+		if hres.Error != nil || hres.RowsAffected == 0 {
+			ps.logger.Warn("host_id write failed (stale generation); rolling back created host",
+				"id", previewID, "gen", gen, "host_id", hostID, "err", hres.Error)
+			_ = ps.coreAPI.DeleteHost(hostID)
+			ps.svc.docker.StopAndRemove(nextContainer)
 			return
 		}
 		preview.HostID = hostID
-		ps.db.Model(&preview).Update("host_id", hostID)
 	} else {
 		if err := ps.coreAPI.UpdateHostUpstream(preview.HostID, fmt.Sprintf("localhost:%d", nextPort)); err != nil {
 			ps.svc.docker.StopAndRemove(nextContainer)
-			ps.markFailed(previewID, fmt.Sprintf("update host upstream: %v", err))
+			ps.markFailed(previewID, gen, fmt.Sprintf("update host upstream: %v", err))
 			return
 		}
 	}
@@ -550,14 +583,15 @@ func (ps *PreviewService) runPreview(jobCtx context.Context, previewID, projectI
 		ps.svc.docker.StopAndRemove(oldContainer)
 	}
 
-	// R7-H2: persist via conditional update — WHERE slot = preview.Slot
-	// matches only if no other goroutine has already advanced past us
-	// (e.g. a stale post-cancel-timeout job from before, or a delete +
-	// re-create racing). RowsAffected==0 means our work is stale; back
-	// out the new container so we don't leave an orphan listening on
-	// the new port.
+	// R7-H2 + R9-H1/H2: persist via conditional update — WHERE slot AND
+	// generation. Either guard alone is insufficient (slot=0 ↔ slot=1
+	// alternation could collide with a same-slot stale write; generation
+	// alone could hit a same-generation racing run). Combined, only the
+	// current trigger's final commit lands. RowsAffected==0 means our
+	// work is stale; back out the new container so we don't leave an
+	// orphan listening on the new port.
 	res := ps.db.Model(&PreviewDeployment{}).
-		Where("id = ? AND slot = ?", previewID, preview.Slot).
+		Where("id = ? AND slot = ? AND generation = ?", previewID, preview.Slot, gen).
 		Updates(map[string]interface{}{
 			"slot":           nextSlot,
 			"port":           nextPort,
@@ -567,7 +601,7 @@ func (ps *PreviewService) runPreview(jobCtx context.Context, previewID, projectI
 		})
 	if res.Error != nil || res.RowsAffected == 0 {
 		ps.logger.Warn("preview run completed but DB row advanced past us; backing out",
-			"id", previewID, "expected_slot", preview.Slot, "err", res.Error)
+			"id", previewID, "expected_slot", preview.Slot, "expected_gen", gen, "err", res.Error)
 		ps.svc.docker.StopAndRemove(nextContainer)
 		return
 	}
@@ -577,14 +611,22 @@ func (ps *PreviewService) runPreview(jobCtx context.Context, previewID, projectI
 }
 
 // setStatus updates the preview row's status atomically and returns false
-// when the row has been deleted (RowsAffected == 0), so callers can abort
-// without creating external resources. C1 fix.
-func (ps *PreviewService) setStatus(previewID uint, status, failureReason string) bool {
+// when the row has been deleted OR the generation has advanced past
+// `gen`. Callers must capture `gen` from the initial First() read and
+// abort without creating external resources if false is returned.
+//
+// R9-H1/H2 fix: pre-Generation, this only checked row existence. A
+// stale runPreview goroutine whose drain timed out could still call
+// setStatus("running") and overwrite a fresh delete-marker. The
+// generation guard ensures only the current trigger's writes land.
+func (ps *PreviewService) setStatus(previewID uint, gen int, status, failureReason string) bool {
 	updates := map[string]interface{}{"status": status}
 	if failureReason != "" {
 		updates["failure_reason"] = failureReason
 	}
-	res := ps.db.Model(&PreviewDeployment{}).Where("id = ?", previewID).Updates(updates)
+	res := ps.db.Model(&PreviewDeployment{}).
+		Where("id = ? AND generation = ?", previewID, gen).
+		Updates(updates)
 	return res.RowsAffected > 0
 }
 
@@ -637,12 +679,18 @@ func isNotFoundErr(err error) bool {
 // markFailed records the reason on the row and flips status to "failed".
 // Persists `failure_reason` alongside `status` so the UI can show what
 // went wrong without grepping logs.
-func (ps *PreviewService) markFailed(previewID uint, reason string) {
-	ps.logger.Error("preview deployment failed", "id", previewID, "reason", reason)
-	ps.db.Model(&PreviewDeployment{}).Where("id = ?", previewID).Updates(map[string]interface{}{
-		"status":         "failed",
-		"failure_reason": truncate(reason, 500),
-	})
+//
+// R9-H1 fix: gated on `WHERE generation = ?` so a stale runPreview
+// from a cancelled-but-not-drained trigger cannot overwrite a fresh
+// trigger's "running" state with its own "failed" tail.
+func (ps *PreviewService) markFailed(previewID uint, gen int, reason string) {
+	ps.logger.Error("preview deployment failed", "id", previewID, "gen", gen, "reason", reason)
+	ps.db.Model(&PreviewDeployment{}).
+		Where("id = ? AND generation = ?", previewID, gen).
+		Updates(map[string]interface{}{
+			"status":         "failed",
+			"failure_reason": truncate(reason, 500),
+		})
 }
 
 func truncate(s string, n int) string {
@@ -667,6 +715,18 @@ func (ps *PreviewService) DeletePreview(id uint) error {
 	if err := ps.db.First(&preview, id).Error; err != nil {
 		return fmt.Errorf("preview not found: %w", err)
 	}
+
+	// R9-H2 fix: bump generation BEFORE cancelling. Any stale runPreview
+	// goroutine that's mid-flight has captured the old generation; once
+	// we increment, all its WHERE generation = snapshot writes fail
+	// RowsAffected==0. So even if cancelJob's drain times out, the
+	// stale finisher cannot overwrite our cleanup_failed marker with a
+	// running status, and cannot bind host_id to a soon-to-be-deleted
+	// row. The bump succeeds even on a racing concurrent CreatePreview
+	// (which also bumps); whoever wins the last bump owns the row.
+	ps.db.Model(&PreviewDeployment{}).
+		Where("id = ?", id).
+		Update("generation", gorm.Expr("generation + 1"))
 
 	// 1. Cancel in-flight build and wait for it to drain. R8-H2 fix:
 	// if the goroutine doesn't drain in 30s we MUST NOT proceed —
