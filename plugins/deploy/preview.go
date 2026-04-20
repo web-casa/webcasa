@@ -129,42 +129,56 @@ func (ps *PreviewService) CreatePreview(projectID uint, prNumber int, branch str
 	}
 	newExpiry := time.Now().AddDate(0, 0, expiry)
 
-	// R7-H1 fix: serialize the lookup+create+allocate sequence so two
-	// concurrent webhooks cannot both pick the same base_port or both
-	// reach the "create new row" branch and race the unique (project_id,
-	// pr_number) index into a 500 response.
+	// R7-H1 + R8-H1 fix: serialize the lookup-create-allocate sequence
+	// AND the job-swap so two concurrent webhooks for the same preview
+	// cannot both observe "no job running" and both spawn racing
+	// runPreview goroutines. createMu briefly covers upsert + atomic
+	// jobs-map swap; the slow 30s drain of the previous job happens
+	// OUTSIDE the lock so other webhooks aren't blocked.
 	ps.createMu.Lock()
 	preview, created, err := ps.upsertPreviewRow(project, prNumber, branch, newExpiry, domain)
-	ps.createMu.Unlock()
 	if err != nil {
+		ps.createMu.Unlock()
 		return nil, err
 	}
+
+	// Atomically install a new job placeholder. Whoever installs gets
+	// the previous job back as oldJob and is responsible for cancelling
+	// + draining it. Two webhooks racing each see the other's job here
+	// and resolve deterministically.
+	jobCtx, jobCancel := context.WithCancel(ps.rootCtx)
+	newJob := &previewJob{cancel: jobCancel, done: make(chan struct{})}
+	ps.jobsMu.Lock()
+	oldJob := ps.jobs[preview.ID]
+	ps.jobs[preview.ID] = newJob
+	ps.jobsMu.Unlock()
+	ps.createMu.Unlock()
+
 	if created {
 		ps.logger.Info("created new preview", "project", project.Name, "pr", prNumber, "base_port", preview.BasePort)
 	} else {
 		ps.logger.Info("rebuilding existing preview", "project", project.Name, "pr", prNumber, "branch", branch)
 	}
 
-	// Cancel any in-flight runPreview for this ID before spawning a new
-	// one. C2 race fix: force-push sends two synchronize webhooks within
-	// ms; without this both would fight over the same containerName +
-	// srcDir. R7-H2: if the previous job did not drain within the
-	// timeout, refuse rather than spawn a racing job.
-	if !ps.cancelJob(preview.ID) {
-		return nil, fmt.Errorf("previous preview job for PR %d did not drain in time; webhook will retry", prNumber)
+	// Cancel + drain the previous job outside the lock. If drain times
+	// out, the new job still proceeds — the conditional WHERE slot=...
+	// in runPreview's final Updates (R7-H2) prevents the stale finisher
+	// from clobbering our slot transition.
+	if oldJob != nil {
+		oldJob.cancel()
+		select {
+		case <-oldJob.done:
+		case <-time.After(30 * time.Second):
+			ps.logger.Warn("previous preview job did not drain in 30s; relying on conditional updates to fence stale writes",
+				"preview_id", preview.ID)
+		}
 	}
-
-	jobCtx, jobCancel := context.WithCancel(ps.rootCtx)
-	job := &previewJob{cancel: jobCancel, done: make(chan struct{})}
-	ps.jobsMu.Lock()
-	ps.jobs[preview.ID] = job
-	ps.jobsMu.Unlock()
 
 	ps.wg.Add(1)
 	go func() {
 		defer ps.wg.Done()
-		defer close(job.done)
-		defer ps.clearJob(preview.ID, job)
+		defer close(newJob.done)
+		defer ps.clearJob(preview.ID, newJob)
 		ps.runPreview(jobCtx, preview.ID, project.ID, branch)
 	}()
 
@@ -200,11 +214,14 @@ func (ps *PreviewService) upsertPreviewRow(project *Project, prNumber int, branc
 		return preview, false, fmt.Errorf("lookup existing preview: %w", err)
 	}
 
-	// Fresh-create path. Insert a temporary row first so we have an ID
-	// (needed for image_tag / domain / base_port allocation seed), then
-	// fill in the derived fields in a SINGLE transactional Updates call.
-	// All Updates checks are explicit so a DB error fails-loud rather
-	// than leaving a half-baked row in the table.
+	// Fresh-create path. R8-M1 fix: wrap Create + allocate + backfill in
+	// a single DB transaction so a partial failure (process crash, DB
+	// error mid-sequence) cannot leave a half-baked row with base_port=0
+	// that would later confuse runPreview into binding port 0.
+	//
+	// allocateBasePort runs WITHIN the transaction so its Count read
+	// sees uncommitted siblings and the rollback on failure releases
+	// the port for retry.
 	preview = PreviewDeployment{
 		ProjectID: project.ID,
 		PRNumber:  prNumber,
@@ -213,49 +230,58 @@ func (ps *PreviewService) upsertPreviewRow(project *Project, prNumber int, branc
 		ExpiresAt: expiry,
 		Slot:      -1,
 	}
-	if cerr := ps.db.Create(&preview).Error; cerr != nil {
-		// Unique-index conflict on (project_id, pr_number) — racing
-		// webhook beat us. Re-lookup and treat as rebuild.
-		var existing PreviewDeployment
-		if rerr := ps.db.Where("project_id = ? AND pr_number = ?", project.ID, prNumber).First(&existing).Error; rerr == nil {
-			ps.logger.Info("preview row created by concurrent webhook; updating",
-				"project", project.Name, "pr", prNumber)
-			if uerr := ps.db.Model(&existing).Updates(map[string]interface{}{
-				"branch":         branch,
-				"status":         "pending",
-				"expires_at":     expiry,
-				"failure_reason": "",
-			}).Error; uerr != nil {
-				return existing, false, fmt.Errorf("update existing preview after race: %w", uerr)
+	var raceFallback *PreviewDeployment
+	txErr := ps.db.Transaction(func(tx *gorm.DB) error {
+		if cerr := tx.Create(&preview).Error; cerr != nil {
+			// Unique-index conflict on (project_id, pr_number) — racing
+			// webhook beat us. Re-lookup OUTSIDE the failing tx and
+			// signal the caller to take the rebuild path.
+			var existing PreviewDeployment
+			if rerr := ps.db.Where("project_id = ? AND pr_number = ?", project.ID, prNumber).First(&existing).Error; rerr == nil {
+				raceFallback = &existing
+				return nil // commit empty tx; we'll process raceFallback after
 			}
-			existing.Branch = branch
-			existing.Status = "pending"
-			return existing, false, nil
+			return fmt.Errorf("create preview record: %w", cerr)
 		}
-		return preview, false, fmt.Errorf("create preview record: %w", cerr)
+		basePort, perr := ps.allocateBasePortTx(tx, preview.ID)
+		if perr != nil {
+			return fmt.Errorf("allocate port: %w", perr)
+		}
+		slug := sanitizeForDomain(project.Name)
+		previewDomain := fmt.Sprintf("pr-%d-%s-%d.%s", prNumber, slug, preview.ID, wildcardDomain)
+		imageTag := fmt.Sprintf("webcasa-preview-%d", preview.ID)
+		if uerr := tx.Model(&preview).Updates(map[string]interface{}{
+			"domain":    previewDomain,
+			"image_tag": imageTag,
+			"base_port": basePort,
+		}).Error; uerr != nil {
+			return fmt.Errorf("backfill preview fields: %w", uerr)
+		}
+		preview.Domain = previewDomain
+		preview.ImageTag = imageTag
+		preview.BasePort = basePort
+		return nil
+	})
+	if txErr != nil {
+		return preview, false, txErr
 	}
 
-	basePort, perr := ps.allocateBasePort(preview.ID)
-	if perr != nil {
-		ps.db.Delete(&preview)
-		return preview, false, fmt.Errorf("allocate port: %w", perr)
+	if raceFallback != nil {
+		ps.logger.Info("preview row created by concurrent webhook; updating",
+			"project", project.Name, "pr", prNumber)
+		if uerr := ps.db.Model(raceFallback).Updates(map[string]interface{}{
+			"branch":         branch,
+			"status":         "pending",
+			"expires_at":     expiry,
+			"failure_reason": "",
+		}).Error; uerr != nil {
+			return *raceFallback, false, fmt.Errorf("update existing preview after race: %w", uerr)
+		}
+		raceFallback.Branch = branch
+		raceFallback.Status = "pending"
+		return *raceFallback, false, nil
 	}
-	slug := sanitizeForDomain(project.Name)
-	previewDomain := fmt.Sprintf("pr-%d-%s-%d.%s", prNumber, slug, preview.ID, wildcardDomain)
-	imageTag := fmt.Sprintf("webcasa-preview-%d", preview.ID)
-	if uerr := ps.db.Model(&preview).Updates(map[string]interface{}{
-		"domain":    previewDomain,
-		"image_tag": imageTag,
-		"base_port": basePort,
-	}).Error; uerr != nil {
-		// Backfill failed — row exists but is unusable. Delete it so a
-		// retry from the webhook can start fresh.
-		ps.db.Delete(&preview)
-		return preview, false, fmt.Errorf("backfill preview fields: %w", uerr)
-	}
-	preview.Domain = previewDomain
-	preview.ImageTag = imageTag
-	preview.BasePort = basePort
+
 	return preview, true, nil
 }
 
@@ -296,22 +322,24 @@ func (ps *PreviewService) clearJob(previewID uint, job *previewJob) {
 	}
 }
 
-// allocateBasePort picks a slot-0 base port in [20000, 25000) that isn't
-// taken by another preview. Slot-1 port is always base+5000, landing in
-// [25000, 30000). Because BasePort has a unique index, two previews are
-// guaranteed non-colliding on both slot ports.
+// allocateBasePortTx picks a slot-0 base port in [20000, 25000) that
+// isn't taken by another preview. Slot-1 port is always base+5000,
+// landing in [25000, 30000). Runs WITHIN the caller's DB transaction
+// so the Count read sees uncommitted siblings; combined with createMu
+// serialization (R8-H1) this guarantees no two previews are allocated
+// the same base port.
 //
 // Uses a deterministic starting point for spread without a central
 // atomic counter. Bounded at 5000 slots; ample for any realistic
 // preview workload.
-func (ps *PreviewService) allocateBasePort(previewID uint) (int, error) {
+func (ps *PreviewService) allocateBasePortTx(tx *gorm.DB, previewID uint) (int, error) {
 	const base = 20000
 	const rng = 5000
 	start := base + int(previewID%uint(rng))
 	for i := 0; i < rng; i++ {
 		candidate := base + ((start - base + i) % rng)
 		var count int64
-		ps.db.Model(&PreviewDeployment{}).
+		tx.Model(&PreviewDeployment{}).
 			Where("base_port = ? AND id != ?", candidate, previewID).
 			Count(&count)
 		if count == 0 {
@@ -385,9 +413,16 @@ func (ps *PreviewService) runPreview(jobCtx context.Context, previewID, projectI
 	// URL is typically SSH (`git@github.com:owner/repo`) but the token
 	// path needs HTTPS. Convert to a clean HTTPS URL (no embedded
 	// credentials) and let CloneToDir push the token via env var.
+	// R8-M2: surface conversion errors instead of silently falling back
+	// to the SSH URL (which would clone-fail without a deploy key).
 	cloneURL := project.GitURL
 	if (authMethod == "github_app" || authMethod == "github_oauth") && httpsToken != "" {
-		cloneURL = ConvertSSHToCleanHTTPS(project.GitURL)
+		converted, cerr := ConvertSSHToCleanHTTPS(project.GitURL)
+		if cerr != nil {
+			ps.markFailed(previewID, fmt.Sprintf("convert git URL to HTTPS for token auth: %v", cerr))
+			return
+		}
+		cloneURL = converted
 		deployKey = "" // SSH key not needed on the HTTPS path
 	}
 	// H3/R6-H1 fix: pass the clean URL + token separately. CloneToDir
@@ -633,12 +668,18 @@ func (ps *PreviewService) DeletePreview(id uint) error {
 		return fmt.Errorf("preview not found: %w", err)
 	}
 
-	// 1. Cancel in-flight build (no-op if nothing running). For Delete
-	// we tolerate the timeout — even if the goroutine is still draining
-	// we want to push through cleanup; the goroutine's row-existence
-	// check (setStatus / re-read after build) will see the deletion
-	// and abort.
-	_ = ps.cancelJob(id)
+	// 1. Cancel in-flight build and wait for it to drain. R8-H2 fix:
+	// if the goroutine doesn't drain in 30s we MUST NOT proceed —
+	// otherwise it can call CreateHost / UpdateHostUpstream after
+	// we've torn down everything else, leaving an orphan Caddy host
+	// + container that survive the row deletion.
+	if !ps.cancelJob(id) {
+		ps.db.Model(&PreviewDeployment{}).Where("id = ?", id).Updates(map[string]interface{}{
+			"status":         "cleanup_failed",
+			"failure_reason": "in-flight build did not drain in 30s; retry delete after build completes",
+		})
+		return fmt.Errorf("preview %d: in-flight build did not drain in 30s; retry delete after build completes", id)
+	}
 
 	ctx, cancel := context.WithTimeout(ps.rootCtx, 60*time.Second)
 	defer cancel()

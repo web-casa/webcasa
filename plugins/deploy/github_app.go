@@ -99,18 +99,57 @@ func (g *GitHubAppAuth) GetCloneToken(appID int64, privateKeyPEM string, install
 // channels (env vars, headers) rather than baking the token into the
 // URL — preview deploys take this path so the token doesn't surface
 // in argv (R6-H1) or in `git remote -v` output (R7-H3).
-func ConvertSSHToCleanHTTPS(gitURL string) string {
-	if strings.HasPrefix(gitURL, "git@github.com:") {
-		repo := strings.TrimPrefix(gitURL, "git@github.com:")
-		return "https://github.com/" + repo
-	}
-	if idx := strings.Index(gitURL, "://"); idx != -1 {
+//
+// Returns an error for URLs that cannot be safely converted (e.g.,
+// non-GitHub SSH forms paired with a GitHub-only token). Callers MUST
+// surface this error rather than silently falling back to the SSH URL
+// without a deploy key (R8-M2 — failing loud beats clone-fails-with-
+// auth-error in build logs).
+//
+// Forms handled:
+//
+//	git@github.com:owner/repo[.git]            → https://github.com/owner/repo[.git]
+//	ssh://git@github.com[:port]/owner/repo     → https://github.com/owner/repo
+//	https://[user:pass@]github.com/owner/repo  → https://github.com/owner/repo
+func ConvertSSHToCleanHTTPS(gitURL string) (string, error) {
+	// HTTPS form — strip any embedded credentials and return.
+	if strings.HasPrefix(gitURL, "https://") || strings.HasPrefix(gitURL, "http://") {
+		idx := strings.Index(gitURL, "://")
 		rest := gitURL[idx+3:]
 		if at := strings.Index(rest, "@"); at != -1 {
-			return gitURL[:idx+3] + rest[at+1:]
+			return gitURL[:idx+3] + rest[at+1:], nil
 		}
+		return gitURL, nil
 	}
-	return gitURL
+	// scp-like SSH: git@host:owner/repo
+	if strings.HasPrefix(gitURL, "git@") {
+		colon := strings.Index(gitURL, ":")
+		at := strings.Index(gitURL, "@")
+		if colon > at {
+			host := gitURL[at+1 : colon]
+			path := gitURL[colon+1:]
+			return "https://" + host + "/" + path, nil
+		}
+		return "", fmt.Errorf("unrecognized SSH URL form: %q", gitURL)
+	}
+	// ssh://[user@]host[:port]/path
+	if strings.HasPrefix(gitURL, "ssh://") {
+		rest := gitURL[len("ssh://"):]
+		if at := strings.Index(rest, "@"); at != -1 {
+			rest = rest[at+1:]
+		}
+		slash := strings.Index(rest, "/")
+		if slash == -1 {
+			return "", fmt.Errorf("ssh:// URL missing path: %q", gitURL)
+		}
+		host := rest[:slash]
+		// Drop port if present — HTTPS will use 443.
+		if colon := strings.Index(host, ":"); colon != -1 {
+			host = host[:colon]
+		}
+		return "https://" + host + rest[slash:], nil
+	}
+	return "", fmt.Errorf("cannot convert git URL to HTTPS (not SSH or HTTPS): %q", gitURL)
 }
 
 // ConvertToHTTPS converts a git URL (SSH or HTTPS) to HTTPS format with token auth.
