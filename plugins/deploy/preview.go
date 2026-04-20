@@ -780,14 +780,19 @@ func (ps *PreviewService) DeletePreview(id uint) error {
 	ps.createMu.Lock()
 	defer ps.createMu.Unlock()
 
-	// 5. Re-verify ownership under the lock. If a CreatePreview raced
-	// past us between cancelJob and createMu re-acquisition, abort —
-	// they own the row's external resources now.
-	if err := ps.db.Select("id", "generation").First(&refreshed, id).Error; err != nil {
+	// 5. Re-read the FULL row under the lock and verify ownership.
+	// R12 fix: a CreatePreview that bumped before our bump (then we
+	// bumped on top of it, taking ownership of the resulting gen)
+	// could have launched a runPreview that wrote a fresh HostID to
+	// the row before we got here. Our entry-time `preview.HostID`
+	// snapshot would be stale (commonly =0 for first-deploy previews)
+	// — using it would skip DeleteHost and orphan the Caddy host. Use
+	// the freshly-read values for all subsequent cleanup.
+	if err := ps.db.First(&preview, id).Error; err != nil {
 		return fmt.Errorf("preview %d: re-verify before cleanup: %w", id, err)
 	}
-	if refreshed.Generation != deleteGen {
-		return fmt.Errorf("preview %d: superseded by concurrent create (gen %d → %d); aborting cleanup", id, deleteGen, refreshed.Generation)
+	if preview.Generation != deleteGen {
+		return fmt.Errorf("preview %d: superseded by concurrent create (gen %d → %d); aborting cleanup", id, deleteGen, preview.Generation)
 	}
 
 	// 6. Destructive cleanup. Order: host (so subdomain stops pointing
