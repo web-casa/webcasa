@@ -292,33 +292,6 @@ func (ps *PreviewService) upsertPreviewRow(project *Project, prNumber int, branc
 	return preview, true, nil
 }
 
-// cancelJob cancels a running runPreview for the given preview ID and
-// waits up to 30s for it to drain. Returns true if no job was running
-// or the job exited cleanly within the deadline; false if the timeout
-// was hit (caller must NOT spawn a replacement job — the stale job is
-// still mid-flight and will fight for resources).
-//
-// R7-H2 fix: previously this swallowed the timeout, letting a stale
-// job continue into UpdateHostUpstream / DB writes after a fresh job
-// for the same preview started — the stale finish would clobber the
-// new slot in DB.
-func (ps *PreviewService) cancelJob(previewID uint) bool {
-	ps.jobsMu.Lock()
-	job, ok := ps.jobs[previewID]
-	ps.jobsMu.Unlock()
-	if !ok {
-		return true
-	}
-	job.cancel()
-	select {
-	case <-job.done:
-		return true
-	case <-time.After(30 * time.Second):
-		ps.logger.Warn("previous preview job did not drain in 30s", "preview_id", previewID)
-		return false
-	}
-}
-
 // clearJob removes the job from the registry iff it still matches — so a
 // cancel+immediate-restart sequence doesn't drop the NEW job entry.
 func (ps *PreviewService) clearJob(previewID uint, job *previewJob) {
@@ -718,53 +691,75 @@ func truncate(s string, n int) string {
 // DeletePreview removes a preview deployment and cleans up all resources:
 // Caddy host, container (+ staging), image, source dir, log dir, and row.
 //
-// Generation discipline (R9 + R10):
-//  1. Bump generation FIRST → fences any stale runPreview goroutine.
-//  2. Re-read to capture deleteGen — the generation owned by THIS delete.
-//  3. cancelJob (drain). On timeout, mark cleanup_failed under deleteGen
-//     so a concurrent CreatePreview that has bumped past us doesn't get
+// Generation discipline (R9 + R10 + R11):
+//  1. Take createMu, bump generation, capture deleteGen, snapshot the
+//     in-flight job — all atomic. R11-H1 fix: previously bump and
+//     deleteGen capture were separate calls; a racing CreatePreview
+//     could interleave its own bump between them, causing DP to
+//     "borrow" CP's generation as its deleteGen and later cancel the
+//     wrong (newer) job + delete the wrong row.
+//  2. Release createMu for the 30s cancel-drain so other webhooks
+//     aren't blocked on a slow build.
+//  3. On drain timeout, mark cleanup_failed under deleteGen so a
+//     concurrent CreatePreview that has bumped past us doesn't get
 //     its pending state overwritten.
-//  4. Take createMu before destructive cleanup so no new CreatePreview
-//     can bump generation while we're tearing down external resources.
-//  5. Re-verify deleteGen under the lock; if a CreatePreview snuck in
-//     between cancelJob and createMu, abort cleanup — the new owner
-//     will manage the row's lifecycle.
-//  6. Cleanup external resources. Final row Delete is conditional on
-//     `WHERE generation = deleteGen` so a same-microsecond race that
-//     somehow slipped past createMu still cannot delete the new
-//     trigger's row.
+//  4. Re-take createMu for destructive cleanup. Re-verify deleteGen
+//     is still current; if a CreatePreview raced past us during the
+//     drain wait, abort — they own the row.
+//  5. Cleanup external resources. Final row Delete is conditional on
+//     `WHERE generation = deleteGen` as defense in depth.
 func (ps *PreviewService) DeletePreview(id uint) error {
 	var preview PreviewDeployment
 	if err := ps.db.First(&preview, id).Error; err != nil {
 		return fmt.Errorf("preview not found: %w", err)
 	}
 
-	// 1. Bump generation. Any in-flight runPreview's WHERE generation =
-	// snapshot writes fail RowsAffected==0 once this commits.
+	// 1. Atomic bump + capture + job-snapshot under createMu.
+	// Without the lock, a CreatePreview can land between Update() and
+	// First() and we'd capture the WRONG deleteGen (R11-H1).
+	ps.createMu.Lock()
 	bres := ps.db.Model(&PreviewDeployment{}).
 		Where("id = ?", id).
 		Update("generation", gorm.Expr("generation + 1"))
 	if bres.Error != nil {
+		ps.createMu.Unlock()
 		return fmt.Errorf("preview %d: bump generation: %w", id, bres.Error)
 	}
 	if bres.RowsAffected == 0 {
+		ps.createMu.Unlock()
 		return fmt.Errorf("preview %d: row vanished before delete", id)
 	}
-
-	// 2. Capture deleteGen. Re-read because gorm's Update doesn't return
-	// the new value, and a concurrent CreatePreview might bump again
-	// before we read; in that case our "delete" is logically subsumed
-	// by the new create and we should bail.
 	var refreshed PreviewDeployment
 	if err := ps.db.Select("id", "generation").First(&refreshed, id).Error; err != nil {
+		ps.createMu.Unlock()
 		return fmt.Errorf("preview %d: re-read after bump: %w", id, err)
 	}
 	deleteGen := refreshed.Generation
+	// Snapshot the in-flight job under the same lock — same reason: a
+	// CP between bump and snapshot would have swapped in a NEW job we
+	// have no business cancelling.
+	ps.jobsMu.Lock()
+	job := ps.jobs[id]
+	ps.jobsMu.Unlock()
+	ps.createMu.Unlock()
 
-	// 3. Cancel + drain in-flight build. Timeout marks cleanup_failed
-	// under deleteGen so we can't overwrite a fresh CreatePreview's
-	// state (R10-H1).
-	if !ps.cancelJob(id) {
+	// 2. Cancel + drain (lock released; could take 30s).
+	drained := true
+	if job != nil {
+		job.cancel()
+		select {
+		case <-job.done:
+		case <-time.After(30 * time.Second):
+			drained = false
+			ps.logger.Warn("previous preview job did not drain in 30s", "preview_id", id)
+		}
+	}
+
+	// 3. On timeout, mark cleanup_failed under deleteGen guard. If a
+	// concurrent CreatePreview has bumped past us, write fails
+	// RowsAffected==0 — they own the row, our "cleanup_failed" has
+	// no meaning.
+	if !drained {
 		res := ps.db.Model(&PreviewDeployment{}).
 			Where("id = ? AND generation = ?", id, deleteGen).
 			Updates(map[string]interface{}{
@@ -777,15 +772,16 @@ func (ps *PreviewService) DeletePreview(id uint) error {
 		return fmt.Errorf("preview %d: in-flight build did not drain in 30s; retry delete after build completes", id)
 	}
 
-	// 4. Hold createMu for the destructive cleanup phase. CreatePreview
-	// also takes this lock for its upsert; while we hold it, no new
-	// trigger can bump generation. Brief — only the synchronous
-	// cleanup ops, not the 30s drain above.
+	// 4. Re-take createMu for destructive cleanup. Brief lock — only
+	// covers synchronous external ops, not the 30s drain above.
+	// (R11-M1 noted this still blocks all CPs for the cleanup
+	// duration — accepted limitation for v0.14; per-preview lock
+	// planned for v0.15.)
 	ps.createMu.Lock()
 	defer ps.createMu.Unlock()
 
 	// 5. Re-verify ownership under the lock. If a CreatePreview raced
-	// past us between cancelJob and createMu acquisition, abort —
+	// past us between cancelJob and createMu re-acquisition, abort —
 	// they own the row's external resources now.
 	if err := ps.db.Select("id", "generation").First(&refreshed, id).Error; err != nil {
 		return fmt.Errorf("preview %d: re-verify before cleanup: %w", id, err)
