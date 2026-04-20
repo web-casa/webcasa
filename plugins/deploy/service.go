@@ -307,13 +307,38 @@ func (s *Service) UpdateProject(id uint, updates map[string]interface{}) error {
 }
 
 // DeleteProject deletes a project and cleans up resources.
+//
+// Order matters (R9-M1): preview cleanup runs FIRST. If a preview's
+// in-flight build hasn't drained, DeletePreview returns an error and
+// we abort before destroying any of the project's own resources —
+// the project row stays, the admin can wait for the build then retry,
+// and nothing has been irrecoverably destroyed in the meantime.
 func (s *Service) DeleteProject(id uint) error {
 	project, err := s.GetProject(id)
 	if err != nil {
 		return err
 	}
 
-	// Stop process / container
+	// 1. Preview deployments first (R9-M1 — must succeed or we abort
+	// before destroying project's own resources). Delegates to
+	// PreviewService.DeletePreview which handles both slot containers,
+	// Caddy host, image, srcDir, logDir, then row (R7-M1).
+	//
+	// R10-M1 fix: the Find query's error must NOT be swallowed.
+	// Previously a DB error would leave `previews` empty and we'd
+	// continue destroying project resources unaware that orphan
+	// preview rows + external resources still exist.
+	var previews []PreviewDeployment
+	if err := s.db.Where("project_id = ?", id).Find(&previews).Error; err != nil {
+		return fmt.Errorf("list previews for project %d: %w (project NOT deleted; cannot verify preview state)", id, err)
+	}
+	for _, p := range previews {
+		if err := s.preview.DeletePreview(p.ID); err != nil {
+			return fmt.Errorf("delete preview %d during project cleanup: %w (project NOT deleted; resolve preview state and retry)", p.ID, err)
+		}
+	}
+
+	// 2. Stop process / container
 	if project.DeployMode == "docker" {
 		containerName := s.docker.ContainerName(id)
 		s.docker.StopAndRemove(containerName)
@@ -321,20 +346,20 @@ func (s *Service) DeleteProject(id uint) error {
 		s.proc.Uninstall(id)
 	}
 
-	// Delete reverse proxy host if created
+	// 3. Delete reverse proxy host if created
 	if project.HostID > 0 {
 		s.coreAPI.DeleteHost(project.HostID)
 		s.coreAPI.ReloadCaddy()
 	}
 
-	// Remove source code
+	// 4. Remove source code
 	os.RemoveAll(s.git.ProjectDir(id))
 
-	// Remove logs and build cache
+	// 5. Remove logs and build cache
 	os.RemoveAll(s.builder.LogDir(id))
 	s.builder.ClearCache(id)
 
-	// Stop and remove extra processes
+	// 6. Stop and remove extra processes
 	var extraProcs []ExtraProcess
 	s.db.Where("project_id = ?", id).Find(&extraProcs)
 	for _, proc := range extraProcs {
@@ -345,29 +370,12 @@ func (s *Service) DeleteProject(id uint) error {
 		}
 	}
 
-	// Remove cron jobs from scheduler
+	// 7. Remove cron jobs from scheduler
 	var cronJobs []CronJob
 	s.db.Where("project_id = ?", id).Find(&cronJobs)
 	for _, job := range cronJobs {
 		s.cron.RemoveJob(job.ID)
 	}
-
-	// Clean up preview deployments
-	var previews []PreviewDeployment
-	s.db.Where("project_id = ?", id).Find(&previews)
-	for _, p := range previews {
-		if p.HostID > 0 {
-			if err := s.coreAPI.DeleteHost(p.HostID); err != nil {
-				s.logger.Warn("failed to delete preview host during project cleanup", "host_id", p.HostID, "err", err)
-			}
-		}
-		if p.ContainerName != "" {
-			if err := s.coreAPI.DockerRemoveContainer(p.ContainerName, true); err != nil {
-				s.logger.Warn("failed to remove preview container during project cleanup", "container", p.ContainerName, "err", err)
-			}
-		}
-	}
-	s.db.Where("project_id = ?", id).Delete(&PreviewDeployment{})
 
 	// Delete DB records
 	s.db.Where("project_id = ?", id).Delete(&CronJob{})
@@ -1059,6 +1067,15 @@ func (s *Service) Rollback(projectID uint, buildNum int) error {
 			return fmt.Errorf("docker rollback failed: %w", runErr)
 		}
 		containerName := s.docker.ContainerName(projectID)
+		// C1-class fix: Rollback may race with DeleteProject. Verify the
+		// project row still exists before committing the rolled-back
+		// state — otherwise we've just started an orphan container that
+		// nothing in the panel tracks. If the row is gone, tear the new
+		// container back down and report the race.
+		if err := s.db.First(&Project{}, projectID).Error; err != nil {
+			s.docker.StopAndRemove(containerName)
+			return fmt.Errorf("project deleted during rollback; new container removed: %w", err)
+		}
 		s.db.Model(&Project{}).Where("id = ?", projectID).Updates(map[string]interface{}{
 			"status":         "running",
 			"docker_image":   imageTag,
@@ -1408,15 +1425,22 @@ func (s *Service) StartPreviewGC() {
 	}()
 }
 
-// StopPreviewGC halts the daily GC loop.
+// StopPreviewGC halts the daily GC loop AND drains any in-flight preview
+// build goroutines. Called from plugin Stop(); the 30s drain deadline is
+// long enough for most `git clone`/`docker build` subprocesses to exit via
+// their context cancel, short enough not to stall the whole panel on
+// shutdown. Codex Round-5 H6 fix — previously runPreview goroutines could
+// outlive the plugin and write to a closed DB handle.
 func (s *Service) StopPreviewGC() {
 	s.previewGCMu.Lock()
-	defer s.previewGCMu.Unlock()
-	if s.previewGCStop == nil {
-		return
+	if s.previewGCStop != nil {
+		close(s.previewGCStop)
+		s.previewGCStop = nil
 	}
-	close(s.previewGCStop)
-	s.previewGCStop = nil
+	s.previewGCMu.Unlock()
+	if s.preview != nil {
+		s.preview.Stop(30 * time.Second)
+	}
 }
 
 // migrateDeployKeys encrypts any plaintext deploy keys found in the database.

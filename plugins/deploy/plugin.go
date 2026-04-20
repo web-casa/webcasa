@@ -36,6 +36,21 @@ func (p *Plugin) Metadata() pluginpkg.Metadata {
 
 // Init initialises the deploy plugin: migrates DB, creates service, registers routes.
 func (p *Plugin) Init(ctx *pluginpkg.Context) error {
+	// R6-H5 pre-migration: if a pre-v0.14 preview table exists without
+	// the BasePort column, drop it. Phase A was not tagged as a public
+	// release so any rows are development-only — resurfacing the same
+	// PR pushes a fresh webhook. Cheaper than writing a migration that
+	// (a) dedups duplicate (project_id, pr_number) rows from the C2
+	// race, (b) backfills BasePort from Port under the new slot scheme,
+	// and (c) handles the ux_preview_base_port unique index.
+	if ctx.DB.Migrator().HasTable("plugin_deploy_preview_deployments") &&
+		!ctx.DB.Migrator().HasColumn(&PreviewDeployment{}, "base_port") {
+		if err := ctx.DB.Migrator().DropTable("plugin_deploy_preview_deployments"); err != nil {
+			return fmt.Errorf("drop pre-v0.14 preview table: %w", err)
+		}
+		ctx.Logger.Warn("dropped pre-v0.14 preview_deployments table to apply new schema; existing previews will need to be re-triggered via PR webhook")
+	}
+
 	// Migrate models
 	if err := ctx.DB.AutoMigrate(&Project{}, &Deployment{}, &PreviewDeployment{}, &CronJob{}, &ExtraProcess{}, &GitHubInstallation{}); err != nil {
 		return fmt.Errorf("migrate: %w", err)

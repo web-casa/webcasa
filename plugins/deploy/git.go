@@ -1,6 +1,7 @@
 package deploy
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"os/exec"
@@ -60,9 +61,18 @@ func (g *GitClient) Clone(url, branch, deployKey string, projectID uint, logWrit
 // (rather than the per-project default path returned by ProjectDir). Used
 // by the preview deploy flow which maintains a separate source tree per
 // preview so concurrent main-project builds don't stomp the PR checkout.
-// Credential handling mirrors Clone — SSH via deployKey or HTTPS via a
-// token baked into the URL.
-func (g *GitClient) CloneToDir(url, branch, deployKey, dstDir string, logWriter *LogWriter) error {
+//
+// Credentials:
+//   - SSH: `deployKey` is written to a temp file and used via GIT_SSH_COMMAND
+//     (same as Clone)
+//   - HTTPS: pass the clean URL (no `x-access-token:<token>@` prefix) and
+//     the token separately in `httpsToken`. It is passed to git through
+//     the GIT_CONFIG_COUNT env-var ladder (env is NOT visible in `ps`),
+//     scoped to the requesting host only via `http.<host>.extraHeader`
+//     so the token cannot leak to an unexpected redirect target (Codex
+//     R6-H1; supersedes the earlier `-c http.extraHeader` approach that
+//     still embedded the secret in argv).
+func (g *GitClient) CloneToDir(ctx context.Context, url, branch, deployKey, httpsToken, dstDir string, logWriter *LogWriter) error {
 	if dstDir == "" {
 		return fmt.Errorf("dstDir is required")
 	}
@@ -72,9 +82,12 @@ func (g *GitClient) CloneToDir(url, branch, deployKey, dstDir string, logWriter 
 		}
 	}
 
-	args := []string{"clone", "--depth", "1", "--branch", branch, url, dstDir}
-	cmd := exec.Command("git", args...)
+	gitArgs := []string{"clone", "--depth", "1", "--branch", branch, url, dstDir}
+	cmd := exec.CommandContext(ctx, "git", gitArgs...)
 
+	// Start from the base environment so setupDeployKey's GIT_SSH_COMMAND
+	// is preserved. If only httpsToken is set, setupDeployKey is a no-op
+	// and cmd.Env stays at nil (inherit) until we append below.
 	cleanup, err := g.setupDeployKey(cmd, deployKey)
 	if err != nil {
 		return err
@@ -83,9 +96,33 @@ func (g *GitClient) CloneToDir(url, branch, deployKey, dstDir string, logWriter 
 		defer cleanup()
 	}
 
+	if httpsToken != "" {
+		// Use GIT_CONFIG_COUNT env-var ladder rather than `-c <kv>` argv.
+		// Env vars are NOT exposed in `ps` on Linux (unlike argv). Scope
+		// the extra header to the repo's host so a redirect to a
+		// different origin doesn't inherit the Authorization header.
+		host := extractHost(url)
+		headerKey := "http.extraHeader"
+		if host != "" {
+			// http.<origin>.extraHeader targets only requests to that origin.
+			headerKey = fmt.Sprintf("http.https://%s/.extraHeader", host)
+		}
+		env := cmd.Env
+		if env == nil {
+			env = os.Environ()
+		}
+		env = append(env,
+			"GIT_CONFIG_COUNT=1",
+			"GIT_CONFIG_KEY_0="+headerKey,
+			"GIT_CONFIG_VALUE_0=Authorization: Bearer "+httpsToken,
+		)
+		cmd.Env = env
+	}
+
 	if logWriter != nil {
 		cmd.Stdout = logWriter
 		cmd.Stderr = logWriter
+		// Log a redacted form so the token doesn't hit persistent logs.
 		logWriter.Write([]byte(fmt.Sprintf("$ git clone --depth 1 --branch %s %s %s\n",
 			branch, sanitizeURL(url), dstDir)))
 	}
@@ -93,6 +130,27 @@ func (g *GitClient) CloneToDir(url, branch, deployKey, dstDir string, logWriter 
 		return fmt.Errorf("git clone failed: %w", err)
 	}
 	return nil
+}
+
+// extractHost returns the host portion of an HTTPS URL (e.g.
+// "github.com" for "https://github.com/owner/repo.git"), or "" if the
+// URL isn't in a recognizable HTTPS form. Used to scope git's
+// extraHeader config to the requesting origin only.
+func extractHost(u string) string {
+	idx := strings.Index(u, "://")
+	if idx == -1 {
+		return ""
+	}
+	rest := u[idx+3:]
+	// Strip any user:pass@ prefix (shouldn't be present in the clean URL
+	// path used for preview, but defensive).
+	if at := strings.Index(rest, "@"); at != -1 {
+		rest = rest[at+1:]
+	}
+	if slash := strings.Index(rest, "/"); slash != -1 {
+		rest = rest[:slash]
+	}
+	return rest
 }
 
 // Pull performs a git pull in the project directory.

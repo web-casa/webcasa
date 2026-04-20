@@ -114,16 +114,54 @@ func (Deployment) TableName() string {
 }
 
 // PreviewDeployment tracks an ephemeral deployment created from a GitHub PR.
+//
+// Uniqueness: (project_id, pr_number) must be unique. Enforced via a composite
+// unique index so the `GitHub sends two synchronize webhooks in ms` race can't
+// create duplicate rows for the same PR (Codex Round: C2).
+//
+// Port: persisted per-preview so a successful rebuild (PR synchronize) reuses
+// the same host port, keeping the Caddy upstream stable and avoiding port
+// overflow from a naive `20000 + previewID` formula (Codex Round: H5).
 type PreviewDeployment struct {
-	ID            uint      `gorm:"primaryKey" json:"id"`
-	ProjectID     uint      `gorm:"index;not null" json:"project_id"`
-	PRNumber      int       `gorm:"not null" json:"pr_number"`
-	Branch        string    `gorm:"size:128" json:"branch"`
-	Domain        string    `gorm:"size:255" json:"domain"`
-	ContainerName string    `gorm:"size:128" json:"container_name"`
+	ID            uint   `gorm:"primaryKey" json:"id"`
+	ProjectID     uint   `gorm:"index;not null;uniqueIndex:ux_preview_project_pr" json:"project_id"`
+	PRNumber      int    `gorm:"not null;uniqueIndex:ux_preview_project_pr" json:"pr_number"`
+	Branch        string `gorm:"size:128" json:"branch"`
+	Domain        string `gorm:"size:255" json:"domain"`
+	ContainerName string `gorm:"size:128" json:"container_name"` // reflects the currently-active slot container name
+	ImageTag      string `gorm:"size:128" json:"image_tag"`      // webcasa-preview-<id>
+	// Port: the currently-serving host port. Equals BasePort when Slot==0,
+	// BasePort+5000 when Slot==1. Updated atomically with ContainerName +
+	// Slot on each successful swap.
+	Port int `gorm:"default:0" json:"port"`
+	// BasePort: the port slot-0 container binds to. Allocated once at
+	// create-time in [20000, 25000); the "alt" slot-1 container binds to
+	// BasePort+5000 (lands in [25000, 30000)). Never changes after
+	// allocation. Two slots let us alternate each deploy without ever
+	// rebinding the same port while both containers briefly coexist
+	// during the Caddy upstream swap (Codex R6-C1 fix).
+	//
+	// NOT unique-indexed: a unique index combined with the post-Create
+	// backfill pattern caused two simultaneous creates to both insert
+	// base_port=0, then the second backfill collide. Allocation is now
+	// serialized in-process by PreviewService.createMu (R7-H1 fix).
+	BasePort int `gorm:"default:0" json:"base_port"`
+	// Slot: which slot is currently serving — 0 or 1, or -1 before the
+	// first successful deploy.
+	Slot int `gorm:"default:-1" json:"slot"`
+	// Generation: monotonically increasing token bumped on every
+	// CreatePreview (rebuild trigger) and DeletePreview. runPreview
+	// snapshots the generation on entry; ALL its DB writes (setStatus,
+	// markFailed, host_id update, final slot update) are gated on
+	// `WHERE generation = snapshot`. A stale runPreview whose drain
+	// timed out cannot clobber the row state because the row's
+	// generation has advanced. Codex R9-H1/H2 fix.
+	Generation    int       `gorm:"default:0" json:"generation"`
 	HostID        uint      `gorm:"default:0" json:"host_id"`
-	Status        string    `gorm:"size:16;default:running" json:"status"` // running, stopped, error
+	Status        string    `gorm:"size:16;default:pending" json:"status"` // pending | building | running | failed | cleanup_failed
+	FailureReason string    `gorm:"size:512" json:"failure_reason,omitempty"`
 	CreatedAt     time.Time `json:"created_at"`
+	UpdatedAt     time.Time `json:"updated_at"`
 	ExpiresAt     time.Time `json:"expires_at"`
 }
 

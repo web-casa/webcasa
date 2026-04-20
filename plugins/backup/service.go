@@ -16,6 +16,13 @@ import (
 )
 
 // Service orchestrates backup operations, configuration, and scheduling.
+//
+// Goroutine lifecycle (H6-class fix): every async backup — whether
+// event-triggered ("backup.trigger" from AI), scheduled, or future
+// callers — goes through TriggerAsync, which registers the goroutine
+// with `wg` and threads `rootCtx` through RunBackup. Stop cancels the
+// context and waits for drain, so plugin teardown can't leave a kopia
+// subprocess writing to a DB that's about to close.
 type Service struct {
 	db        *gorm.DB
 	dataDir   string
@@ -24,26 +31,59 @@ type Service struct {
 	scheduler *Scheduler
 	mu        sync.Mutex
 	running   bool
+
+	rootCtx    context.Context
+	rootCancel context.CancelFunc
+	wg         sync.WaitGroup
 }
 
 // NewService creates a new backup Service.
 func NewService(db *gorm.DB, dataDir string, logger *slog.Logger) *Service {
+	ctx, cancel := context.WithCancel(context.Background())
 	svc := &Service{
-		db:        db,
-		dataDir:   dataDir,
-		logger:    logger,
-		kopia:     NewKopiaClient(dataDir, logger),
-		scheduler: NewScheduler(logger),
+		db:         db,
+		dataDir:    dataDir,
+		logger:     logger,
+		kopia:      NewKopiaClient(dataDir, logger),
+		scheduler:  NewScheduler(logger),
+		rootCtx:    ctx,
+		rootCancel: cancel,
 	}
 
-	// Wire scheduler callback.
+	// Wire scheduler callback. Routed through TriggerAsync so plugin
+	// Stop() also waits for an in-flight scheduled backup, not just
+	// event-triggered ones.
 	svc.scheduler.SetCallback(func() {
-		if _, err := svc.RunBackup("scheduled"); err != nil {
-			svc.logger.Error("scheduled backup failed", "err", err)
-		}
+		svc.TriggerAsync("scheduled")
 	})
 
 	return svc
+}
+
+// TriggerAsync runs a backup in a tracked goroutine. Safe to call from
+// event handlers / cron callbacks — registers with the service WaitGroup
+// so Stop() can drain them.
+//
+// R6-M2 fix: check rootCtx under the mutex BEFORE calling wg.Add, so a
+// late trigger arriving after Stop() started cannot race a fresh
+// counter increment past wg.Wait(). sync.WaitGroup races when Add is
+// called concurrently with Wait while the counter might hit zero.
+func (s *Service) TriggerAsync(source string) {
+	s.mu.Lock()
+	if s.rootCtx == nil || s.rootCtx.Err() != nil {
+		s.mu.Unlock()
+		s.logger.Info("skip backup trigger during shutdown", "source", source)
+		return
+	}
+	s.wg.Add(1)
+	s.mu.Unlock()
+
+	go func() {
+		defer s.wg.Done()
+		if _, err := s.RunBackup(source); err != nil {
+			s.logger.Error("triggered backup failed", "source", source, "err", err)
+		}
+	}()
 }
 
 // CheckDependency returns the Kopia CLI availability status.
@@ -72,9 +112,29 @@ func (s *Service) Start() error {
 	return nil
 }
 
-// Stop shuts down the scheduler.
+// Stop shuts down the scheduler and drains any in-flight backup
+// goroutines (event-triggered or scheduled). 60s drain ceiling is
+// generous for a single running kopia snapshot — longer than that and
+// we'd rather bail than block panel shutdown. Mirrors the preview
+// service Stop() drain pattern.
+//
+// Takes s.mu before cancelling rootCtx so it serializes with
+// TriggerAsync's pre-Add ctx-check: either TriggerAsync commits to
+// wg.Add before cancel wins the lock (and will complete in the drain),
+// or cancel wins first and the late TriggerAsync sees ctx.Err() != nil
+// and returns without touching the WaitGroup (R6-M2 correctness).
 func (s *Service) Stop() {
 	s.scheduler.Stop()
+	s.mu.Lock()
+	s.rootCancel()
+	s.mu.Unlock()
+	done := make(chan struct{})
+	go func() { s.wg.Wait(); close(done) }()
+	select {
+	case <-done:
+	case <-time.After(60 * time.Second):
+		s.logger.Warn("backup jobs did not drain within 60s — proceeding with shutdown")
+	}
 }
 
 // ── Config ──
@@ -290,7 +350,16 @@ func (s *Service) RunBackup(trigger string) (*BackupSnapshot, error) {
 
 	s.addLog(snapshot.ID, "info", "Backup started (trigger: "+trigger+")")
 
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Minute)
+	// R6-H4 fix: derive from rootCtx so Service.Stop() cancels in-flight
+	// kopia subprocesses instead of waiting the full 30m timeout.
+	// rootCtx is set up in NewService and cancelled in Stop().
+	baseCtx := s.rootCtx
+	if baseCtx == nil {
+		// Defensive: should always be non-nil post-NewService, but avoid
+		// panicking if someone constructs Service without the constructor.
+		baseCtx = context.Background()
+	}
+	ctx, cancel := context.WithTimeout(baseCtx, 30*time.Minute)
 	defer cancel()
 
 	// Ensure repository is connected.

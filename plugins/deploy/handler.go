@@ -464,17 +464,19 @@ func (h *Handler) handlePullRequestWebhook(c *gin.Context, project *Project) {
 		})
 	case "closed":
 		// Find the preview (by project + PR number) and tear it down.
+		// L1 fix: return the SAME response whether a preview existed or
+		// not, so a caller replaying signed webhooks can't enumerate which
+		// PR numbers had previews by diffing response bodies. (Signature
+		// verification gates writes, but the HMAC secret could leak and
+		// we still don't want enumeration to be a freebie.)
 		var preview PreviewDeployment
-		if err := h.svc.db.Where("project_id = ? AND pr_number = ?", project.ID, payload.Number).First(&preview).Error; err != nil {
-			// No preview existed for this PR — that's fine, 200 OK.
-			c.JSON(http.StatusOK, gin.H{"ok": true, "message": "no preview to clean up"})
-			return
+		if err := h.svc.db.Where("project_id = ? AND pr_number = ?", project.ID, payload.Number).First(&preview).Error; err == nil {
+			if err := h.svc.preview.DeletePreview(preview.ID); err != nil {
+				c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+				return
+			}
 		}
-		if err := h.svc.preview.DeletePreview(preview.ID); err != nil {
-			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
-			return
-		}
-		c.JSON(http.StatusOK, gin.H{"ok": true, "message": "preview torn down"})
+		c.JSON(http.StatusOK, gin.H{"ok": true, "message": "close processed"})
 	default:
 		// Uninteresting action — ack so GitHub stops retrying.
 		c.JSON(http.StatusOK, gin.H{"ok": true, "message": "action ignored: " + payload.Action})
