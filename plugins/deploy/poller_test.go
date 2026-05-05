@@ -34,6 +34,9 @@ func newPollerTestService(t *testing.T, db *gorm.DB) *Service {
 		logger:        slog.New(slog.NewTextHandler(io.Discard, nil)),
 		buildInflight: make(map[uint]bool),
 		buildPending:  make(map[uint]bool),
+		// 64-slot semaphore so dedup tests don't trip the v0.16
+		// concurrency cap (default 3 in production).
+		buildSem: make(chan struct{}, 64),
 	}
 }
 

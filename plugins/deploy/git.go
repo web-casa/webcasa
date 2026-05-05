@@ -24,8 +24,15 @@ func (g *GitClient) ProjectDir(projectID uint) string {
 	return filepath.Join(g.workDir, fmt.Sprintf("project_%d", projectID))
 }
 
-// Clone clones a git repository. If deployKey is provided, it's used for SSH auth.
-func (g *GitClient) Clone(url, branch, deployKey string, projectID uint, logWriter *LogWriter) error {
+// Clone clones a git repository. Pass deployKey for SSH auth and/or
+// httpsToken for HTTPS auth (token delivered via GIT_CONFIG_COUNT env
+// var, never in argv — see injectHTTPSTokenEnv).
+//
+// v0.16 R8-M4 fix: previously the main Build path embedded the token
+// directly in the URL via ConvertToHTTPS, which surfaced it in
+// `git remote -v` and worker process listings. The clean-URL +
+// env-var path matches what preview deploy has used since v0.14.
+func (g *GitClient) Clone(url, branch, deployKey, httpsToken string, projectID uint, logWriter *LogWriter) error {
 	dir := g.ProjectDir(projectID)
 
 	// Clean up existing directory if present
@@ -47,6 +54,10 @@ func (g *GitClient) Clone(url, branch, deployKey string, projectID uint, logWrit
 		defer cleanup()
 	}
 
+	if httpsToken != "" {
+		injectHTTPSTokenEnv(cmd, url, httpsToken)
+	}
+
 	cmd.Stdout = logWriter
 	cmd.Stderr = logWriter
 
@@ -55,6 +66,33 @@ func (g *GitClient) Clone(url, branch, deployKey string, projectID uint, logWrit
 		return fmt.Errorf("git clone failed: %w", err)
 	}
 	return nil
+}
+
+// injectHTTPSTokenEnv appends the GIT_CONFIG_COUNT env-var ladder to
+// cmd.Env so git uses the token as Authorization without exposing it
+// to argv or the on-disk repo config (`git remote -v`).
+//
+// Scope is narrowed to the requesting origin via
+// `http.https://<host>/.extraHeader` so a redirect to a different
+// host doesn't inherit the credential.
+//
+// Preserves any env already set by setupDeployKey (GIT_SSH_COMMAND).
+func injectHTTPSTokenEnv(cmd *exec.Cmd, url, token string) {
+	host := extractHost(url)
+	headerKey := "http.extraHeader"
+	if host != "" {
+		headerKey = fmt.Sprintf("http.https://%s/.extraHeader", host)
+	}
+	env := cmd.Env
+	if env == nil {
+		env = os.Environ()
+	}
+	env = append(env,
+		"GIT_CONFIG_COUNT=1",
+		"GIT_CONFIG_KEY_0="+headerKey,
+		"GIT_CONFIG_VALUE_0=Authorization: Bearer "+token,
+	)
+	cmd.Env = env
 }
 
 // CloneToDir clones a git repository into an arbitrary destination directory
@@ -97,26 +135,7 @@ func (g *GitClient) CloneToDir(ctx context.Context, url, branch, deployKey, http
 	}
 
 	if httpsToken != "" {
-		// Use GIT_CONFIG_COUNT env-var ladder rather than `-c <kv>` argv.
-		// Env vars are NOT exposed in `ps` on Linux (unlike argv). Scope
-		// the extra header to the repo's host so a redirect to a
-		// different origin doesn't inherit the Authorization header.
-		host := extractHost(url)
-		headerKey := "http.extraHeader"
-		if host != "" {
-			// http.<origin>.extraHeader targets only requests to that origin.
-			headerKey = fmt.Sprintf("http.https://%s/.extraHeader", host)
-		}
-		env := cmd.Env
-		if env == nil {
-			env = os.Environ()
-		}
-		env = append(env,
-			"GIT_CONFIG_COUNT=1",
-			"GIT_CONFIG_KEY_0="+headerKey,
-			"GIT_CONFIG_VALUE_0=Authorization: Bearer "+httpsToken,
-		)
-		cmd.Env = env
+		injectHTTPSTokenEnv(cmd, url, httpsToken)
 	}
 
 	if logWriter != nil {
@@ -154,14 +173,25 @@ func extractHost(u string) string {
 }
 
 // Pull performs a git pull in the project directory.
-// If httpsURL is non-empty, the remote origin is temporarily updated to use the fresh
-// token-authenticated URL (for GitHub App auth where tokens expire after 1 hour).
-func (g *GitClient) Pull(deployKey string, httpsURL string, projectID uint, logWriter *LogWriter) error {
+//
+// v0.16 R8-M4 fix: callers pass `cleanHTTPSURL` (no embedded token)
+// and `httpsToken` separately. The remote is set to the clean URL
+// (so `git remote -v` and on-disk config never expose the token),
+// and the token is delivered via env var on each pull. This handles
+// GitHub App token rotation naturally — the URL stays stable, only
+// the env var changes.
+//
+// Backwards compat: if cleanHTTPSURL is "" the remote isn't touched
+// (deploy_key SSH path).
+func (g *GitClient) Pull(deployKey, cleanHTTPSURL, httpsToken string, projectID uint, logWriter *LogWriter) error {
 	dir := g.ProjectDir(projectID)
 
-	// If an HTTPS URL with a fresh token is provided, update the remote before pulling.
-	if httpsURL != "" {
-		setCmd := exec.Command("git", "remote", "set-url", "origin", httpsURL)
+	// On the HTTPS path, ensure the remote points at the clean URL.
+	// First Pull after a Clone-with-SSH (e.g. user changed auth method)
+	// or after a v0.15 install where remotes have embedded tokens —
+	// always normalize to clean.
+	if cleanHTTPSURL != "" {
+		setCmd := exec.Command("git", "remote", "set-url", "origin", cleanHTTPSURL)
 		setCmd.Dir = dir
 		if out, err := setCmd.CombinedOutput(); err != nil {
 			return fmt.Errorf("set remote URL: %s: %w", string(out), err)
@@ -179,6 +209,10 @@ func (g *GitClient) Pull(deployKey string, httpsURL string, projectID uint, logW
 		defer cleanup()
 	}
 
+	if httpsToken != "" {
+		injectHTTPSTokenEnv(cmd, cleanHTTPSURL, httpsToken)
+	}
+
 	cmd.Stdout = logWriter
 	cmd.Stderr = logWriter
 
@@ -186,15 +220,6 @@ func (g *GitClient) Pull(deployKey string, httpsURL string, projectID uint, logW
 	if err := cmd.Run(); err != nil {
 		return fmt.Errorf("git pull failed: %w", err)
 	}
-
-	// After pull, sanitize the remote URL to remove the token.
-	if httpsURL != "" {
-		sanitized := sanitizeRemoteURL(httpsURL)
-		cleanCmd := exec.Command("git", "remote", "set-url", "origin", sanitized)
-		cleanCmd.Dir = dir
-		_ = cleanCmd.Run() // best-effort cleanup
-	}
-
 	return nil
 }
 

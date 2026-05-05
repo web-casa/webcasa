@@ -6,6 +6,76 @@
 
 ---
 
+## [0.16.0] - 2026-05-05
+
+### Defer-cleanup batch: build queue + per-PR lock + token-via-env
+
+Three Medium-severity items deferred from v0.14/v0.15 collected into a
+single release. All three are concurrency / security hardening on the
+deploy plugin; no new user-visible features, no breaking changes.
+
+#### #7 — Panel-wide concurrent-build cap (NEW)
+
+Without this, an unrelated webhook flood (e.g. 20 projects' git pollers
+firing after a GitHub outage) could spawn N goroutines that all
+`git clone` + `docker build` and OOM the host.
+
+- New `WEBCASA_MAX_CONCURRENT_BUILDS` env var, default 3, capped at 64.
+- `Build()` does a non-blocking semaphore acquire; on full returns
+  the new `ErrBuildQueueFull` which API handlers map to HTTP 503.
+- GitHub webhooks retry on 503 per their backoff schedule, so we
+  never grow an in-memory queue (the failure mode this fixes).
+- Slot held for the entire coalesced loop — a same-project pending
+  rebuild reuses our slot rather than re-acquiring.
+- Released exactly once via `defer` in `buildLoop`.
+
+#### #5 — Per-(project_id, pr_number) preview lock (R11-M1)
+
+The v0.14 `createMu` was a single global mutex covering ALL preview
+Create + Delete. DeletePreview's destructive cleanup phase blocked
+unrelated CreatePreview webhooks for several seconds — at scale
+(many active PRs) this serialized the whole panel.
+
+- `previewLocks sync.Map` keyed by `previewKey{ProjectID, PRNumber}`.
+- Lazily LoadOrStore'd per PR; evicted in DeletePreview after the
+  row is successfully deleted (PR is terminal, no more webhooks
+  expected for that number).
+- All existing R10/R11/R12 critical sections (bump+capture+
+  job-snapshot, re-verify-then-cleanup) preserved — same scope,
+  per-key rather than global.
+
+#### #6 — Main `Build()` token-via-env (R8-M4)
+
+Preview deploy used `GIT_CONFIG_COUNT` env-var token delivery since
+v0.14 R6-H1, but the main project Build path still used
+`ConvertToHTTPS` which embeds the GitHub App / OAuth token directly
+in the URL. The token surfaced in `git remote -v` output and was
+visible on disk in the repo's git config.
+
+- `GitClient.Clone` and `GitClient.Pull` take `httpsToken` as a
+  separate param (was: token embedded in URL).
+- `injectHTTPSTokenEnv` helper extracted; reused by Clone, Pull,
+  CloneToDir, and lsRemoteHead.
+- `Builder.Build` signature: takes `httpsToken`.
+- `service.go runBuildOnce` and `poller.go lsRemoteHead` resolve
+  credentials, call `ConvertSSHToCleanHTTPS` to derive the clean
+  URL, and pass the token separately.
+- **GitHub-host guard (v0.16-R1-H1)**: hard-error when
+  `auth_method=github_app/github_oauth` is paired with a
+  non-github.com URL — prevents the GitHub installation token
+  from being sent to a foreign host's Authorization header.
+
+#### Audit trail
+
+| Round | Findings landed |
+|-------|-----------------|
+| R1    | 1 High + 1 Low (2)     |
+| R2    | _(verified)_           |
+
+Per-round commit history preserved on `feat/v0.16-defer-cleanup`.
+
+---
+
 ## [0.15.0] - 2026-05-05
 
 ### Preview Deploy Phase B: frontend UI + log streaming + PR comments

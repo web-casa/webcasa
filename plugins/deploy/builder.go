@@ -98,18 +98,25 @@ func (b *Builder) setupBuildCache(project *Project, logWriter *LogWriter) []stri
 
 // Build executes the full build pipeline: clone/pull → install → build.
 // It writes all output to the provided LogWriter.
-func (b *Builder) Build(ctx context.Context, project *Project, logWriter *LogWriter) BuildResult {
+func (b *Builder) Build(ctx context.Context, project *Project, httpsToken string, logWriter *LogWriter) BuildResult {
 	start := time.Now()
 	projectDir := b.git.ProjectDir(project.ID)
 
 	// Setup build cache
 	cacheEnv := b.setupBuildCache(project, logWriter)
 
-	// Step 1: Clone or pull
+	// Step 1: Clone or pull. v0.16 R8-M4: project.GitURL must already
+	// be the CLEAN HTTPS URL (no embedded token). The caller resolves
+	// credentials and passes the token separately so it never lands
+	// in argv or `git remote -v`.
 	logWriter.Write([]byte("=== Step 1/3: Fetching source code ===\n"))
 	if _, err := os.Stat(filepath.Join(projectDir, ".git")); err == nil {
-		// Directory exists, pull (pass GitURL for HTTPS token refresh)
-		if err := b.git.Pull(project.DeployKey, project.GitURL, project.ID, logWriter); err != nil {
+		// Directory exists, pull. cleanHTTPSURL is empty for SSH path.
+		cleanURL := ""
+		if httpsToken != "" {
+			cleanURL = project.GitURL
+		}
+		if err := b.git.Pull(project.DeployKey, cleanURL, httpsToken, project.ID, logWriter); err != nil {
 			return BuildResult{ErrorMsg: fmt.Sprintf("git pull failed: %v", err), Duration: time.Since(start)}
 		}
 	} else {
@@ -118,7 +125,7 @@ func (b *Builder) Build(ctx context.Context, project *Project, logWriter *LogWri
 		if branch == "" {
 			branch = "main"
 		}
-		if err := b.git.Clone(project.GitURL, branch, project.DeployKey, project.ID, logWriter); err != nil {
+		if err := b.git.Clone(project.GitURL, branch, project.DeployKey, httpsToken, project.ID, logWriter); err != nil {
 			return BuildResult{ErrorMsg: fmt.Sprintf("git clone failed: %v", err), Duration: time.Since(start)}
 		}
 	}
