@@ -22,6 +22,12 @@ export default function ProjectCreate() {
     const [ghConfigSaving, setGhConfigSaving] = useState(false)
     const ghPopupTimerRef = useRef(null)
 
+    // v0.18: nixpacks CLI install state. Probe lazily when user picks
+    // build_type=nixpacks; show install button if missing.
+    const [nixpacksStatus, setNixpacksStatus] = useState(null) // null=unknown, {installed, version}
+    const [nixpacksInstalling, setNixpacksInstalling] = useState(false)
+    const [nixpacksLogs, setNixpacksLogs] = useState([])
+
     // Cleanup popup polling on unmount.
     useEffect(() => {
         return () => { if (ghPopupTimerRef.current) clearInterval(ghPopupTimerRef.current) }
@@ -65,6 +71,56 @@ export default function ProjectCreate() {
     }, [])
 
     const updateForm = (key, value) => setForm(prev => ({ ...prev, [key]: value }))
+
+    // v0.18: lazily probe nixpacks status when user picks build_type=nixpacks.
+    // Avoid a probe on every page load — only when the user actually
+    // needs the binary.
+    useEffect(() => {
+        if (form.build_type !== 'nixpacks' || nixpacksStatus !== null) return
+        deployAPI.nixpacksStatus()
+            .then(res => setNixpacksStatus(res.data))
+            .catch(() => setNixpacksStatus({ installed: false }))
+    }, [form.build_type, nixpacksStatus])
+
+    const handleInstallNixpacks = async () => {
+        setNixpacksInstalling(true)
+        setNixpacksLogs([])
+        const token = localStorage.getItem('token')
+        try {
+            const resp = await fetch(deployAPI.nixpacksInstallURL(), {
+                method: 'POST',
+                headers: token ? { 'Authorization': `Bearer ${token}` } : {},
+            })
+            if (!resp.ok) throw new Error(`HTTP ${resp.status}`)
+            const reader = resp.body.getReader()
+            const decoder = new TextDecoder()
+            let buffer = ''
+            let installError = false
+            while (true) {
+                const { done, value } = await reader.read()
+                if (done) break
+                buffer += decoder.decode(value, { stream: true })
+                const lines = buffer.split('\n')
+                buffer = lines.pop() || ''
+                for (const line of lines) {
+                    if (line.startsWith('data: ')) {
+                        setNixpacksLogs(prev => [...prev, line.slice(6)])
+                    } else if (line.startsWith('event: error')) {
+                        installError = true
+                    }
+                }
+            }
+            if (!installError) {
+                // Re-probe so the UI flips to "installed".
+                const res = await deployAPI.nixpacksStatus()
+                setNixpacksStatus(res.data)
+            }
+        } catch (err) {
+            setNixpacksLogs(prev => [...prev, `ERROR: ${err.message}`])
+        } finally {
+            setNixpacksInstalling(false)
+        }
+    }
 
     const detectFramework = async () => {
         if (!form.git_url) return
@@ -504,6 +560,52 @@ export default function ProjectCreate() {
                                 <Text size="1" color="gray" mt="1">
                                     {t(`deploy.build_type_hint_${form.build_type || 'auto'}`)}
                                 </Text>
+
+                                {/* v0.18: nixpacks CLI install gate. Show only when
+                                    user picked nixpacks AND probe came back missing. */}
+                                {form.build_type === 'nixpacks' && nixpacksStatus !== null && (
+                                    nixpacksStatus.installed ? (
+                                        <Callout.Root size="1" color="green" mt="2">
+                                            <Callout.Text>
+                                                {t('deploy.nixpacks_installed', { version: nixpacksStatus.version || 'unknown' })}
+                                            </Callout.Text>
+                                        </Callout.Root>
+                                    ) : (
+                                        <Callout.Root size="1" color="orange" mt="2">
+                                            <Callout.Text>
+                                                <Text size="1" as="div" mb="2">{t('deploy.nixpacks_missing')}</Text>
+                                                <Button
+                                                    size="1"
+                                                    variant="solid"
+                                                    onClick={handleInstallNixpacks}
+                                                    disabled={nixpacksInstalling}
+                                                >
+                                                    {nixpacksInstalling ? (
+                                                        <><Loader2 size={12} className="animate-spin" /> {t('deploy.nixpacks_installing')}</>
+                                                    ) : (
+                                                        t('deploy.nixpacks_install')
+                                                    )}
+                                                </Button>
+                                                {nixpacksLogs.length > 0 && (
+                                                    <Box mt="2" style={{
+                                                        background: 'var(--gray-2)',
+                                                        border: '1px solid var(--gray-5)',
+                                                        borderRadius: 4,
+                                                        padding: 8,
+                                                        fontFamily: 'monospace',
+                                                        fontSize: 11,
+                                                        lineHeight: 1.4,
+                                                        maxHeight: 200,
+                                                        overflow: 'auto',
+                                                        whiteSpace: 'pre-wrap',
+                                                    }}>
+                                                        {nixpacksLogs.join('\n')}
+                                                    </Box>
+                                                )}
+                                            </Callout.Text>
+                                        </Callout.Root>
+                                    )
+                                )}
                             </Box>
                         )}
 
