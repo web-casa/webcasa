@@ -3,6 +3,7 @@ package deploy
 import (
 	"context"
 	"fmt"
+	"io"
 	"log/slog"
 	"net"
 	"os"
@@ -12,6 +13,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/gin-gonic/gin"
 	pluginpkg "github.com/web-casa/webcasa/internal/plugin"
 	"gorm.io/gorm"
 )
@@ -254,6 +256,13 @@ func (ps *PreviewService) upsertPreviewRow(project *Project, prNumber int, branc
 		}
 		slug := sanitizeForDomain(project.Name)
 		previewDomain := fmt.Sprintf("pr-%d-%s-%d.%s", prNumber, slug, preview.ID, wildcardDomain)
+		// PB-R5-H2: enforce DNS limits on the FULL preview domain, not
+		// just the wildcard suffix the admin configured. RFC 1035: ≤253
+		// chars total, each label ≤63. Also bounded by our column
+		// width (size:255) but DNS comes first.
+		if !validPreviewDomain(previewDomain) {
+			return fmt.Errorf("preview domain %q exceeds DNS limits (≤253 total, ≤63 per label); shorten the wildcard_domain or project name", previewDomain)
+		}
 		imageTag := fmt.Sprintf("webcasa-preview-%d", preview.ID)
 		if uerr := tx.Model(&preview).Updates(map[string]interface{}{
 			"domain":    previewDomain,
@@ -578,9 +587,19 @@ func (ps *PreviewService) runPreview(jobCtx context.Context, previewID, projectI
 		ps.svc.docker.StopAndRemove(nextContainer)
 		return
 	}
+	// Reflect the persisted slot/port on the local snapshot so the PR
+	// comment uses the new values, not the pre-swap ones.
+	preview.Slot = nextSlot
+	preview.Port = nextPort
+	preview.ContainerName = nextContainer
+
 	ps.logger.Info("preview deployment running",
 		"project", project.Name, "pr", preview.PRNumber,
 		"domain", preview.Domain, "port", nextPort, "slot", nextSlot)
+
+	// B6: post / update the PR comment with the live URL. Best-effort —
+	// failures don't affect the deploy status (already committed above).
+	ps.postOrUpdatePRComment(&preview, project)
 }
 
 // setStatus updates the preview row's status atomically and returns false
@@ -797,7 +816,12 @@ func (ps *PreviewService) DeletePreview(id uint) error {
 
 	// 6. Destructive cleanup. Order: host (so subdomain stops pointing
 	// at a soon-to-die container) → containers (both slots) → image
-	// → on-disk dirs.
+	// → on-disk dirs. The PR comment delete intentionally runs LAST,
+	// AFTER the row delete succeeds (PB-R6-L2): if any cleanup step
+	// fails the row is retained as `cleanup_failed` so admin can
+	// retry, and the PR comment must stay intact for a future retry
+	// to be able to clean it up too. Deleting it eagerly would lose
+	// the comment ID forever on a partial-failure path.
 	ctx, cancel := context.WithTimeout(ps.rootCtx, 60*time.Second)
 	defer cancel()
 
@@ -861,6 +885,14 @@ func (ps *PreviewService) DeletePreview(id uint) error {
 			"id", id, "expected_gen", deleteGen)
 		return fmt.Errorf("preview %d: superseded between cleanup and row delete", id)
 	}
+	// PB-R6-L2: only NOW (after the row is gone) do we remove the PR
+	// comment. If any earlier cleanup step had failed and we'd
+	// returned cleanup_failed, the comment ID would still be on the
+	// row and a retry could pick it up. Deleting comments eagerly
+	// would have leaked them on partial-failure paths.
+	if preview.PRCommentID > 0 {
+		ps.deletePRCommentBestEffort(&preview)
+	}
 	ps.logger.Info("preview deployment deleted", "id", id, "domain", preview.Domain)
 	return nil
 }
@@ -889,6 +921,260 @@ func (ps *PreviewService) ListByProject(projectID uint) ([]PreviewDeployment, er
 	var previews []PreviewDeployment
 	err := ps.db.Where("project_id = ?", projectID).Order("created_at DESC").Find(&previews).Error
 	return previews, err
+}
+
+// previewLogPath returns the canonical path to a preview's build log.
+// All path components are derived from the validated integer ID; no
+// user-controlled string is ever joined into this path.
+func (ps *PreviewService) previewLogPath(previewID uint) string {
+	return filepath.Join(ps.svc.dataDir, "logs", fmt.Sprintf("preview_%d", previewID), "build.log")
+}
+
+// previewLogMaxBytes caps how much of a preview's build log we'll read
+// in one request — both for the static fetch and for each SSE poll.
+// Prevents pathological multi-GB logs from OOMing the panel. PB-R1-H2.
+const previewLogMaxBytes = 2 * 1024 * 1024 // 2 MiB
+
+// ReadBuildLog returns the current contents of the preview's build log,
+// capped at previewLogMaxBytes (returns the TAIL of the file when over,
+// since the most recent output is what users want to see). Empty file
+// (or missing — pending preview that hasn't started writing) returns
+// an empty slice, not an error.
+func (ps *PreviewService) ReadBuildLog(previewID uint) ([]byte, error) {
+	path := ps.previewLogPath(previewID)
+	f, err := os.Open(path)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return []byte{}, nil
+		}
+		return nil, fmt.Errorf("open build log: %w", err)
+	}
+	defer f.Close()
+	stat, err := f.Stat()
+	if err != nil {
+		return nil, fmt.Errorf("stat build log: %w", err)
+	}
+	size := stat.Size()
+	// PB-R2-M2 fix: use io.ReadFull so a short read (e.g. concurrent
+	// writer flushes between Stat and Read) doesn't return a buffer
+	// padded with zero bytes.
+	if size <= previewLogMaxBytes {
+		buf := make([]byte, size)
+		n, err := io.ReadFull(f, buf)
+		if err != nil && err != io.ErrUnexpectedEOF && err != io.EOF {
+			return nil, fmt.Errorf("read build log: %w", err)
+		}
+		return buf[:n], nil
+	}
+	// Tail the last previewLogMaxBytes bytes.
+	if _, err := f.Seek(size-previewLogMaxBytes, 0); err != nil {
+		return nil, fmt.Errorf("seek build log: %w", err)
+	}
+	buf := make([]byte, previewLogMaxBytes)
+	n, err := io.ReadFull(f, buf)
+	if err != nil && err != io.ErrUnexpectedEOF && err != io.EOF {
+		return nil, fmt.Errorf("read build log tail: %w", err)
+	}
+	// Prepend a marker so callers know we truncated.
+	prefix := []byte(fmt.Sprintf("[…truncated to last %d bytes…]\n", previewLogMaxBytes))
+	return append(prefix, buf[:n]...), nil
+}
+
+// StreamBuildLog tails the preview's build.log over Server-Sent Events.
+//
+// Protocol:
+//   - First flush: full existing file content as a single `event: log`
+//   - Then poll every 500ms for new bytes, emit as `event: log`
+//   - Every 2s, re-read the row's status; emit `event: status` when it
+//     changes
+//   - When status leaves the in-progress set ("pending", "building"),
+//     emit `event: done` with the final status and close
+//   - Closes early on client disconnect
+//
+// Single-flight per request — no central pub/sub. Polling is cheap
+// (small file, local fs) and avoids the complexity of inotify or
+// fanout to multiple subscribers. Phase B trade-off; can move to
+// hub-based fanout later if needed.
+func (ps *PreviewService) StreamBuildLog(c *gin.Context, previewID uint) {
+	c.Writer.Header().Set("Content-Type", "text/event-stream")
+	c.Writer.Header().Set("Cache-Control", "no-cache")
+	c.Writer.Header().Set("X-Accel-Buffering", "no") // disable nginx buffering if proxied
+	c.Writer.Flush()
+
+	path := ps.previewLogPath(previewID)
+	clientGone := c.Request.Context().Done()
+
+	// Track read offset and current status.
+	var offset int64
+	emit := func(event, data string) bool {
+		if _, err := fmt.Fprintf(c.Writer, "event: %s\ndata: %s\n\n", event, data); err != nil {
+			return false
+		}
+		c.Writer.Flush()
+		return true
+	}
+
+	// Read+emit any new bytes since `offset`. Returns false on write
+	// failure (client gone). Handles file-truncation (e.g. rebuild
+	// recreated build.log via NewLogWriter) by detecting size < offset
+	// and resetting to 0 + emitting a `reset` event so the UI can
+	// clear its buffer (PB-R1-H1). Caps each poll at previewLogMaxBytes
+	// so an exploding log can't allocate unbounded memory (PB-R1-H2).
+	emitNewBytes := func() bool {
+		f, err := os.Open(path)
+		if err != nil {
+			if !os.IsNotExist(err) {
+				ps.logger.Debug("stream open log", "id", previewID, "err", err)
+			}
+			return true
+		}
+		defer f.Close()
+		stat, err := f.Stat()
+		if err != nil {
+			return true
+		}
+		size := stat.Size()
+		if size < offset {
+			// File was truncated. Tell the client to discard its buffer
+			// and resume from byte 0. Use emit() (not raw Fprintf) so
+			// the write is flushed immediately — PB-R2-M1 fix.
+			if !emit("reset", "log truncated") {
+				return false
+			}
+			offset = 0
+		}
+		if size <= offset {
+			return true
+		}
+		readN := size - offset
+		if readN > previewLogMaxBytes {
+			// Skip to the tail; UI will see a marker line.
+			offset = size - previewLogMaxBytes
+			if !emit("log", fmt.Sprintf("[…truncated %d bytes…]", readN-previewLogMaxBytes)) {
+				return false
+			}
+			readN = previewLogMaxBytes
+		}
+		if _, err := f.Seek(offset, 0); err != nil {
+			ps.logger.Warn("stream seek log", "id", previewID, "err", err)
+			emit("error", "log seek failed; will retry")
+			return true
+		}
+		buf := make([]byte, readN)
+		n, err := io.ReadFull(f, buf)
+		if err != nil && err != io.ErrUnexpectedEOF && err != io.EOF {
+			// PB-R3-L1 fix: surface real IO errors instead of silently
+			// returning. Without this an unreadable log would leave
+			// the client polling forever, looking like the build was
+			// silently stuck. The `error` event is informational —
+			// stream stays open so transient errors recover.
+			ps.logger.Warn("stream read log", "id", previewID, "err", err)
+			emit("error", fmt.Sprintf("log read error: %v", err))
+			return true
+		}
+		if n <= 0 {
+			return true
+		}
+		offset += int64(n)
+		// SSE data lines must escape newlines — split into multiple
+		// data: lines per spec, OR base64 to keep it simple. We use
+		// the multi-line form because it's human-readable in DevTools.
+		for _, line := range strings.Split(strings.TrimRight(string(buf[:n]), "\n"), "\n") {
+			if _, err := fmt.Fprintf(c.Writer, "event: log\ndata: %s\n\n", line); err != nil {
+				return false
+			}
+		}
+		c.Writer.Flush()
+		return true
+	}
+
+	// Read current status and emit `status` event if it changed since
+	// last poll. Returns (terminal, ok). terminal=true when status is
+	// outside the in-progress set; ok=false on write failure.
+	var lastStatus string
+	checkStatus := func() (terminal bool, ok bool) {
+		var p PreviewDeployment
+		if err := ps.db.Select("status").First(&p, previewID).Error; err != nil {
+			// Row vanished — treat as terminal ("deleted").
+			if lastStatus != "deleted" {
+				if !emit("status", "deleted") {
+					return true, false
+				}
+				lastStatus = "deleted"
+			}
+			return true, true
+		}
+		if p.Status != lastStatus {
+			if !emit("status", p.Status) {
+				return false, false
+			}
+			lastStatus = p.Status
+		}
+		switch p.Status {
+		case "pending", "building":
+			return false, true
+		default:
+			return true, true
+		}
+	}
+
+	if !emitNewBytes() {
+		return
+	}
+	if terminal, ok := checkStatus(); !ok {
+		return
+	} else if terminal {
+		emit("done", lastStatus)
+		return
+	}
+
+	logTick := time.NewTicker(500 * time.Millisecond)
+	defer logTick.Stop()
+	statusTick := time.NewTicker(2 * time.Second)
+	defer statusTick.Stop()
+
+	// Hard ceiling so a stuck client doesn't pin a goroutine forever.
+	timeout := time.After(20 * time.Minute)
+
+	for {
+		select {
+		case <-clientGone:
+			return
+		case <-timeout:
+			emit("done", "stream-timeout")
+			return
+		case <-logTick.C:
+			if !emitNewBytes() {
+				return
+			}
+		case <-statusTick.C:
+			if terminal, ok := checkStatus(); !ok {
+				return
+			} else if terminal {
+				// One last log read so we don't miss the final write.
+				emitNewBytes()
+				emit("done", lastStatus)
+				return
+			}
+		}
+	}
+}
+
+// validPreviewDomain checks that a generated preview FQDN fits within
+// DNS limits — ≤253 total chars, each label ≤63. Called at create
+// time (PB-R5-H2) so an over-long wildcard_domain or project name
+// fails fast with an admin-actionable error rather than producing
+// invalid Caddy host config later.
+func validPreviewDomain(fqdn string) bool {
+	if fqdn == "" || len(fqdn) > 253 {
+		return false
+	}
+	for _, label := range strings.Split(fqdn, ".") {
+		if label == "" || len(label) > 63 {
+			return false
+		}
+	}
+	return true
 }
 
 // sanitizeForDomain converts a string to a DNS-safe label.

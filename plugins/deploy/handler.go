@@ -439,9 +439,17 @@ func (h *Handler) handlePullRequestWebhook(c *gin.Context, project *Project) {
 		Number      int    `json:"number"`
 		PullRequest struct {
 			Head struct {
-				Ref string `json:"ref"`
-				SHA string `json:"sha"`
+				Ref  string `json:"ref"`
+				SHA  string `json:"sha"`
+				Repo struct {
+					FullName string `json:"full_name"`
+				} `json:"repo"`
 			} `json:"head"`
+			Base struct {
+				Repo struct {
+					FullName string `json:"full_name"`
+				} `json:"repo"`
+			} `json:"base"`
 		} `json:"pull_request"`
 	}
 	if err := c.ShouldBindJSON(&payload); err != nil {
@@ -451,6 +459,48 @@ func (h *Handler) handlePullRequestWebhook(c *gin.Context, project *Project) {
 
 	switch payload.Action {
 	case "opened", "reopened", "synchronize":
+		// PB-R5-H1: reject fork PRs explicitly. The clone path uses
+		// `project.GitURL` (the base repo) + `head.ref`, but a fork
+		// PR's head branch only exists in the fork repo. Cloning
+		// `project.GitURL` at the fork's branch name would either fail
+		// or pull stale base-repo content. Detecting and rejecting
+		// here gives the admin a clear error in their PR thread (via
+		// GitHub's "this delivery failed" UI) instead of a silent
+		// build failure with a confusing git error.
+		//
+		// Cross-repo preview support is intentionally out of v0.15
+		// scope — it requires (a) a separate clone URL per preview,
+		// (b) a security review of running untrusted fork code with
+		// the project's secrets, and (c) UI to gate fork builds
+		// behind admin approval (GitHub Actions / Vercel / Netlify
+		// model). Tracked for v0.16+.
+		head := payload.PullRequest.Head.Repo.FullName
+		base := payload.PullRequest.Base.Repo.FullName
+		// PB-R6-L1 defensive: GitHub always populates these on real
+		// pull_request events; missing means the payload is malformed
+		// or a custom client is poking at us. Reject explicitly so the
+		// downstream clone doesn't fall back to head.ref alone.
+		if head == "" || base == "" {
+			c.JSON(http.StatusBadRequest, gin.H{
+				"error": "pull_request payload missing head.repo.full_name or base.repo.full_name",
+			})
+			return
+		}
+		if head != base {
+			c.JSON(http.StatusOK, gin.H{
+				"ok":      true,
+				"message": "fork PR previews are not supported; only same-repo PRs trigger preview deploys",
+				"head":    head,
+				"base":    base,
+			})
+			return
+		}
+		if payload.PullRequest.Head.Ref == "" {
+			c.JSON(http.StatusBadRequest, gin.H{
+				"error": "pull_request payload missing head.ref",
+			})
+			return
+		}
 		preview, err := h.svc.preview.CreatePreview(project.ID, payload.Number, payload.PullRequest.Head.Ref)
 		if err != nil {
 			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
@@ -539,6 +589,60 @@ func (h *Handler) DeletePreview(c *gin.Context) {
 		return
 	}
 	c.JSON(http.StatusOK, gin.H{"message": "preview deleted"})
+}
+
+// GetPreviewLog GET /api/plugins/deploy/previews/:previewId/log
+// Returns the static contents of the preview's build.log. Used by the
+// Previews tab when streaming isn't requested (or as fallback after the
+// stream closes).
+//
+// Security: previewId is validated to exist as a row in our DB; the file
+// path is then derived from the validated integer ID (no user-controlled
+// path component reaches the filesystem). Path traversal isn't possible.
+func (h *Handler) GetPreviewLog(c *gin.Context) {
+	id, err := parseUintParam(c, "previewId")
+	if err != nil {
+		return
+	}
+	var preview PreviewDeployment
+	if err := h.svc.db.Select("id").First(&preview, id).Error; err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "preview not found"})
+		return
+	}
+	content, err := h.svc.preview.ReadBuildLog(id)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	c.Data(http.StatusOK, "text/plain; charset=utf-8", content)
+}
+
+// StreamPreviewLog GET /api/plugins/deploy/previews/:previewId/log/stream
+// Server-Sent Events stream of the build log. Sends the existing content
+// as the first events, then tails the file until the build finishes
+// (status leaves "building"/"pending") or the client disconnects.
+//
+// Event format:
+//
+//	event: log
+//	data: <base64-encoded log line(s)>
+//
+//	event: status
+//	data: <preview status>
+//
+//	event: done
+//	data: <final status>
+func (h *Handler) StreamPreviewLog(c *gin.Context) {
+	id, err := parseUintParam(c, "previewId")
+	if err != nil {
+		return
+	}
+	var preview PreviewDeployment
+	if err := h.svc.db.Select("id").First(&preview, id).Error; err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "preview not found"})
+		return
+	}
+	h.svc.preview.StreamBuildLog(c, id)
 }
 
 // GetWebhookInfo GET /api/plugins/deploy/projects/:id/webhook (admin only)

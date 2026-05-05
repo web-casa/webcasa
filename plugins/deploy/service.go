@@ -140,7 +140,9 @@ func (s *Service) ListProjects() ([]Project, error) {
 	if err := s.db.Order("created_at desc").Find(&projects).Error; err != nil {
 		return nil, err
 	}
-	// Resolve live status from systemd or Docker
+	// Resolve live status from systemd or Docker, and populate the
+	// transient credential-presence flags so the list view matches
+	// the detail view's contract (PB-R5-L1).
 	for i := range projects {
 		if projects[i].Status == "running" {
 			if projects[i].DeployMode == "docker" {
@@ -153,6 +155,9 @@ func (s *Service) ListProjects() ([]Project, error) {
 				}
 			}
 		}
+		projects[i].HasDeployKey = projects[i].DeployKey != ""
+		projects[i].HasGitHubKey = projects[i].GitHubPrivateKey != ""
+		projects[i].HasGitHubToken = projects[i].GitHubToken != ""
 	}
 	return projects, nil
 }
@@ -182,6 +187,7 @@ func (s *Service) GetProject(id uint) (*Project, error) {
 	// Populate transient fields
 	project.HasDeployKey = project.DeployKey != ""
 	project.HasGitHubKey = project.GitHubPrivateKey != ""
+	project.HasGitHubToken = project.GitHubToken != ""
 	return &project, nil
 }
 

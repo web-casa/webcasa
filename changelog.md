@@ -6,6 +6,88 @@
 
 ---
 
+## [0.15.0] - 2026-05-05
+
+### Preview Deploy Phase B: frontend UI + log streaming + PR comments
+
+Phase A (v0.14) shipped the backend pipeline; v0.15 makes it usable
+without DB / API tooling. Six features (B1–B6), six rounds of Codex
+review, **19 findings landed, 0 deferred**.
+
+#### What ships
+
+- **Previews tab** on the project detail page (gated by
+  `preview_enabled`) — table of all preview deployments per project
+  with PR number, branch, domain, status badge, port, expiry, and
+  per-row Delete + View Log actions.
+- **Build log viewer** with two modes: live builds stream over
+  Server-Sent Events (`waitForPortOpen` cadence + status events +
+  truncation handling); terminal builds use a one-shot static
+  fetch (no double-fetch race).
+- **Per-project preview settings** inline in the Webhook tab —
+  `preview_enabled` toggle, `preview_expiry` (days, defaults to 7),
+  `github_token` for PR comments.
+- **Wildcard preview domain** field in System Settings → General,
+  with frontend + backend validation (RFC 1035: ≤253 total chars,
+  ≤63 per label, no scheme/path/wildcard syntax).
+- **Automatic PR comments** — on first successful preview deploy
+  the bot POSTs a "🚀 Preview deployment is live" comment with the
+  URL; subsequent rebuilds PATCH the same comment so the PR thread
+  doesn't fill with bot noise; PR close → DELETE the comment.
+- **Fork PR rejection** — `pull_request` webhooks where head.repo
+  != base.repo are explicitly rejected with a clear message rather
+  than silently failing on clone. Cross-repo support is v0.16+
+  (needs admin-approval gate for security).
+
+#### Concurrency / safety hardening (across 6 review rounds)
+
+- **SSE log stream**: 2 MiB per-poll cap, file-truncation detection
+  (`event: reset` resets the client buffer when a rebuild rotates
+  `build.log`), IO errors surface as `event: error` instead of
+  silent infinite poll.
+- **Frontend log buffer**: 1 MiB ring buffer with head-drop marker
+  prevents React state from being OOMed by an exploding build.
+- **PR comment idempotency**: `PRCommentID` persisted on the row;
+  PATCH-on-rebuild only falls back to POST when GitHub returns
+  404/410 (comment was deleted by a human). Rate-limit / 5xx
+  failures retry on next deploy instead of duplicating comments.
+- **DeletePreview ordering**: PR comment delete moved to AFTER row
+  delete succeeds so partial-cleanup-failure paths preserve the
+  comment ID for retry.
+- **Settings type safety**: `Value *string` distinguishes missing
+  from empty; `auto_reload` requires strict `"true"` / `"false"`;
+  `wildcard_domain` allows empty (= disable previews) but
+  validates non-empty values defense-in-depth on the server.
+- **Cross-cutting**: `ListProjects` now populates the same
+  credential-presence transient flags as `GetProject` so list /
+  detail JSON shapes match.
+
+#### Audit trail
+
+| Round | Findings landed |
+|-------|-----------------|
+| R1    | 2H + 5M + 1L (8) |
+| R2    | 2H + 2M (4)      |
+| R3    | 1M + 2L (3)      |
+| R4    | clean ✅         |
+| R5    | 2H + 1M + 1L (4) |
+| R6    | 2L (2)           |
+
+Per-round commit history preserved on `feat/v0.15-preview-phase-b`
+(7 commits) for trace-back.
+
+#### Known scope (v0.16+)
+
+- **Fork PR previews** — needs separate clone URL per preview + a
+  security review of running fork code with project secrets +
+  admin-approval UI gate (GitHub Actions / Vercel / Netlify model).
+- **Per-(project, PR) lock** — DeletePreview's destructive cleanup
+  phase still briefly blocks unrelated CreatePreview webhooks via
+  a panel-wide `createMu`. Acceptable at low PR volumes; planned
+  `sync.Map`-keyed lock is v0.16.
+
+---
+
 ## [0.14.0] - 2026-04-19
 
 ### Preview Deploy Phase A: ephemeral per-PR preview environments

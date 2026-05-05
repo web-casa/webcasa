@@ -2,7 +2,7 @@ import { useState, useEffect, useRef } from 'react'
 import { Box, Flex, Text, Button, Badge, Card, Heading, Tabs, Table, TextField, TextArea, Switch, Separator, IconButton, Code, Tooltip, Dialog } from '@radix-ui/themes'
 import { ArrowLeft, Rocket, Play, Square, RotateCw, Trash2, Plus, Copy, ExternalLink, Clock, GitCommit, Container, Server, Bot, ChevronDown, ChevronRight, HardDrive, Wand2, Import, Timer, Layers, Pencil, FileSearch, Undo2 } from 'lucide-react'
 import { useNavigate, useParams } from 'react-router'
-import { deployAPI, aiAPI } from '../api/index.js'
+import { deployAPI, aiAPI, streamSSE } from '../api/index.js'
 import { useTranslation } from 'react-i18next'
 
 const statusColors = {
@@ -77,6 +77,12 @@ export default function ProjectDetail() {
     const [reviewResult, setReviewResult] = useState(null)
     const [rollbackAdvice, setRollbackAdvice] = useState(null)
     const [requestingRollback, setRequestingRollback] = useState(false)
+    const [previews, setPreviews] = useState([])
+    const [selectedPreviewId, setSelectedPreviewId] = useState(null)
+    const [previewLog, setPreviewLog] = useState('')
+    const [previewLogStatus, setPreviewLogStatus] = useState('')
+    const previewStreamCtrl = useRef(null)
+    const previewLogRef = useRef(null)
     const logRef = useRef(null)
 
     const fetchCacheInfo = async () => {
@@ -232,6 +238,83 @@ export default function ProjectDetail() {
         } catch { /* ignore */ }
     }
 
+    // ---- Previews ----
+    const fetchPreviews = async () => {
+        try {
+            const res = await deployAPI.listPreviews(id)
+            setPreviews(res.data?.previews || [])
+        } catch { /* non-critical */ }
+    }
+
+    const handleDeletePreview = async (previewId) => {
+        if (!confirm(t('deploy.preview_delete_confirm'))) return
+        try {
+            await deployAPI.deletePreview(previewId)
+            // If we were watching this preview's log, close the stream.
+            if (selectedPreviewId === previewId) {
+                closePreviewStream()
+                setSelectedPreviewId(null)
+                setPreviewLog('')
+            }
+            fetchPreviews()
+        } catch (e) {
+            alert(e.response?.data?.error || t('common.operation_failed'))
+        }
+    }
+
+    const closePreviewStream = () => {
+        if (previewStreamCtrl.current) {
+            previewStreamCtrl.current.abort()
+            previewStreamCtrl.current = null
+        }
+    }
+
+    // PB-R1-M2 cap: keep at most ~1 MiB of log in React state to
+    // prevent the page from getting OOMed by an exploding build.
+    // When over, drop the head and prepend a marker. Matches the
+    // backend's previewLogMaxBytes ceiling spirit.
+    const PREVIEW_LOG_MAX_CHARS = 1024 * 1024
+    const appendCappedLog = (prev, chunk) => {
+        const next = prev + chunk
+        if (next.length <= PREVIEW_LOG_MAX_CHARS) return next
+        const dropped = next.length - PREVIEW_LOG_MAX_CHARS
+        return `[…dropped ${dropped} chars from start…]\n` + next.slice(-PREVIEW_LOG_MAX_CHARS)
+    }
+
+    const openPreviewLog = async (preview) => {
+        closePreviewStream()
+        setSelectedPreviewId(preview.id)
+        setPreviewLog('')
+        setPreviewLogStatus(preview.status)
+        const inProgress = preview.status === 'pending' || preview.status === 'building'
+        if (inProgress) {
+            // PB-R1-M1 fix: live builds get the SSE stream straight
+            // from offset 0 (it ships existing content as the first
+            // events). Don't ALSO call getPreviewLog — that would
+            // double-fetch the same bytes.
+            previewStreamCtrl.current = streamSSE(deployAPI.previewLogStreamURL(preview.id), {
+                onLog: (line) => setPreviewLog((prev) => appendCappedLog(prev, line + '\n')),
+                onStatus: (s) => setPreviewLogStatus(s),
+                // PB-R2-H1 fix: backend emits `reset` when build.log
+                // is truncated by a fresh NewLogWriter (PR rebuild).
+                // Clear our buffer so we don't show stale content
+                // mixed with the new build's output.
+                onReset: () => setPreviewLog(''),
+                onDone: (final) => {
+                    setPreviewLogStatus(final)
+                    fetchPreviews() // refresh table state
+                },
+                onError: (err) => console.warn('preview log stream error', err),
+            })
+        } else {
+            // Terminal — one static fetch.
+            try {
+                const res = await deployAPI.getPreviewLog(preview.id)
+                setPreviewLog(typeof res.data === 'string' ? res.data : '')
+            } catch { /* ignore */ }
+        }
+    }
+
     useEffect(() => {
         fetchProject()
         fetchDeployments()
@@ -240,6 +323,9 @@ export default function ProjectDetail() {
         fetchCacheInfo()
         fetchCronJobs()
         fetchExtraProcesses()
+        fetchPreviews()
+        // Close stream on unmount.
+        return () => closePreviewStream()
     }, [id])
 
     // Auto-refresh when building
@@ -258,6 +344,22 @@ export default function ProjectDetail() {
             logRef.current.scrollTop = logRef.current.scrollHeight
         }
     }, [buildLog])
+
+    // Auto-scroll preview log as new SSE chunks arrive
+    useEffect(() => {
+        if (previewLogRef.current) {
+            previewLogRef.current.scrollTop = previewLogRef.current.scrollHeight
+        }
+    }, [previewLog])
+
+    // Auto-refresh previews list while any preview is mid-build, so the
+    // status badge updates without a manual reload.
+    useEffect(() => {
+        const inProgress = previews.some((p) => p.status === 'pending' || p.status === 'building')
+        if (!inProgress) return
+        const timer = setInterval(fetchPreviews, 3000)
+        return () => clearInterval(timer)
+    }, [previews])
 
     const handleAction = async (action) => {
         try {
@@ -630,6 +732,11 @@ export default function ProjectDetail() {
                     <Tabs.Trigger value="env">{t('deploy.env_vars')}</Tabs.Trigger>
                     <Tabs.Trigger value="crons">{t('deploy.cron_jobs')}</Tabs.Trigger>
                     <Tabs.Trigger value="processes">{t('deploy.processes')}</Tabs.Trigger>
+                    {project.preview_enabled && (
+                        <Tabs.Trigger value="previews">
+                            {t('deploy.previews')} {previews.length > 0 && <Badge ml="1" size="1">{previews.length}</Badge>}
+                        </Tabs.Trigger>
+                    )}
                     <Tabs.Trigger value="webhook">{t('deploy.webhook')}</Tabs.Trigger>
                 </Tabs.List>
 
@@ -966,6 +1073,111 @@ export default function ProjectDetail() {
                     </Dialog.Root>
                 </Tabs.Content>
 
+                {/* Previews — only rendered when preview_enabled is on */}
+                {project.preview_enabled && (
+                    <Tabs.Content value="previews">
+                        <Card mt="3">
+                            <Flex direction="column" gap="3">
+                                <Flex align="center" justify="between">
+                                    <Box>
+                                        <Text size="2" weight="medium">{t('deploy.previews')}</Text>
+                                        <Text size="1" color="gray" as="div" mt="1">{t('deploy.previews_hint')}</Text>
+                                    </Box>
+                                    <Button size="2" variant="soft" onClick={fetchPreviews}>
+                                        <RotateCw size={14} /> {t('common.refresh')}
+                                    </Button>
+                                </Flex>
+
+                                {previews.length === 0 ? (
+                                    <Box style={{ padding: 24, textAlign: 'center', color: 'var(--gray-9)' }}>
+                                        <Text size="2">{t('deploy.previews_empty')}</Text>
+                                    </Box>
+                                ) : (
+                                    <Table.Root variant="surface">
+                                        <Table.Header>
+                                            <Table.Row>
+                                                <Table.ColumnHeaderCell>PR</Table.ColumnHeaderCell>
+                                                <Table.ColumnHeaderCell>{t('deploy.preview_branch')}</Table.ColumnHeaderCell>
+                                                <Table.ColumnHeaderCell>{t('deploy.preview_domain')}</Table.ColumnHeaderCell>
+                                                <Table.ColumnHeaderCell>{t('common.status')}</Table.ColumnHeaderCell>
+                                                <Table.ColumnHeaderCell>{t('deploy.preview_port')}</Table.ColumnHeaderCell>
+                                                <Table.ColumnHeaderCell>{t('deploy.preview_expires')}</Table.ColumnHeaderCell>
+                                                <Table.ColumnHeaderCell>{t('common.actions')}</Table.ColumnHeaderCell>
+                                            </Table.Row>
+                                        </Table.Header>
+                                        <Table.Body>
+                                            {previews.map((p) => (
+                                                <Table.Row key={p.id}>
+                                                    <Table.Cell><Text weight="medium">#{p.pr_number}</Text></Table.Cell>
+                                                    <Table.Cell><Code size="1">{p.branch}</Code></Table.Cell>
+                                                    <Table.Cell>
+                                                        {p.status === 'running' ? (
+                                                            <a href={`https://${p.domain}`} target="_blank" rel="noreferrer" style={{ color: 'var(--accent-11)' }}>
+                                                                {p.domain} <ExternalLink size={11} style={{ verticalAlign: 'middle' }} />
+                                                            </a>
+                                                        ) : (
+                                                            <Text size="1" color="gray">{p.domain}</Text>
+                                                        )}
+                                                    </Table.Cell>
+                                                    <Table.Cell>
+                                                        <Tooltip content={p.failure_reason || ''}>
+                                                            <Badge color={statusColors[p.status] || 'gray'}>{p.status}</Badge>
+                                                        </Tooltip>
+                                                    </Table.Cell>
+                                                    <Table.Cell><Text size="1">{p.port || '-'}</Text></Table.Cell>
+                                                    <Table.Cell><Text size="1" color="gray">{new Date(p.expires_at).toLocaleDateString()}</Text></Table.Cell>
+                                                    <Table.Cell>
+                                                        <Flex gap="1">
+                                                            <IconButton size="1" variant="soft" onClick={() => openPreviewLog(p)} title={t('deploy.preview_view_log')}>
+                                                                <FileSearch size={14} />
+                                                            </IconButton>
+                                                            <IconButton size="1" variant="soft" color="red" onClick={() => handleDeletePreview(p.id)} title={t('common.delete')}>
+                                                                <Trash2 size={14} />
+                                                            </IconButton>
+                                                        </Flex>
+                                                    </Table.Cell>
+                                                </Table.Row>
+                                            ))}
+                                        </Table.Body>
+                                    </Table.Root>
+                                )}
+
+                                {selectedPreviewId !== null && (
+                                    <Box>
+                                        <Flex align="center" justify="between" mb="2">
+                                            <Text size="2" weight="medium">
+                                                {t('deploy.preview_log_title', { id: selectedPreviewId })}
+                                                {previewLogStatus && (
+                                                    <Badge ml="2" color={statusColors[previewLogStatus] || 'gray'}>{previewLogStatus}</Badge>
+                                                )}
+                                            </Text>
+                                            <Button size="1" variant="ghost" onClick={() => { closePreviewStream(); setSelectedPreviewId(null); setPreviewLog('') }}>
+                                                {t('common.close')}
+                                            </Button>
+                                        </Flex>
+                                        <Box
+                                            ref={previewLogRef}
+                                            style={{
+                                                background: 'var(--gray-2)',
+                                                border: '1px solid var(--gray-5)',
+                                                borderRadius: 6,
+                                                padding: 12,
+                                                fontFamily: 'var(--code-font-family, monospace)',
+                                                fontSize: 12,
+                                                lineHeight: 1.5,
+                                                maxHeight: 400,
+                                                overflow: 'auto',
+                                                whiteSpace: 'pre-wrap',
+                                            }}>
+                                            {previewLog || <Text size="1" color="gray">{t('deploy.preview_log_empty')}</Text>}
+                                        </Box>
+                                    </Box>
+                                )}
+                            </Flex>
+                        </Card>
+                    </Tabs.Content>
+                )}
+
                 {/* Webhook */}
                 <Tabs.Content value="webhook">
                     <Card mt="3">
@@ -993,6 +1205,74 @@ export default function ProjectDetail() {
                                 }} />
                                 <Text size="2">{t('deploy.auto_deploy')}</Text>
                             </Flex>
+
+                            <Separator size="4" my="2" />
+
+                            {/* Preview deployments — share the webhook so settings live here */}
+                            <Box>
+                                <Text size="2" weight="medium" as="div">{t('deploy.previews')}</Text>
+                                <Flex align="center" gap="2" mt="2">
+                                    <Switch checked={!!project.preview_enabled} onCheckedChange={async (v) => {
+                                        try {
+                                            await deployAPI.updateProject(id, { preview_enabled: v })
+                                            fetchProject()
+                                            if (v) fetchPreviews()
+                                        } catch {
+                                            fetchProject()
+                                        }
+                                    }} />
+                                    <Text size="2">{t('deploy.preview_enabled_label')}</Text>
+                                </Flex>
+                                <Text size="1" color="gray" as="div" ml="6" mt="1">{t('deploy.preview_enabled_hint')}</Text>
+
+                                {project.preview_enabled && (
+                                    <Flex direction="column" gap="3" mt="3" ml="6">
+                                        <Box>
+                                            <Text size="1" as="div" mb="1">{t('deploy.preview_expiry_label')}</Text>
+                                            <TextField.Root
+                                                size="2"
+                                                type="number"
+                                                min="1"
+                                                max="365"
+                                                defaultValue={project.preview_expiry || 7}
+                                                style={{ maxWidth: 140 }}
+                                                onBlur={async (e) => {
+                                                    const v = parseInt(e.target.value, 10)
+                                                    if (!v || v === project.preview_expiry) return
+                                                    try {
+                                                        await deployAPI.updateProject(id, { preview_expiry: v })
+                                                        fetchProject()
+                                                    } catch (err) {
+                                                        alert(err.response?.data?.error || t('common.operation_failed'))
+                                                    }
+                                                }}
+                                            />
+                                            <Text size="1" color="gray" as="div" mt="1">{t('deploy.preview_expiry_hint')}</Text>
+                                        </Box>
+
+                                        <Box>
+                                            <Text size="1" as="div" mb="1">{t('deploy.github_token_label')}</Text>
+                                            <TextField.Root
+                                                size="2"
+                                                type="password"
+                                                placeholder={project.has_github_token ? '••••••••' : 'ghp_... or app installation token'}
+                                                onBlur={async (e) => {
+                                                    const v = e.target.value
+                                                    if (!v) return
+                                                    try {
+                                                        await deployAPI.updateProject(id, { github_token: v })
+                                                        e.target.value = ''
+                                                        fetchProject()
+                                                    } catch (err) {
+                                                        alert(err.response?.data?.error || t('common.operation_failed'))
+                                                    }
+                                                }}
+                                            />
+                                            <Text size="1" color="gray" as="div" mt="1">{t('deploy.github_token_hint')}</Text>
+                                        </Box>
+                                    </Flex>
+                                )}
+                            </Box>
                         </Flex>
                     </Card>
                 </Tabs.Content>
