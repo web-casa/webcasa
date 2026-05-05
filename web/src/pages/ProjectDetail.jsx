@@ -262,6 +262,26 @@ export default function ProjectDetail() {
         }
     }
 
+    // v0.19: fork PR approve / revoke
+    const handleApprovePreview = async (previewId) => {
+        if (!confirm(t('deploy.preview_approve_confirm'))) return
+        try {
+            await deployAPI.approvePreview(previewId)
+            fetchPreviews()
+        } catch (e) {
+            alert(e.response?.data?.error || t('common.operation_failed'))
+        }
+    }
+    const handleRevokePreview = async (previewId) => {
+        if (!confirm(t('deploy.preview_revoke_confirm'))) return
+        try {
+            await deployAPI.revokePreview(previewId)
+            fetchPreviews()
+        } catch (e) {
+            alert(e.response?.data?.error || t('common.operation_failed'))
+        }
+    }
+
     const closePreviewStream = () => {
         if (previewStreamCtrl.current) {
             previewStreamCtrl.current.abort()
@@ -865,6 +885,13 @@ export default function ProjectDetail() {
                                     <Flex key={i} gap="2" align="center">
                                         <TextField.Root placeholder="KEY" value={ev.key} onChange={e => updateEnvVar(i, 'key', e.target.value)} style={{ flex: 1, fontFamily: 'monospace' }} />
                                         <TextField.Root placeholder="value" value={ev.value} onChange={e => updateEnvVar(i, 'value', e.target.value)} style={{ flex: 2, fontFamily: 'monospace' }} />
+                                        {/* v0.19: secret toggle. When marked, this var is NEVER passed to fork-PR preview builds. */}
+                                        <Tooltip content={t('deploy.env_var_secret_hint')}>
+                                            <Flex align="center" gap="1">
+                                                <Switch size="1" checked={!!ev.secret} onCheckedChange={(v) => updateEnvVar(i, 'secret', v)} />
+                                                <Text size="1" color="gray">{t('deploy.env_var_secret_label')}</Text>
+                                            </Flex>
+                                        </Tooltip>
                                         <IconButton variant="ghost" color="red" size="1" onClick={() => removeEnvVar(i)}>
                                             <Trash2 size={14} />
                                         </IconButton>
@@ -1106,12 +1133,25 @@ export default function ProjectDetail() {
                                             </Table.Row>
                                         </Table.Header>
                                         <Table.Body>
-                                            {previews.map((p) => (
+                                            {previews.map((p) => {
+                                                // v0.19: fork PR awaiting approval = built but no host yet
+                                                const awaitingApproval = p.is_fork_pr && !p.approved && p.status === 'running'
+                                                const liveURL = p.status === 'running' && !awaitingApproval
+                                                return (
                                                 <Table.Row key={p.id}>
-                                                    <Table.Cell><Text weight="medium">#{p.pr_number}</Text></Table.Cell>
+                                                    <Table.Cell>
+                                                        <Flex direction="column" gap="1">
+                                                            <Text weight="medium">#{p.pr_number}</Text>
+                                                            {p.is_fork_pr && (
+                                                                <Tooltip content={p.head_repo || ''}>
+                                                                    <Badge size="1" color="orange">fork</Badge>
+                                                                </Tooltip>
+                                                            )}
+                                                        </Flex>
+                                                    </Table.Cell>
                                                     <Table.Cell><Code size="1">{p.branch}</Code></Table.Cell>
                                                     <Table.Cell>
-                                                        {p.status === 'running' ? (
+                                                        {liveURL ? (
                                                             <a href={`https://${p.domain}`} target="_blank" rel="noreferrer" style={{ color: 'var(--accent-11)' }}>
                                                                 {p.domain} <ExternalLink size={11} style={{ verticalAlign: 'middle' }} />
                                                             </a>
@@ -1121,13 +1161,27 @@ export default function ProjectDetail() {
                                                     </Table.Cell>
                                                     <Table.Cell>
                                                         <Tooltip content={p.failure_reason || ''}>
-                                                            <Badge color={statusColors[p.status] || 'gray'}>{p.status}</Badge>
+                                                            {awaitingApproval ? (
+                                                                <Badge color="amber">{t('deploy.preview_awaiting_approval')}</Badge>
+                                                            ) : (
+                                                                <Badge color={statusColors[p.status] || 'gray'}>{p.status}</Badge>
+                                                            )}
                                                         </Tooltip>
                                                     </Table.Cell>
                                                     <Table.Cell><Text size="1">{p.port || '-'}</Text></Table.Cell>
                                                     <Table.Cell><Text size="1" color="gray">{new Date(p.expires_at).toLocaleDateString()}</Text></Table.Cell>
                                                     <Table.Cell>
                                                         <Flex gap="1">
+                                                            {awaitingApproval && (
+                                                                <Button size="1" variant="solid" color="green" onClick={() => handleApprovePreview(p.id)}>
+                                                                    {t('deploy.preview_approve')}
+                                                                </Button>
+                                                            )}
+                                                            {p.is_fork_pr && p.approved && (
+                                                                <Button size="1" variant="soft" color="amber" onClick={() => handleRevokePreview(p.id)}>
+                                                                    {t('deploy.preview_revoke')}
+                                                                </Button>
+                                                            )}
                                                             <IconButton size="1" variant="soft" onClick={() => openPreviewLog(p)} title={t('deploy.preview_view_log')}>
                                                                 <FileSearch size={14} />
                                                             </IconButton>
@@ -1137,7 +1191,8 @@ export default function ProjectDetail() {
                                                         </Flex>
                                                     </Table.Cell>
                                                 </Table.Row>
-                                            ))}
+                                                )
+                                            })}
                                         </Table.Body>
                                     </Table.Root>
                                 )}
@@ -1269,6 +1324,22 @@ export default function ProjectDetail() {
                                                 }}
                                             />
                                             <Text size="1" color="gray" as="div" mt="1">{t('deploy.github_token_hint')}</Text>
+                                        </Box>
+
+                                        {/* v0.19: fork PR opt-in. Default off — fork PRs rejected. */}
+                                        <Box>
+                                            <Flex align="center" gap="2">
+                                                <Switch checked={!!project.accept_fork_pr_previews} onCheckedChange={async (v) => {
+                                                    try {
+                                                        await deployAPI.updateProject(id, { accept_fork_pr_previews: v })
+                                                        fetchProject()
+                                                    } catch {
+                                                        fetchProject()
+                                                    }
+                                                }} />
+                                                <Text size="2">{t('deploy.fork_pr_label')}</Text>
+                                            </Flex>
+                                            <Text size="1" color="gray" as="div" ml="6" mt="1">{t('deploy.fork_pr_hint')}</Text>
                                         </Box>
                                     </Flex>
                                 )}

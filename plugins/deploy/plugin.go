@@ -140,6 +140,9 @@ func (p *Plugin) Init(ctx *pluginpkg.Context) error {
 	r.GET("/previews/:previewId/log", p.handler.GetPreviewLog)
 	r.GET("/previews/:previewId/log/stream", p.handler.StreamPreviewLog)
 	a.DELETE("/previews/:previewId", p.handler.DeletePreview)
+	// v0.19: fork PR approval gate
+	a.POST("/previews/:previewId/approve", p.handler.ApprovePreview)
+	a.POST("/previews/:previewId/revoke", p.handler.RevokePreview)
 
 	// GitHub OAuth endpoints
 	a.GET("/github/config", p.handler.GetGitHubConfig)

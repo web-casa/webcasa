@@ -162,7 +162,8 @@ func (h *Handler) UpdateProject(c *gin.Context) {
 		"github_private_key": true, "github_installation_id": true,
 		"github_oauth_install_id": true, "github_repo_full_name": true,
 		"preview_enabled": true, "preview_expiry": true, "github_token": true,
-		"git_poll_enabled": true, "git_poll_interval_sec": true,
+		"accept_fork_pr_previews": true, // v0.19: per-project fork PR opt-in
+		"git_poll_enabled":        true, "git_poll_interval_sec": true,
 	}
 	filtered := make(map[string]interface{})
 	for k, v := range req {
@@ -461,6 +462,7 @@ func (h *Handler) handlePullRequestWebhook(c *gin.Context, project *Project) {
 				SHA  string `json:"sha"`
 				Repo struct {
 					FullName string `json:"full_name"`
+					CloneURL string `json:"clone_url"` // v0.19: needed for fork PR clone
 				} `json:"repo"`
 			} `json:"head"`
 			Base struct {
@@ -504,22 +506,31 @@ func (h *Handler) handlePullRequestWebhook(c *gin.Context, project *Project) {
 			})
 			return
 		}
-		if head != base {
-			c.JSON(http.StatusOK, gin.H{
-				"ok":      true,
-				"message": "fork PR previews are not supported; only same-repo PRs trigger preview deploys",
-				"head":    head,
-				"base":    base,
-			})
-			return
-		}
 		if payload.PullRequest.Head.Ref == "" {
 			c.JSON(http.StatusBadRequest, gin.H{
 				"error": "pull_request payload missing head.ref",
 			})
 			return
 		}
-		preview, err := h.svc.preview.CreatePreview(project.ID, payload.Number, payload.PullRequest.Head.Ref)
+		// v0.19: fork PR support gated by project setting. Default
+		// (AcceptForkPRPreviews=false) preserves v0.14-v0.18 reject
+		// behaviour. When opted in, the fork PR builds + runs but
+		// the public Caddy host stays gated until admin approves
+		// (Vercel-style — see preview.go runPreview).
+		isForkPR := head != base
+		if isForkPR && !project.AcceptForkPRPreviews {
+			c.JSON(http.StatusOK, gin.H{
+				"ok":      true,
+				"message": "fork PR previews are disabled for this project (enable via accept_fork_pr_previews)",
+				"head":    head,
+				"base":    base,
+			})
+			return
+		}
+		preview, err := h.svc.preview.CreatePreviewWithFork(
+			project.ID, payload.Number, payload.PullRequest.Head.Ref,
+			isForkPR, head, payload.PullRequest.Head.Repo.CloneURL,
+		)
 		if err != nil {
 			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 			return
@@ -622,6 +633,45 @@ func (h *Handler) ListPreviews(c *gin.Context) {
 		return
 	}
 	c.JSON(http.StatusOK, gin.H{"previews": previews})
+}
+
+// ApprovePreview POST /api/plugins/deploy/previews/:previewId/approve (admin)
+// v0.19: lifts the gate on a fork-PR preview so its Caddy host is
+// created and the public URL becomes reachable.
+func (h *Handler) ApprovePreview(c *gin.Context) {
+	id, err := parseUintParam(c, "previewId")
+	if err != nil {
+		return
+	}
+	// Admin user ID for audit. Pull from JWT-set context (admin
+	// middleware injected). Falls back to 0 if absent — still records
+	// the approval but without an audit trail user.
+	var userID uint
+	if v, ok := c.Get("user_id"); ok {
+		if u, ok := v.(uint); ok {
+			userID = u
+		}
+	}
+	if err := h.svc.preview.ApprovePreview(id, userID); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"message": "preview approved"})
+}
+
+// RevokePreview POST /api/plugins/deploy/previews/:previewId/revoke (admin)
+// v0.19: clears approval + tears down the Caddy host. Container is
+// kept running for inspection.
+func (h *Handler) RevokePreview(c *gin.Context) {
+	id, err := parseUintParam(c, "previewId")
+	if err != nil {
+		return
+	}
+	if err := h.svc.preview.RevokePreview(id); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"message": "preview approval revoked"})
 }
 
 // DeletePreview DELETE /api/plugins/deploy/previews/:previewId (admin)

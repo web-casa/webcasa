@@ -66,6 +66,17 @@ type Project struct {
 	PreviewExpiry  int    `gorm:"default:7" json:"preview_expiry"` // days
 	GitHubToken    string `gorm:"size:512" json:"-"`               // encrypted, for PR comments
 
+	// Fork PR preview support (v0.19+). When AcceptForkPRPreviews is
+	// true, pull_request webhooks where head.repo != base.repo trigger
+	// a preview build, but the Caddy host (public URL) is NOT created
+	// until an admin explicitly approves the preview via the UI. This
+	// is Vercel-style — build verifies the fork's code is well-formed,
+	// admin gates whether the URL becomes reachable.
+	//
+	// Defaults to false: existing v0.14-v0.18 behaviour (fork PRs
+	// rejected at the webhook handler) preserved on upgrade.
+	AcceptForkPRPreviews bool `gorm:"default:false" json:"accept_fork_pr_previews"`
+
 	// Git polling — periodic `git ls-remote` to detect new commits without
 	// requiring a webhook. Complements (does not replace) AutoDeploy/webhooks;
 	// SingleFlight in Build() ensures concurrent webhook + poll triggers
@@ -91,9 +102,17 @@ func (Project) TableName() string {
 }
 
 // EnvVar is a key-value pair for project environment variables.
+//
+// Secret marks the var as sensitive — when set, the var is NEVER
+// passed to fork-PR preview builds even if the fork is approved.
+// Use for API keys / DB passwords / signing secrets that fork PR
+// authors must not be able to read by introducing logging code.
+// Non-secret env vars (default) flow to all build paths including
+// approved fork previews. v0.19+.
 type EnvVar struct {
-	Key   string `json:"key"`
-	Value string `json:"value"`
+	Key    string `json:"key"`
+	Value  string `json:"value"`
+	Secret bool   `json:"secret,omitempty"`
 }
 
 // Deployment records one build/deploy attempt.
@@ -164,7 +183,22 @@ type PreviewDeployment struct {
 	// First successful deploy POSTs and stores the ID; subsequent
 	// rebuilds PATCH the same comment so the PR thread doesn't fill
 	// with bot noise on every push (B6, v0.15+).
-	PRCommentID   int64     `gorm:"default:0" json:"pr_comment_id,omitempty"`
+	PRCommentID int64 `gorm:"default:0" json:"pr_comment_id,omitempty"`
+
+	// Fork PR support (v0.19+). IsForkPR is true when head.repo !=
+	// base.repo. HeadRepo + HeadCloneURL identify the fork's source
+	// (clone target). Approved gates Caddy host creation: until an
+	// admin sets it true via POST /previews/:id/approve, the build
+	// runs but the public URL isn't wired up. Revoking approval
+	// (admin POST .../revoke) tears down the host but keeps the
+	// container running for inspection.
+	IsForkPR         bool       `gorm:"default:false" json:"is_fork_pr"`
+	HeadRepo         string     `gorm:"size:255" json:"head_repo,omitempty"`         // e.g. "fork-user/repo"
+	HeadCloneURL     string     `gorm:"size:512" json:"head_clone_url,omitempty"`    // e.g. "https://github.com/fork-user/repo"
+	Approved         bool       `gorm:"default:false" json:"approved"`
+	ApprovedAt       *time.Time `json:"approved_at,omitempty"`
+	ApprovedByUserID uint       `gorm:"default:0" json:"approved_by_user_id,omitempty"`
+
 	Status        string    `gorm:"size:16;default:pending" json:"status"` // pending | building | running | failed | cleanup_failed
 	FailureReason string    `gorm:"size:512" json:"failure_reason,omitempty"`
 	CreatedAt     time.Time `json:"created_at"`

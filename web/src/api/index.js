@@ -327,6 +327,9 @@ export const deployAPI = {
     // Preview deployments (v0.14+)
     listPreviews: (id) => api.get(`/plugins/deploy/projects/${id}/previews`),
     deletePreview: (previewId) => api.delete(`/plugins/deploy/previews/${previewId}`),
+    // v0.19: fork PR approval gate
+    approvePreview: (previewId) => api.post(`/plugins/deploy/previews/${previewId}/approve`),
+    revokePreview: (previewId) => api.post(`/plugins/deploy/previews/${previewId}/revoke`),
     getPreviewLog: (previewId) => api.get(`/plugins/deploy/previews/${previewId}/log`, { responseType: 'text' }),
     // SSE log stream — returns the URL for the caller to wire up an
     // EventSource. EventSource doesn't go through the axios interceptor

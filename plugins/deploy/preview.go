@@ -140,7 +140,20 @@ func (ps *PreviewService) Stop(drainTimeout time.Duration) {
 //
 // Runs asynchronously: DB row is returned with status="pending" and a
 // goroutine performs steps 3–5.
+// CreatePreview is the same-repo PR convenience wrapper around
+// CreatePreviewWithFork. Preserves the v0.14 signature for callers
+// that don't care about fork-PR fields.
 func (ps *PreviewService) CreatePreview(projectID uint, prNumber int, branch string) (*PreviewDeployment, error) {
+	return ps.CreatePreviewWithFork(projectID, prNumber, branch, false, "", "")
+}
+
+// CreatePreviewWithFork (v0.19+) — extended CreatePreview that records
+// fork-PR provenance. When isForkPR is true, the build uses
+// headCloneURL (the fork's repo) instead of project.GitURL, and the
+// preview's Caddy host is NOT created until an admin approves via
+// POST /previews/:id/approve. Same-repo PRs (isForkPR=false) behave
+// identically to v0.18 — no approval gate.
+func (ps *PreviewService) CreatePreviewWithFork(projectID uint, prNumber int, branch string, isForkPR bool, headRepo, headCloneURL string) (*PreviewDeployment, error) {
 	if prNumber <= 0 {
 		return nil, fmt.Errorf("pr_number must be positive (got %d)", prNumber)
 	}
@@ -176,7 +189,7 @@ func (ps *PreviewService) CreatePreview(projectID uint, prNumber int, branch str
 	// aren't blocked.
 	mu := ps.previewLock(projectID, prNumber)
 	mu.Lock()
-	preview, created, err := ps.upsertPreviewRow(project, prNumber, branch, newExpiry, domain)
+	preview, created, err := ps.upsertPreviewRow(project, prNumber, branch, newExpiry, domain, isForkPR, headRepo, headCloneURL)
 	if err != nil {
 		mu.Unlock()
 		return nil, err
@@ -233,7 +246,7 @@ func (ps *PreviewService) CreatePreview(projectID uint, prNumber int, branch str
 // allocation is single-flight for this PR.
 //
 // Returns the resolved preview row + a `created` flag.
-func (ps *PreviewService) upsertPreviewRow(project *Project, prNumber int, branch string, expiry time.Time, wildcardDomain string) (PreviewDeployment, bool, error) {
+func (ps *PreviewService) upsertPreviewRow(project *Project, prNumber int, branch string, expiry time.Time, wildcardDomain string, isForkPR bool, headRepo, headCloneURL string) (PreviewDeployment, bool, error) {
 	var preview PreviewDeployment
 	err := ps.db.Where("project_id = ? AND pr_number = ?", project.ID, prNumber).First(&preview).Error
 	if err == nil {
@@ -247,12 +260,22 @@ func (ps *PreviewService) upsertPreviewRow(project *Project, prNumber int, branc
 			"expires_at":     expiry,
 			"failure_reason": "",
 			"generation":     gorm.Expr("generation + 1"),
+			// v0.19: refresh fork provenance in case head repo URL
+			// changed (rare but possible — fork user renames repo).
+			// Approved DELIBERATELY persists across rebuilds — admin
+			// approves a PR, not a single commit.
+			"is_fork_pr":     isForkPR,
+			"head_repo":      headRepo,
+			"head_clone_url": headCloneURL,
 		}).Error; uerr != nil {
 			return preview, false, fmt.Errorf("update existing preview: %w", uerr)
 		}
 		preview.Branch = branch
 		preview.Status = "pending"
 		preview.Generation++
+		preview.IsForkPR = isForkPR
+		preview.HeadRepo = headRepo
+		preview.HeadCloneURL = headCloneURL
 		return preview, false, nil
 	}
 	if err != gorm.ErrRecordNotFound {
@@ -268,13 +291,19 @@ func (ps *PreviewService) upsertPreviewRow(project *Project, prNumber int, branc
 	// sees uncommitted siblings and the rollback on failure releases
 	// the port for retry.
 	preview = PreviewDeployment{
-		ProjectID:  project.ID,
-		PRNumber:   prNumber,
-		Branch:     branch,
-		Status:     "pending",
-		ExpiresAt:  expiry,
-		Slot:       -1,
-		Generation: 1, // first deploy is generation 1; rebuild path will bump.
+		ProjectID:    project.ID,
+		PRNumber:     prNumber,
+		Branch:       branch,
+		Status:       "pending",
+		ExpiresAt:    expiry,
+		Slot:         -1,
+		Generation:   1, // first deploy is generation 1; rebuild path will bump.
+		IsForkPR:     isForkPR,
+		HeadRepo:     headRepo,
+		HeadCloneURL: headCloneURL,
+		// Approved stays false on create — admin must explicitly
+		// approve fork PRs. Same-repo PRs (isForkPR=false) skip the
+		// approval gate entirely in runPreview.
 	}
 	var raceFallback *PreviewDeployment
 	txErr := ps.db.Transaction(func(tx *gorm.DB) error {
@@ -328,12 +357,18 @@ func (ps *PreviewService) upsertPreviewRow(project *Project, prNumber int, branc
 			"expires_at":     expiry,
 			"failure_reason": "",
 			"generation":     gorm.Expr("generation + 1"),
+			"is_fork_pr":     isForkPR,
+			"head_repo":      headRepo,
+			"head_clone_url": headCloneURL,
 		}).Error; uerr != nil {
 			return *raceFallback, false, fmt.Errorf("update existing preview after race: %w", uerr)
 		}
 		raceFallback.Branch = branch
 		raceFallback.Status = "pending"
 		raceFallback.Generation++
+		raceFallback.IsForkPR = isForkPR
+		raceFallback.HeadRepo = headRepo
+		raceFallback.HeadCloneURL = headCloneURL
 		return *raceFallback, false, nil
 	}
 
@@ -451,8 +486,13 @@ func (ps *PreviewService) runPreview(jobCtx context.Context, previewID, projectI
 	// R8-M2: surface conversion errors instead of silently falling back
 	// to the SSH URL (which would clone-fail without a deploy key).
 	cloneURL := project.GitURL
+	// v0.19: fork PR clones come from the FORK's clone_url, not the
+	// project's base GitURL — head.ref only exists in the fork's repo.
+	if preview.IsForkPR && preview.HeadCloneURL != "" {
+		cloneURL = preview.HeadCloneURL
+	}
 	if (authMethod == "github_app" || authMethod == "github_oauth") && httpsToken != "" {
-		converted, cerr := ConvertSSHToCleanHTTPS(project.GitURL)
+		converted, cerr := ConvertSSHToCleanHTTPS(cloneURL)
 		if cerr != nil {
 			ps.markFailed(previewID, gen, fmt.Sprintf("convert git URL to HTTPS for token auth: %v", cerr))
 			return
@@ -498,7 +538,21 @@ func (ps *PreviewService) runPreview(jobCtx context.Context, previewID, projectI
 		return
 	}
 
+	// v0.19: filter Secret-marked env vars when deploying a fork PR.
+	// EnvVar.Secret == true → never sent to fork code (e.g. API
+	// keys, signing secrets). Same-repo PRs get the full set
+	// because fork-author code can't reach them.
 	envVars := project.EnvVarList
+	if preview.IsForkPR {
+		filtered := envVars[:0:0]
+		for _, ev := range envVars {
+			if ev.Secret {
+				continue
+			}
+			filtered = append(filtered, ev)
+		}
+		envVars = filtered
+	}
 	envVars = append(envVars,
 		EnvVar{Key: "WEBCASA_PREVIEW", Value: "1"},
 		EnvVar{Key: "WEBCASA_PREVIEW_PR", Value: fmt.Sprintf("%d", preview.PRNumber)},
@@ -554,11 +608,20 @@ func (ps *PreviewService) runPreview(jobCtx context.Context, previewID, projectI
 		return
 	}
 
-	// Create the host on first run, or update existing host's upstream to
-	// point at the new slot's port. Old slot (if any) keeps serving
-	// until this call returns; so failed upstream update leaves the old
-	// version live.
-	if preview.HostID == 0 {
+	// v0.19: gate Caddy host creation for unapproved fork PRs. The
+	// container starts and the build verifies the fork's code is
+	// well-formed, but the public URL stays unwired until an admin
+	// approves via POST /previews/:id/approve. ApprovePreview will
+	// run the host-creation step out-of-band when called.
+	//
+	// Same-repo PRs (IsForkPR=false) and approved fork PRs proceed
+	// to the normal host-create / update path below.
+	skipHostForFork := preview.IsForkPR && !preview.Approved
+	if skipHostForFork {
+		ps.logger.Info("preview built but host gated pending fork-PR approval",
+			"preview_id", previewID, "head_repo", preview.HeadRepo)
+	} else if preview.HostID == 0 {
+		// Create the host on first run.
 		hostID, err := ps.coreAPI.CreateHost(pluginpkg.CreateHostRequest{
 			Domain:       preview.Domain,
 			HostType:     "proxy",
@@ -589,6 +652,9 @@ func (ps *PreviewService) runPreview(jobCtx context.Context, previewID, projectI
 		}
 		preview.HostID = hostID
 	} else {
+		// Update existing host's upstream to point at the new slot's port.
+		// Old slot (if any) keeps serving until this call returns; failed
+		// upstream update leaves the old version live.
 		if err := ps.coreAPI.UpdateHostUpstream(preview.HostID, fmt.Sprintf("localhost:%d", nextPort)); err != nil {
 			ps.svc.docker.StopAndRemove(nextContainer)
 			ps.markFailed(previewID, gen, fmt.Sprintf("update host upstream: %v", err))
@@ -963,6 +1029,135 @@ func (ps *PreviewService) CleanupExpired() int {
 		}
 	}
 	return count
+}
+
+// ApprovePreview (v0.19+) marks a fork-PR preview as approved by an
+// admin and creates the Caddy host so the public URL becomes
+// reachable. No-op for non-fork previews (they bypass the gate).
+//
+// Caller must verify the user is an admin (handler enforces).
+// Holds the per-PR lock so we don't race a concurrent rebuild's
+// runPreview which is also conditionally creating the host.
+func (ps *PreviewService) ApprovePreview(id uint, approverUserID uint) error {
+	var preview PreviewDeployment
+	if err := ps.db.First(&preview, id).Error; err != nil {
+		return fmt.Errorf("preview not found: %w", err)
+	}
+	if !preview.IsForkPR {
+		// No gate to lift on same-repo previews; report success
+		// idempotently.
+		return nil
+	}
+	mu := ps.previewLock(preview.ProjectID, preview.PRNumber)
+	mu.Lock()
+	defer mu.Unlock()
+
+	// Re-read under the lock — concurrent rebuild may have changed
+	// state. Approval flips a binary field; rebuilds preserve it.
+	if err := ps.db.First(&preview, id).Error; err != nil {
+		return fmt.Errorf("re-read preview: %w", err)
+	}
+	if preview.Approved {
+		return nil // already approved — idempotent
+	}
+
+	now := time.Now()
+	res := ps.db.Model(&PreviewDeployment{}).
+		Where("id = ?", id).
+		Updates(map[string]interface{}{
+			"approved":            true,
+			"approved_at":         now,
+			"approved_by_user_id": approverUserID,
+		})
+	if res.Error != nil {
+		return fmt.Errorf("mark approved: %w", res.Error)
+	}
+	preview.Approved = true
+	preview.ApprovedAt = &now
+	preview.ApprovedByUserID = approverUserID
+
+	// Create the Caddy host now if the build already finished. If the
+	// build is still in progress (status=pending/building), skip —
+	// runPreview will see Approved=true on its next re-read and
+	// create the host itself when it gets to that step.
+	if preview.Status == "running" && preview.HostID == 0 {
+		if err := ps.createApprovedHost(&preview); err != nil {
+			// Approval persisted; host create failed. Admin can
+			// retry by toggling enable/disable on the project, or
+			// pushing a new commit. Surface the error.
+			return fmt.Errorf("approval recorded but host create failed: %w", err)
+		}
+	}
+	ps.logger.Info("preview approved", "preview_id", id, "approver", approverUserID, "head_repo", preview.HeadRepo)
+	return nil
+}
+
+// RevokePreview (v0.19+) clears approval and tears down the Caddy
+// host. Container keeps running so admin can inspect it; rebuilding
+// stays gated until next approval.
+func (ps *PreviewService) RevokePreview(id uint) error {
+	var preview PreviewDeployment
+	if err := ps.db.First(&preview, id).Error; err != nil {
+		return fmt.Errorf("preview not found: %w", err)
+	}
+	if !preview.IsForkPR {
+		return fmt.Errorf("revoke is only meaningful for fork PR previews")
+	}
+	mu := ps.previewLock(preview.ProjectID, preview.PRNumber)
+	mu.Lock()
+	defer mu.Unlock()
+
+	if err := ps.db.First(&preview, id).Error; err != nil {
+		return fmt.Errorf("re-read preview: %w", err)
+	}
+	if !preview.Approved {
+		return nil // already revoked — idempotent
+	}
+
+	// Tear down the host first so the URL stops resolving — then
+	// clear the approval flag. Container intentionally kept alive
+	// for inspection; admin can DeletePreview to fully reclaim.
+	if preview.HostID > 0 {
+		if err := ps.coreAPI.DeleteHost(preview.HostID); err != nil {
+			ps.logger.Warn("revoke: host delete failed (continuing)", "host_id", preview.HostID, "err", err)
+		}
+	}
+	if err := ps.db.Model(&PreviewDeployment{}).
+		Where("id = ?", id).
+		Updates(map[string]interface{}{
+			"approved":            false,
+			"approved_at":         nil,
+			"approved_by_user_id": 0,
+			"host_id":             0,
+		}).Error; err != nil {
+		return fmt.Errorf("mark revoked: %w", err)
+	}
+	ps.logger.Info("preview approval revoked", "preview_id", id, "head_repo", preview.HeadRepo)
+	return nil
+}
+
+// createApprovedHost creates the Caddy host for a freshly-approved
+// fork preview whose build is already done. Caller must hold the
+// per-PR lock. Updates preview.HostID on success.
+func (ps *PreviewService) createApprovedHost(preview *PreviewDeployment) error {
+	hostID, err := ps.coreAPI.CreateHost(pluginpkg.CreateHostRequest{
+		Domain:       preview.Domain,
+		HostType:     "proxy",
+		UpstreamAddr: fmt.Sprintf("localhost:%d", preview.Port),
+		TLSEnabled:   true,
+		HTTPRedirect: true,
+		WebSocket:    true,
+		Compression:  true,
+	})
+	if err != nil {
+		return fmt.Errorf("create host: %w", err)
+	}
+	if err := ps.db.Model(preview).Update("host_id", hostID).Error; err != nil {
+		_ = ps.coreAPI.DeleteHost(hostID)
+		return fmt.Errorf("write host_id: %w", err)
+	}
+	preview.HostID = hostID
+	return nil
 }
 
 // ListByProject returns all preview deployments for a project.
