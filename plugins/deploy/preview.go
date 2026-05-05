@@ -617,14 +617,28 @@ func (ps *PreviewService) runPreview(jobCtx context.Context, previewID, projectI
 	// Same-repo PRs (IsForkPR=false) and approved fork PRs proceed
 	// to the normal host-create / update path below.
 	//
-	// v019-R1-1 fix: re-read preview.Approved RIGHT before deciding
-	// the gate. ApprovePreview can race in between the build-end
-	// re-read (line ~523) and this gate, leaving us with stale
-	// Approved=false and a non-host'd live preview. Cheap query.
+	// v019-R3-H1 fix: take per-PR lock around the entire host gate
+	// decision + CreateHost + host_id write region. Without this lock,
+	// RevokePreview can race the non-skip path: it reads Approved=true,
+	// HostID=0 (we haven't written it yet), skips DeleteHost (HostID==0
+	// guard), clears Approved. We then CreateHost and write host_id.
+	// Final state: approved=false, host_id>0, Caddy host serving an
+	// "unapproved" preview with no DB tracking of the revocation.
+	//
+	// Lock is brief — covers the gate check + at-most-one CreateHost
+	// + DB host_id write. Other webhooks for this PR are blocked for
+	// ~seconds (Caddy reload time); other PRs unaffected.
+	hostLock := ps.previewLock(preview.ProjectID, preview.PRNumber)
+	hostLock.Lock()
+	// v019-R1-1 + R3-H1: re-read approved AND host_id under the lock.
+	// Approved may have been set by ApprovePreview between the
+	// build-end re-read (line ~523) and now; HostID may have been
+	// set by ApprovePreview's createApprovedHost.
 	if preview.IsForkPR {
 		var fresh PreviewDeployment
-		if err := ps.db.Select("approved").First(&fresh, previewID).Error; err == nil {
+		if err := ps.db.Select("approved", "host_id").First(&fresh, previewID).Error; err == nil {
 			preview.Approved = fresh.Approved
+			preview.HostID = fresh.HostID
 		}
 	}
 	skipHostForFork := preview.IsForkPR && !preview.Approved
@@ -643,19 +657,24 @@ func (ps *PreviewService) runPreview(jobCtx context.Context, previewID, projectI
 			Compression:  true,
 		})
 		if err != nil {
+			hostLock.Unlock()
 			ps.svc.docker.StopAndRemove(nextContainer)
 			ps.markFailed(previewID, gen, fmt.Sprintf("create host: %v", err))
 			return
 		}
-		// R9-H1: write host_id under generation guard. If our generation
-		// is stale, the host we just created is an orphan — undo it
-		// rather than leak a Caddy host pointing at a soon-to-be-killed
-		// container.
-		hres := ps.db.Model(&PreviewDeployment{}).
-			Where("id = ? AND generation = ?", previewID, gen).
-			Update("host_id", hostID)
+		// R9-H1 + R3-H1: write host_id under generation guard AND
+		// (if fork) approved=true guard. If RevokePreview committed
+		// approved=false during our CreateHost call, the conditional
+		// write fails and we DeleteHost — no orphan.
+		hostQuery := ps.db.Model(&PreviewDeployment{}).
+			Where("id = ? AND generation = ?", previewID, gen)
+		if preview.IsForkPR {
+			hostQuery = hostQuery.Where("approved = ?", true)
+		}
+		hres := hostQuery.Update("host_id", hostID)
 		if hres.Error != nil || hres.RowsAffected == 0 {
-			ps.logger.Warn("host_id write failed (stale generation); rolling back created host",
+			hostLock.Unlock()
+			ps.logger.Warn("host_id write failed (stale generation or revoked); rolling back created host",
 				"id", previewID, "gen", gen, "host_id", hostID, "err", hres.Error)
 			_ = ps.coreAPI.DeleteHost(hostID)
 			ps.svc.docker.StopAndRemove(nextContainer)
@@ -667,11 +686,13 @@ func (ps *PreviewService) runPreview(jobCtx context.Context, previewID, projectI
 		// Old slot (if any) keeps serving until this call returns; failed
 		// upstream update leaves the old version live.
 		if err := ps.coreAPI.UpdateHostUpstream(preview.HostID, fmt.Sprintf("localhost:%d", nextPort)); err != nil {
+			hostLock.Unlock()
 			ps.svc.docker.StopAndRemove(nextContainer)
 			ps.markFailed(previewID, gen, fmt.Sprintf("update host upstream: %v", err))
 			return
 		}
 	}
+	hostLock.Unlock()
 
 	// Caddy now points at the new slot. Stop + remove the previous slot
 	// container; this is the only destructive step and it only runs
