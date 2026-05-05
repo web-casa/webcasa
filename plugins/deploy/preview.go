@@ -214,26 +214,24 @@ func (ps *PreviewService) CreatePreviewWithFork(projectID uint, prNumber int, br
 	needsApproval := isForkPR && !preview.Approved
 	if needsApproval {
 		// v019-R5-M1 fix: write status=awaiting_approval BEFORE
-		// releasing the per-PR lock. Otherwise ApprovePreview can
-		// slip in between unlock and the status write, see the
-		// transient status=pending, take the "no build action
-		// needed" branch (it expects pending→building handled by an
-		// already-spawned runPreview), and silently drop the
-		// approval — admin would have to click approve a second
-		// time to actually trigger the build.
+		// releasing the per-PR lock. Otherwise ApprovePreview would
+		// see the transient status=pending and silently drop the
+		// approval.
 		ps.db.Model(&PreviewDeployment{}).
 			Where("id = ? AND generation = ?", preview.ID, preview.Generation).
 			Update("status", "awaiting_approval")
 		preview.Status = "awaiting_approval"
 
-		// Snapshot the old job under the same lock, then release.
-		// Drain runs out-of-lock (slow) — by that point status is
-		// already awaiting_approval so any concurrent ApprovePreview
-		// will see the right state.
+		// v019-R6-H1 fix: drain the old job UNDER the lock too.
+		// Releasing before drain let ApprovePreview slip in,
+		// spawnPreviewBuild's 5s drain timeout would expire while
+		// the old job was still running, and we'd have two
+		// runPreview goroutines for the same preview ID. Holding
+		// the lock for up to 30s blocks other webhooks for THIS PR
+		// only (per-PR lock since v0.16); other PRs unaffected.
 		ps.jobsMu.Lock()
 		oldJob := ps.jobs[preview.ID]
 		ps.jobsMu.Unlock()
-		mu.Unlock()
 		if oldJob != nil {
 			oldJob.cancel()
 			select {
@@ -243,6 +241,7 @@ func (ps *PreviewService) CreatePreviewWithFork(projectID uint, prNumber int, br
 					"preview_id", preview.ID)
 			}
 		}
+		mu.Unlock()
 		ps.logger.Info("fork PR preview awaiting approval (build deferred)",
 			"project", project.Name, "pr", prNumber, "head_repo", headRepo, "head_sha", headSHA)
 		return &preview, nil
