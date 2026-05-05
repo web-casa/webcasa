@@ -713,6 +713,35 @@ func (ps *PreviewService) runPreview(jobCtx context.Context, previewID, projectI
 		"project", project.Name, "pr", preview.PRNumber,
 		"domain", preview.Domain, "port", nextPort, "slot", nextSlot)
 
+	// v019-R2-H1 fix: post-finalize approval reconciliation. The host
+	// gate (line ~624) re-reads `approved` but the lock-free window
+	// between that re-read and the final status=running write below
+	// lets ApprovePreview slip in: it commits approved=true but its
+	// own `status == "running"` check is FALSE (we haven't written it
+	// yet) so it doesn't createApprovedHost. We then write running
+	// with HostID=0. Result: approved=true + running + no host.
+	//
+	// Take the per-PR lock NOW (after status=running landed), re-read
+	// the row, and if IsForkPR && Approved && HostID==0, create the
+	// host ourselves. Coordinated with ApprovePreview via the same
+	// per-PR lock — only one of us will see HostID==0.
+	if skipHostForFork {
+		mu := ps.previewLock(preview.ProjectID, preview.PRNumber)
+		mu.Lock()
+		var fresh PreviewDeployment
+		if err := ps.db.First(&fresh, previewID).Error; err == nil &&
+			fresh.IsForkPR && fresh.Approved && fresh.HostID == 0 {
+			fresh.Port = nextPort
+			if err := ps.createApprovedHost(&fresh); err != nil {
+				ps.logger.Warn("post-finalize fork host create failed; admin can re-approve to retry",
+					"preview_id", previewID, "err", err)
+			} else {
+				preview.HostID = fresh.HostID
+			}
+		}
+		mu.Unlock()
+	}
+
 	// B6: post / update the PR comment with the live URL. Best-effort —
 	// failures don't affect the deploy status (already committed above).
 	//
@@ -1152,20 +1181,37 @@ func (ps *PreviewService) RevokePreview(id uint) error {
 	// Tear down the host first so the URL stops resolving — then
 	// clear the approval flag. Container intentionally kept alive
 	// for inspection; admin can DeletePreview to fully reclaim.
+	//
+	// v019-R2-H3 fix: if DeleteHost fails, KEEP host_id on the row
+	// so an operator can retry (re-revoke) and we don't orphan a
+	// Caddy host that's still serving traffic but no longer tracked
+	// in DB. Approval flag still flips so the UI shows "not
+	// approved" — but host_id stays until DeleteHost succeeds.
+	hostCleared := true
 	if preview.HostID > 0 {
 		if err := ps.coreAPI.DeleteHost(preview.HostID); err != nil {
-			ps.logger.Warn("revoke: host delete failed (continuing)", "host_id", preview.HostID, "err", err)
+			ps.logger.Warn("revoke: host delete failed; keeping host_id for retry",
+				"host_id", preview.HostID, "err", err)
+			hostCleared = false
 		}
+	}
+	updates := map[string]interface{}{
+		"approved":            false,
+		"approved_at":         nil,
+		"approved_by_user_id": 0,
+	}
+	if hostCleared {
+		updates["host_id"] = 0
 	}
 	if err := ps.db.Model(&PreviewDeployment{}).
 		Where("id = ?", id).
-		Updates(map[string]interface{}{
-			"approved":            false,
-			"approved_at":         nil,
-			"approved_by_user_id": 0,
-			"host_id":             0,
-		}).Error; err != nil {
+		Updates(updates).Error; err != nil {
 		return fmt.Errorf("mark revoked: %w", err)
+	}
+	if !hostCleared {
+		// Surface to caller so they know revoke is partial — UI shows
+		// "approval revoked but host still up; retry to clean up".
+		return fmt.Errorf("approval cleared but Caddy host delete failed (host_id=%d retained for retry)", preview.HostID)
 	}
 	ps.logger.Info("preview approval revoked", "preview_id", id, "head_repo", preview.HeadRepo)
 	return nil

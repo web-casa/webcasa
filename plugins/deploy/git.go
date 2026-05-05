@@ -3,6 +3,7 @@ package deploy
 import (
 	"context"
 	"fmt"
+	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -154,22 +155,31 @@ func (g *GitClient) CloneToDir(ctx context.Context, url, branch, deployKey, http
 // extractHost returns the host portion of an HTTPS URL (e.g.
 // "github.com" for "https://github.com/owner/repo.git"), or "" if the
 // URL isn't in a recognizable HTTPS form. Used to scope git's
-// extraHeader config to the requesting origin only.
+// extraHeader config to the requesting origin only AND to validate
+// that fork-PR clone URLs target github.com (v0.19 R1-H2).
+//
+// v019-R2-H2 fix: previously this stripped ALL `@` from the rest
+// string then took the substring up to the next `/`. That trivially
+// allowed `https://evil.test/a@github.com/repo.git` to be reported
+// as host=`github.com` because the `@` in the PATH was treated as a
+// userinfo separator. Use net/url.Parse so the @ in the path stays
+// in the path and the real authority is what's compared.
 func extractHost(u string) string {
-	idx := strings.Index(u, "://")
-	if idx == -1 {
+	parsed, err := url.Parse(u)
+	if err != nil {
 		return ""
 	}
-	rest := u[idx+3:]
-	// Strip any user:pass@ prefix (shouldn't be present in the clean URL
-	// path used for preview, but defensive).
-	if at := strings.Index(rest, "@"); at != -1 {
-		rest = rest[at+1:]
+	// url.Parse accepts schemeless inputs (e.g. "github.com/foo") with
+	// Host=="" — those should not match the github.com guard. We also
+	// require an https/http scheme since git's extraHeader scope and
+	// the fork-PR validator both target HTTP(S) origins.
+	switch parsed.Scheme {
+	case "http", "https":
+		// Host can include a port (`github.com:443`); strip via Hostname().
+		return parsed.Hostname()
+	default:
+		return ""
 	}
-	if slash := strings.Index(rest, "/"); slash != -1 {
-		rest = rest[:slash]
-	}
-	return rest
 }
 
 // Pull performs a git pull in the project directory.
