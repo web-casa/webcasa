@@ -706,29 +706,28 @@ func (ps *PreviewService) runPreview(jobCtx context.Context, previewID, projectI
 	// v0.19: gate Caddy host creation for unapproved fork PRs. The
 	// container starts and the build verifies the fork's code is
 	// well-formed, but the public URL stays unwired until an admin
-	// approves via POST /previews/:id/approve. ApprovePreview will
-	// run the host-creation step out-of-band when called.
+	// approves via POST /previews/:id/approve.
 	//
-	// Same-repo PRs (IsForkPR=false) and approved fork PRs proceed
-	// to the normal host-create / update path below.
+	// v019-R7-H1 fix: NO per-PR lock here. The R3-H1 attempt to take
+	// the lock created a deadlock — runPreview holding it while
+	// CreatePreviewWithFork's drain waits for runPreview to exit
+	// (which runPreview can't do without re-acquiring the lock).
+	// Instead, rely on CAS-style conditional UPDATEs:
 	//
-	// v019-R3-H1 fix: take per-PR lock around the entire host gate
-	// decision + CreateHost + host_id write region. Without this lock,
-	// RevokePreview can race the non-skip path: it reads Approved=true,
-	// HostID=0 (we haven't written it yet), skips DeleteHost (HostID==0
-	// guard), clears Approved. We then CreateHost and write host_id.
-	// Final state: approved=false, host_id>0, Caddy host serving an
-	// "unapproved" preview with no DB tracking of the revocation.
+	//   - host_id write WHERE generation=gen [AND approved=true if fork]
+	//   - on RowsAffected==0 we DeleteHost the orphan we just created
 	//
-	// Lock is brief — covers the gate check + at-most-one CreateHost
-	// + DB host_id write. Other webhooks for this PR are blocked for
-	// ~seconds (Caddy reload time); other PRs unaffected.
-	hostLock := ps.previewLock(preview.ProjectID, preview.PRNumber)
-	hostLock.Lock()
-	// v019-R1-1 + R3-H1: re-read approved AND host_id under the lock.
-	// Approved may have been set by ApprovePreview between the
-	// build-end re-read (line ~523) and now; HostID may have been
-	// set by ApprovePreview's createApprovedHost.
+	// Race scenarios handled:
+	//   1. RevokePreview commits approved=false between our CreateHost
+	//      and our write → write fails → DeleteHost. ✓
+	//   2. ApprovePreview's createApprovedHost runs concurrently →
+	//      first write wins; loser's WHERE host_id=0 in createApproved-
+	//      Host fails → DeleteHost. ✓
+	//   3. Generation advanced (concurrent rebuild) → write fails →
+	//      DeleteHost (already covered since v0.14). ✓
+	//
+	// Same-repo PRs (IsForkPR=false) skip the approval re-read since
+	// they're never gated.
 	if preview.IsForkPR {
 		var fresh PreviewDeployment
 		if err := ps.db.Select("approved", "host_id").First(&fresh, previewID).Error; err == nil {
@@ -752,24 +751,23 @@ func (ps *PreviewService) runPreview(jobCtx context.Context, previewID, projectI
 			Compression:  true,
 		})
 		if err != nil {
-			hostLock.Unlock()
 			ps.svc.docker.StopAndRemove(nextContainer)
 			ps.markFailed(previewID, gen, fmt.Sprintf("create host: %v", err))
 			return
 		}
-		// R9-H1 + R3-H1: write host_id under generation guard AND
-		// (if fork) approved=true guard. If RevokePreview committed
-		// approved=false during our CreateHost call, the conditional
-		// write fails and we DeleteHost — no orphan.
+		// CAS-style write: WHERE generation=gen AND host_id=0
+		// [AND approved=true if fork]. Defends against:
+		//   - stale generation (concurrent rebuild)
+		//   - revoke-during-create (fork)
+		//   - double-create from ApprovePreview's createApprovedHost
 		hostQuery := ps.db.Model(&PreviewDeployment{}).
-			Where("id = ? AND generation = ?", previewID, gen)
+			Where("id = ? AND generation = ? AND host_id = 0", previewID, gen)
 		if preview.IsForkPR {
 			hostQuery = hostQuery.Where("approved = ?", true)
 		}
 		hres := hostQuery.Update("host_id", hostID)
 		if hres.Error != nil || hres.RowsAffected == 0 {
-			hostLock.Unlock()
-			ps.logger.Warn("host_id write failed (stale generation or revoked); rolling back created host",
+			ps.logger.Warn("host_id write failed (stale gen / revoked / raced); rolling back created host",
 				"id", previewID, "gen", gen, "host_id", hostID, "err", hres.Error)
 			_ = ps.coreAPI.DeleteHost(hostID)
 			ps.svc.docker.StopAndRemove(nextContainer)
@@ -781,13 +779,11 @@ func (ps *PreviewService) runPreview(jobCtx context.Context, previewID, projectI
 		// Old slot (if any) keeps serving until this call returns; failed
 		// upstream update leaves the old version live.
 		if err := ps.coreAPI.UpdateHostUpstream(preview.HostID, fmt.Sprintf("localhost:%d", nextPort)); err != nil {
-			hostLock.Unlock()
 			ps.svc.docker.StopAndRemove(nextContainer)
 			ps.markFailed(previewID, gen, fmt.Sprintf("update host upstream: %v", err))
 			return
 		}
 	}
-	hostLock.Unlock()
 
 	// Caddy now points at the new slot. Stop + remove the previous slot
 	// container; this is the only destructive step and it only runs
@@ -829,21 +825,19 @@ func (ps *PreviewService) runPreview(jobCtx context.Context, previewID, projectI
 		"project", project.Name, "pr", preview.PRNumber,
 		"domain", preview.Domain, "port", nextPort, "slot", nextSlot)
 
-	// v019-R2-H1 fix: post-finalize approval reconciliation. The host
-	// gate (line ~624) re-reads `approved` but the lock-free window
-	// between that re-read and the final status=running write below
-	// lets ApprovePreview slip in: it commits approved=true but its
-	// own `status == "running"` check is FALSE (we haven't written it
-	// yet) so it doesn't createApprovedHost. We then write running
-	// with HostID=0. Result: approved=true + running + no host.
+	// v019-R2-H1 + R7-H1: post-finalize approval reconciliation.
+	// LOCK-FREE — relies on the same conditional UPDATEs createApproved-
+	// Host uses (WHERE host_id=0 AND approved=true). If the gate-
+	// region re-read missed an ApprovePreview that landed during the
+	// build, we createApprovedHost here. If we race ApprovePreview's
+	// own createApprovedHost call, the loser's WHERE host_id=0 fails
+	// and rolls back its CreateHost.
 	//
-	// Take the per-PR lock NOW (after status=running landed), re-read
-	// the row, and if IsForkPR && Approved && HostID==0, create the
-	// host ourselves. Coordinated with ApprovePreview via the same
-	// per-PR lock — only one of us will see HostID==0.
+	// (R4-H1 Option A makes this branch effectively unreachable —
+	// runPreview only runs after approval. Kept as defense in depth
+	// in case any future refactor revives the unapproved-but-running
+	// state.)
 	if skipHostForFork {
-		mu := ps.previewLock(preview.ProjectID, preview.PRNumber)
-		mu.Lock()
 		var fresh PreviewDeployment
 		if err := ps.db.First(&fresh, previewID).Error; err == nil &&
 			fresh.IsForkPR && fresh.Approved && fresh.HostID == 0 {
@@ -855,7 +849,6 @@ func (ps *PreviewService) runPreview(jobCtx context.Context, previewID, projectI
 				preview.HostID = fresh.HostID
 			}
 		}
-		mu.Unlock()
 	}
 
 	// B6: post / update the PR comment with the live URL. Best-effort —
@@ -1399,8 +1392,14 @@ func (ps *PreviewService) RevokePreview(id uint) error {
 }
 
 // createApprovedHost creates the Caddy host for a freshly-approved
-// fork preview whose build is already done. Caller must hold the
-// per-PR lock. Updates preview.HostID on success.
+// fork preview. Updates preview.HostID on success.
+//
+// v019-R7-H1: CAS-style write. Caller may or may not hold the per-PR
+// lock; either way the conditional UPDATE WHERE host_id=0 AND
+// approved=true ensures only one writer wins. Loser DeleteHosts the
+// orphan it just created. This eliminates the deadlock between
+// runPreview (which used to take the lock) and outer callers
+// (CreatePreview/Approve/Revoke draining runPreview).
 func (ps *PreviewService) createApprovedHost(preview *PreviewDeployment) error {
 	hostID, err := ps.coreAPI.CreateHost(pluginpkg.CreateHostRequest{
 		Domain:       preview.Domain,
@@ -1414,9 +1413,25 @@ func (ps *PreviewService) createApprovedHost(preview *PreviewDeployment) error {
 	if err != nil {
 		return fmt.Errorf("create host: %w", err)
 	}
-	if err := ps.db.Model(preview).Update("host_id", hostID).Error; err != nil {
+	res := ps.db.Model(&PreviewDeployment{}).
+		Where("id = ? AND host_id = 0 AND approved = ?", preview.ID, true).
+		Update("host_id", hostID)
+	if res.Error != nil {
 		_ = ps.coreAPI.DeleteHost(hostID)
-		return fmt.Errorf("write host_id: %w", err)
+		return fmt.Errorf("write host_id: %w", res.Error)
+	}
+	if res.RowsAffected == 0 {
+		// Lost the race — another writer set host_id (runPreview's
+		// gate-region create, or another concurrent createApproved-
+		// Host call). DeleteHost the orphan and return success — the
+		// other writer's host is the canonical one.
+		_ = ps.coreAPI.DeleteHost(hostID)
+		// Re-read to surface the winner's host_id to caller.
+		var fresh PreviewDeployment
+		if rerr := ps.db.Select("host_id").First(&fresh, preview.ID).Error; rerr == nil {
+			preview.HostID = fresh.HostID
+		}
+		return nil
 	}
 	preview.HostID = hostID
 	return nil
