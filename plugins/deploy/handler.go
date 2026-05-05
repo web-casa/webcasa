@@ -527,6 +527,28 @@ func (h *Handler) handlePullRequestWebhook(c *gin.Context, project *Project) {
 			})
 			return
 		}
+		// v019-R1-2 fix: head.repo.clone_url is webhook-supplied and
+		// will be auth'd against by the GitHub installation token
+		// when AuthMethod is github_app/github_oauth. A spoofed
+		// payload (or a future GitHub Enterprise federation) could
+		// point at a non-github.com host, causing us to send the
+		// token in an Authorization header to a foreign origin.
+		// Reject anything that isn't a github.com HTTPS URL.
+		if isForkPR {
+			cloneURL := payload.PullRequest.Head.Repo.CloneURL
+			if cloneURL == "" {
+				c.JSON(http.StatusBadRequest, gin.H{
+					"error": "fork PR webhook missing head.repo.clone_url",
+				})
+				return
+			}
+			if extractHost(cloneURL) != "github.com" {
+				c.JSON(http.StatusBadRequest, gin.H{
+					"error": "fork PR clone_url must be a github.com URL; got " + cloneURL,
+				})
+				return
+			}
+		}
 		preview, err := h.svc.preview.CreatePreviewWithFork(
 			project.ID, payload.Number, payload.PullRequest.Head.Ref,
 			isForkPR, head, payload.PullRequest.Head.Repo.CloneURL,

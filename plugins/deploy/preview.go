@@ -616,6 +616,17 @@ func (ps *PreviewService) runPreview(jobCtx context.Context, previewID, projectI
 	//
 	// Same-repo PRs (IsForkPR=false) and approved fork PRs proceed
 	// to the normal host-create / update path below.
+	//
+	// v019-R1-1 fix: re-read preview.Approved RIGHT before deciding
+	// the gate. ApprovePreview can race in between the build-end
+	// re-read (line ~523) and this gate, leaving us with stale
+	// Approved=false and a non-host'd live preview. Cheap query.
+	if preview.IsForkPR {
+		var fresh PreviewDeployment
+		if err := ps.db.Select("approved").First(&fresh, previewID).Error; err == nil {
+			preview.Approved = fresh.Approved
+		}
+	}
 	skipHostForFork := preview.IsForkPR && !preview.Approved
 	if skipHostForFork {
 		ps.logger.Info("preview built but host gated pending fork-PR approval",
@@ -704,7 +715,16 @@ func (ps *PreviewService) runPreview(jobCtx context.Context, previewID, projectI
 
 	// B6: post / update the PR comment with the live URL. Best-effort —
 	// failures don't affect the deploy status (already committed above).
-	ps.postOrUpdatePRComment(&preview, project)
+	//
+	// v019-R1-4 fix: skip when HostID==0 (unapproved fork PR). The
+	// comment text promises a live URL; posting it before approval
+	// would mislead the fork author. ApprovePreview will trigger a
+	// re-post path implicitly: the next webhook (synchronize) sees
+	// HostID populated and posts. For first-approval, admin can
+	// manually re-trigger or rely on next push to update the comment.
+	if preview.HostID > 0 {
+		ps.postOrUpdatePRComment(&preview, project)
+	}
 }
 
 // setStatus updates the preview row's status atomically and returns false
@@ -1057,35 +1077,50 @@ func (ps *PreviewService) ApprovePreview(id uint, approverUserID uint) error {
 	if err := ps.db.First(&preview, id).Error; err != nil {
 		return fmt.Errorf("re-read preview: %w", err)
 	}
-	if preview.Approved {
-		return nil // already approved — idempotent
+	// v019-R1-3 fix: idempotency check must verify BOTH approved AND
+	// host_id non-zero. Otherwise a previous createApprovedHost
+	// failure would have persisted approved=true with host_id=0;
+	// admin clicking approve again would early-return without
+	// retrying the host create.
+	if preview.Approved && preview.HostID > 0 {
+		return nil // fully approved AND wired up — idempotent
 	}
 
-	now := time.Now()
-	res := ps.db.Model(&PreviewDeployment{}).
-		Where("id = ?", id).
-		Updates(map[string]interface{}{
-			"approved":            true,
-			"approved_at":         now,
-			"approved_by_user_id": approverUserID,
-		})
-	if res.Error != nil {
-		return fmt.Errorf("mark approved: %w", res.Error)
+	// Persist approval (idempotent if already true).
+	if !preview.Approved {
+		now := time.Now()
+		res := ps.db.Model(&PreviewDeployment{}).
+			Where("id = ?", id).
+			Updates(map[string]interface{}{
+				"approved":            true,
+				"approved_at":         now,
+				"approved_by_user_id": approverUserID,
+			})
+		if res.Error != nil {
+			return fmt.Errorf("mark approved: %w", res.Error)
+		}
+		preview.Approved = true
+		preview.ApprovedAt = &now
+		preview.ApprovedByUserID = approverUserID
 	}
-	preview.Approved = true
-	preview.ApprovedAt = &now
-	preview.ApprovedByUserID = approverUserID
 
-	// Create the Caddy host now if the build already finished. If the
-	// build is still in progress (status=pending/building), skip —
-	// runPreview will see Approved=true on its next re-read and
-	// create the host itself when it gets to that step.
+	// Create the Caddy host now if the build is done AND host is
+	// missing. Runs both first-approve and retry-after-failure paths.
+	// If the build is still in progress (status=pending/building),
+	// skip — runPreview will pick up Approved=true on its re-read
+	// (R1-1 fix added a fresh re-read at the gate point) and create
+	// the host itself.
 	if preview.Status == "running" && preview.HostID == 0 {
 		if err := ps.createApprovedHost(&preview); err != nil {
 			// Approval persisted; host create failed. Admin can
-			// retry by toggling enable/disable on the project, or
-			// pushing a new commit. Surface the error.
+			// retry by clicking approve again — the new
+			// idempotency check above triggers a fresh attempt.
 			return fmt.Errorf("approval recorded but host create failed: %w", err)
+		}
+		// Now that the URL is reachable, post the PR comment that
+		// runPreview deferred (v019-R1-4). Best-effort.
+		if project, err := ps.svc.GetProject(preview.ProjectID); err == nil {
+			ps.postOrUpdatePRComment(&preview, project)
 		}
 	}
 	ps.logger.Info("preview approved", "preview_id", id, "approver", approverUserID, "head_repo", preview.HeadRepo)

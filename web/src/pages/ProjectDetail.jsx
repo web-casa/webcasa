@@ -884,7 +884,14 @@ export default function ProjectDetail() {
                                 {envVars.map((ev, i) => (
                                     <Flex key={i} gap="2" align="center">
                                         <TextField.Root placeholder="KEY" value={ev.key} onChange={e => updateEnvVar(i, 'key', e.target.value)} style={{ flex: 1, fontFamily: 'monospace' }} />
-                                        <TextField.Root placeholder="value" value={ev.value} onChange={e => updateEnvVar(i, 'value', e.target.value)} style={{ flex: 2, fontFamily: 'monospace' }} />
+                                        {/* v019-R1-5: mask value when marked secret. Plain text otherwise. */}
+                                        <TextField.Root
+                                            placeholder="value"
+                                            type={ev.secret ? 'password' : 'text'}
+                                            value={ev.value}
+                                            onChange={e => updateEnvVar(i, 'value', e.target.value)}
+                                            style={{ flex: 2, fontFamily: 'monospace' }}
+                                        />
                                         {/* v0.19: secret toggle. When marked, this var is NEVER passed to fork-PR preview builds. */}
                                         <Tooltip content={t('deploy.env_var_secret_hint')}>
                                             <Flex align="center" gap="1">
