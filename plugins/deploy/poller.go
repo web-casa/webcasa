@@ -264,6 +264,13 @@ func (p *Poller) lsRemoteHead(ctx context.Context, pr *Project, branch string) (
 		if cerr != nil {
 			return "", fmt.Errorf("convert git URL for token auth: %w", cerr)
 		}
+		// v0.16-R1-H1: GitHub tokens must NOT be sent to non-GitHub
+		// hosts via Authorization header. A misconfigured project
+		// (auth_method=github_app + git_url=git@gitlab.com:...)
+		// would otherwise leak the token to the foreign server.
+		if extractHost(converted) != "github.com" {
+			return "", fmt.Errorf("auth_method %q requires a github.com URL; got %q", authMethod, pr.GitURL)
+		}
 		target = converted
 	}
 

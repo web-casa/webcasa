@@ -631,6 +631,12 @@ func (s *Service) runBuild(project *Project, deployment *Deployment, logWriter *
 	// passed separately to Builder.Build → GitClient.Clone/Pull which
 	// inject it via env var, never argv. The token doesn't surface in
 	// `git remote -v` or process listings.
+	//
+	// v0.16-R1-H1 fix: GitHub App / OAuth tokens are GitHub-specific.
+	// If a user misconfigured a project with non-GitHub URL + GitHub
+	// auth, we must NOT send the GitHub token to a different host's
+	// Authorization header (token leak via the foreign server's
+	// access logs). Hard-error before any git command runs.
 	buildProject := *project
 	buildToken := ""
 	if (authMethod == "github_app" || authMethod == "github_oauth") && httpsToken != "" {
@@ -642,6 +648,17 @@ func (s *Service) runBuild(project *Project, deployment *Deployment, logWriter *
 			s.db.Model(&Project{}).Where("id = ?", project.ID).Updates(map[string]interface{}{
 				"status":    "error",
 				"error_msg": fmt.Sprintf("convert git URL: %v", cerr),
+			})
+			return
+		}
+		if extractHost(converted) != "github.com" {
+			msg := fmt.Sprintf("auth_method %q requires a github.com URL; got %q", authMethod, project.GitURL)
+			logWriter.Write([]byte("ERROR: " + msg + "\n"))
+			deployment.Status = "failed"
+			s.db.Save(deployment)
+			s.db.Model(&Project{}).Where("id = ?", project.ID).Updates(map[string]interface{}{
+				"status":    "error",
+				"error_msg": msg,
 			})
 			return
 		}

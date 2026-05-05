@@ -226,8 +226,12 @@ func TestBuild_QueueFull_RejectsExcess(t *testing.T) {
 	}
 
 	close(release)
-	// Drain remaining slots without caring about order.
-	for time.Now().Before(time.Now().Add(2 * time.Second)) {
+	// Drain remaining slots without caring about order. v0.16-R1-L1:
+	// fixed deadline computed once; re-evaluating Add(2s) on every
+	// loop iteration would never expire and the test would hang on
+	// regression instead of failing fast.
+	drainDeadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(drainDeadline) {
 		s.buildMu.Lock()
 		n := len(s.buildInflight)
 		s.buildMu.Unlock()
