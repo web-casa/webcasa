@@ -96,6 +96,84 @@ func injectHTTPSTokenEnv(cmd *exec.Cmd, url, token string) {
 	cmd.Env = env
 }
 
+// CloneAtSHA clones a git repository AT A SPECIFIC COMMIT, not at branch
+// HEAD. Used by the preview deploy flow when an explicit head_sha is
+// known from the webhook payload — eliminates the race window where a
+// fork author can force-push between admin approval and the build's
+// `git clone` execution (security review v0.19 R10-H1).
+//
+// Implementation: `git init` + `git fetch --depth 1 <url> <sha>` +
+// `git checkout FETCH_HEAD`. GitHub serves the SHA explicitly via the
+// uploadpack.allowReachableSHA1InWant capability (enabled by default).
+//
+// Falls back to CloneToDir (branch HEAD) when sha is empty.
+func (g *GitClient) CloneAtSHA(ctx context.Context, url, sha, deployKey, httpsToken, dstDir string, logWriter *LogWriter) error {
+	if sha == "" {
+		return fmt.Errorf("CloneAtSHA: sha is required (use CloneToDir for branch HEAD)")
+	}
+	if dstDir == "" {
+		return fmt.Errorf("dstDir is required")
+	}
+	if _, err := os.Stat(dstDir); err == nil {
+		if err := os.RemoveAll(dstDir); err != nil {
+			return fmt.Errorf("cleanup existing dir: %w", err)
+		}
+	}
+	if err := os.MkdirAll(dstDir, 0755); err != nil {
+		return fmt.Errorf("mkdir dst: %w", err)
+	}
+
+	// Helper to invoke git in dstDir with the same auth env CloneToDir uses.
+	runGit := func(args []string) error {
+		cmd := exec.CommandContext(ctx, "git", args...)
+		cmd.Dir = dstDir
+		cleanup, err := g.setupDeployKey(cmd, deployKey)
+		if err != nil {
+			return err
+		}
+		if cleanup != nil {
+			defer cleanup()
+		}
+		if httpsToken != "" {
+			injectHTTPSTokenEnv(cmd, url, httpsToken)
+		}
+		if logWriter != nil {
+			cmd.Stdout = logWriter
+			cmd.Stderr = logWriter
+		}
+		return cmd.Run()
+	}
+
+	if logWriter != nil {
+		logWriter.Write([]byte(fmt.Sprintf("$ git init && git fetch --depth 1 %s %s && git checkout %s\n",
+			sanitizeURL(url), sha, sha)))
+	}
+	if err := runGit([]string{"init", "-q"}); err != nil {
+		return fmt.Errorf("git init failed: %w", err)
+	}
+	if err := runGit([]string{"fetch", "--depth", "1", url, sha}); err != nil {
+		return fmt.Errorf("git fetch %s failed: %w (the SHA may not exist on the fork — fork author may have force-pushed before our build started)", sha, err)
+	}
+	if err := runGit([]string{"checkout", "-q", "FETCH_HEAD"}); err != nil {
+		return fmt.Errorf("git checkout %s failed: %w", sha, err)
+	}
+	// Defense-in-depth: verify the actual checked-out SHA matches what we
+	// asked for. fetch+checkout-FETCH_HEAD should always resolve to the
+	// requested SHA, but a misconfigured server or git client behavior
+	// change should not silently let a different commit through.
+	verify := exec.CommandContext(ctx, "git", "rev-parse", "HEAD")
+	verify.Dir = dstDir
+	out, err := verify.Output()
+	if err != nil {
+		return fmt.Errorf("verify checkout: %w", err)
+	}
+	got := strings.TrimSpace(string(out))
+	if got != sha {
+		return fmt.Errorf("checked-out SHA %q != requested %q (server returned a different commit)", got, sha)
+	}
+	return nil
+}
+
 // CloneToDir clones a git repository into an arbitrary destination directory
 // (rather than the per-project default path returned by ProjectDir). Used
 // by the preview deploy flow which maintains a separate source tree per

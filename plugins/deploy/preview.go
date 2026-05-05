@@ -647,13 +647,28 @@ func (ps *PreviewService) runPreview(jobCtx context.Context, previewID, projectI
 		cloneURL = converted
 		deployKey = "" // SSH key not needed on the HTTPS path
 	}
-	// H3/R6-H1 fix: pass the clean URL + token separately. CloneToDir
-	// delivers the token via the GIT_CONFIG_COUNT env-var ladder
-	// (invisible to `ps`) scoped to the requesting origin — so the
-	// token never lands in argv and cannot leak on redirect.
-	if err := ps.svc.git.CloneToDir(ctx, cloneURL, branch, deployKey, httpsToken, srcDir, logWriter); err != nil {
-		ps.markFailed(previewID, gen, fmt.Sprintf("git clone: %v", err))
-		return
+	// v019-R10-H1 fix: when we know the exact head SHA from the
+	// webhook, fetch THAT commit specifically — not whatever the
+	// branch HEAD is at clone-execution time. Without this, a fork
+	// author who force-pushes between admin approval and our git
+	// clone gets their new (potentially malicious) code into the
+	// build despite the approval gate. CloneAtSHA uses
+	// `git fetch --depth 1 <url> <sha>` + `git checkout FETCH_HEAD`
+	// + `git rev-parse HEAD` verification, so the only commit that
+	// can run is the one the webhook payload identified.
+	//
+	// Falls back to branch-HEAD CloneToDir when HeadSHA is empty
+	// (legacy rows from before v0.19; no webhook-provided SHA).
+	if preview.HeadSHA != "" {
+		if err := ps.svc.git.CloneAtSHA(ctx, cloneURL, preview.HeadSHA, deployKey, httpsToken, srcDir, logWriter); err != nil {
+			ps.markFailed(previewID, gen, fmt.Sprintf("git clone @ %s: %v", preview.HeadSHA, err))
+			return
+		}
+	} else {
+		if err := ps.svc.git.CloneToDir(ctx, cloneURL, branch, deployKey, httpsToken, srcDir, logWriter); err != nil {
+			ps.markFailed(previewID, gen, fmt.Sprintf("git clone: %v", err))
+			return
+		}
 	}
 	if ctx.Err() != nil {
 		return // cancelled mid-pipeline
