@@ -41,6 +41,14 @@ type previewJob struct {
 //   - The (project_id, pr_number) unique index on PreviewDeployment
 //     prevents duplicate rows at the DB layer even if two webhooks
 //     race past the lookup-then-create path in application code.
+// previewKey identifies a single PR's lock entry in previewLocks.
+// Same struct also defines the natural identity of a preview from
+// the webhook side (project + PR number).
+type previewKey struct {
+	ProjectID uint
+	PRNumber  int
+}
+
 type PreviewService struct {
 	db      *gorm.DB
 	svc     *Service
@@ -52,10 +60,14 @@ type PreviewService struct {
 	jobsMu     sync.Mutex
 	jobs       map[uint]*previewJob
 	wg         sync.WaitGroup
-	// createMu serializes the entire CreatePreview lookup-and-allocate
-	// sequence so two concurrent webhooks for different PRs (or the
-	// same one) cannot race base_port allocation. R7-H1 fix.
-	createMu sync.Mutex
+	// previewLocks holds a *sync.Mutex per (project_id, pr_number).
+	// Replaces the v0.14 global createMu (R11-M1 v0.16 fix): two
+	// webhooks for DIFFERENT previews now run in parallel, only
+	// same-PR Create/Delete serialize. Lock is created lazily via
+	// LoadOrStore on first access; evicted in DeletePreview after
+	// the row is successfully deleted (per-PR lifecycle ends, no
+	// more webhooks expected for this PR number).
+	previewLocks sync.Map // map[previewKey]*sync.Mutex
 }
 
 // NewPreviewService creates a new PreviewService.
@@ -70,6 +82,29 @@ func NewPreviewService(db *gorm.DB, svc *Service, coreAPI pluginpkg.CoreAPI, log
 		rootCancel: cancel,
 		jobs:       make(map[uint]*previewJob),
 	}
+}
+
+// previewLock returns the (lazily-created) per-PR lock. Goroutines
+// for different (project, PR) pairs get different locks and run in
+// parallel; same-key callers serialize. Combined with the row-level
+// generation token (R9), this is the full Create/Delete coordination
+// primitive.
+func (ps *PreviewService) previewLock(projectID uint, prNumber int) *sync.Mutex {
+	key := previewKey{ProjectID: projectID, PRNumber: prNumber}
+	actual, _ := ps.previewLocks.LoadOrStore(key, &sync.Mutex{})
+	return actual.(*sync.Mutex)
+}
+
+// evictPreviewLock removes the per-PR lock entry. Called by
+// DeletePreview after the row is successfully deleted — the PR is
+// terminal and no more webhooks are expected for this number. The
+// concurrent-create race window (a brand-new CreatePreview for the
+// same PR number arriving between our Lock and our evict) is closed
+// by the v0.14 generation-token + DB unique-index path:
+// CreatePreview either gets a fresh lock (we already evicted) or
+// our lock (we haven't yet); both paths converge on a clean state.
+func (ps *PreviewService) evictPreviewLock(projectID uint, prNumber int) {
+	ps.previewLocks.Delete(previewKey{ProjectID: projectID, PRNumber: prNumber})
 }
 
 // Stop cancels every in-flight runPreview goroutine and waits for them to
@@ -134,13 +169,16 @@ func (ps *PreviewService) CreatePreview(projectID uint, prNumber int, branch str
 	// R7-H1 + R8-H1 fix: serialize the lookup-create-allocate sequence
 	// AND the job-swap so two concurrent webhooks for the same preview
 	// cannot both observe "no job running" and both spawn racing
-	// runPreview goroutines. createMu briefly covers upsert + atomic
-	// jobs-map swap; the slow 30s drain of the previous job happens
-	// OUTSIDE the lock so other webhooks aren't blocked.
-	ps.createMu.Lock()
+	// runPreview goroutines. The per-PR lock (R11-M1 v0.16 fix) only
+	// blocks SAME-PR concurrency — different PRs run in parallel.
+	// The slow 30s drain of the previous job happens OUTSIDE the lock
+	// so other PRs (or even an admin Delete on a different preview)
+	// aren't blocked.
+	mu := ps.previewLock(projectID, prNumber)
+	mu.Lock()
 	preview, created, err := ps.upsertPreviewRow(project, prNumber, branch, newExpiry, domain)
 	if err != nil {
-		ps.createMu.Unlock()
+		mu.Unlock()
 		return nil, err
 	}
 
@@ -154,7 +192,7 @@ func (ps *PreviewService) CreatePreview(projectID uint, prNumber int, branch str
 	oldJob := ps.jobs[preview.ID]
 	ps.jobs[preview.ID] = newJob
 	ps.jobsMu.Unlock()
-	ps.createMu.Unlock()
+	mu.Unlock()
 
 	if created {
 		ps.logger.Info("created new preview", "project", project.Name, "pr", prNumber, "base_port", preview.BasePort)
@@ -191,7 +229,8 @@ func (ps *PreviewService) CreatePreview(projectID uint, prNumber int, branch str
 // pr_number) and either updates it (rebuild path) or creates a fresh
 // row with all derived fields populated atomically (no post-Create
 // backfill, so a partial-create cannot leave base_port=0). Caller must
-// hold ps.createMu so port allocation is single-flight.
+// hold the per-PR lock from previewLock(projectID, prNumber) so port
+// allocation is single-flight for this PR.
 //
 // Returns the resolved preview row + a `created` flag.
 func (ps *PreviewService) upsertPreviewRow(project *Project, prNumber int, branch string, expiry time.Time, wildcardDomain string) (PreviewDeployment, bool, error) {
@@ -314,9 +353,9 @@ func (ps *PreviewService) clearJob(previewID uint, job *previewJob) {
 // allocateBasePortTx picks a slot-0 base port in [20000, 25000) that
 // isn't taken by another preview. Slot-1 port is always base+5000,
 // landing in [25000, 30000). Runs WITHIN the caller's DB transaction
-// so the Count read sees uncommitted siblings; combined with createMu
-// serialization (R8-H1) this guarantees no two previews are allocated
-// the same base port.
+// so the Count read sees uncommitted siblings; combined with the
+// per-PR lock from previewLock() (R8-H1, R11-M1 v0.16) this guarantees
+// no two previews are allocated the same base port.
 //
 // Uses a deterministic starting point for spread without a central
 // atomic counter. Bounded at 5000 slots; ample for any realistic
@@ -710,21 +749,21 @@ func truncate(s string, n int) string {
 // DeletePreview removes a preview deployment and cleans up all resources:
 // Caddy host, container (+ staging), image, source dir, log dir, and row.
 //
-// Generation discipline (R9 + R10 + R11):
-//  1. Take createMu, bump generation, capture deleteGen, snapshot the
-//     in-flight job — all atomic. R11-H1 fix: previously bump and
-//     deleteGen capture were separate calls; a racing CreatePreview
-//     could interleave its own bump between them, causing DP to
-//     "borrow" CP's generation as its deleteGen and later cancel the
-//     wrong (newer) job + delete the wrong row.
-//  2. Release createMu for the 30s cancel-drain so other webhooks
-//     aren't blocked on a slow build.
+// Generation discipline (R9 + R10 + R11; per-PR lock since v0.16):
+//  1. Take the per-PR lock, bump generation, capture deleteGen,
+//     snapshot the in-flight job — all atomic. R11-H1 fix: previously
+//     bump and deleteGen capture were separate calls; a racing
+//     CreatePreview could interleave its own bump between them,
+//     causing DP to "borrow" CP's generation as its deleteGen and
+//     later cancel the wrong (newer) job + delete the wrong row.
+//  2. Release the lock for the 30s cancel-drain so concurrent webhooks
+//     for OTHER PRs aren't blocked on this PR's slow build.
 //  3. On drain timeout, mark cleanup_failed under deleteGen so a
 //     concurrent CreatePreview that has bumped past us doesn't get
 //     its pending state overwritten.
-//  4. Re-take createMu for destructive cleanup. Re-verify deleteGen
-//     is still current; if a CreatePreview raced past us during the
-//     drain wait, abort — they own the row.
+//  4. Re-take the per-PR lock for destructive cleanup. Re-verify
+//     deleteGen is still current; if a same-PR CreatePreview raced
+//     past us during the drain wait, abort — they own the row.
 //  5. Cleanup external resources. Final row Delete is conditional on
 //     `WHERE generation = deleteGen` as defense in depth.
 func (ps *PreviewService) DeletePreview(id uint) error {
@@ -733,24 +772,28 @@ func (ps *PreviewService) DeletePreview(id uint) error {
 		return fmt.Errorf("preview not found: %w", err)
 	}
 
-	// 1. Atomic bump + capture + job-snapshot under createMu.
+	// Per-PR lock (R11-M1 v0.16 fix). Same lock CreatePreview uses
+	// for this PR — different PRs run in parallel.
+	mu := ps.previewLock(preview.ProjectID, preview.PRNumber)
+
+	// 1. Atomic bump + capture + job-snapshot under the per-PR lock.
 	// Without the lock, a CreatePreview can land between Update() and
 	// First() and we'd capture the WRONG deleteGen (R11-H1).
-	ps.createMu.Lock()
+	mu.Lock()
 	bres := ps.db.Model(&PreviewDeployment{}).
 		Where("id = ?", id).
 		Update("generation", gorm.Expr("generation + 1"))
 	if bres.Error != nil {
-		ps.createMu.Unlock()
+		mu.Unlock()
 		return fmt.Errorf("preview %d: bump generation: %w", id, bres.Error)
 	}
 	if bres.RowsAffected == 0 {
-		ps.createMu.Unlock()
+		mu.Unlock()
 		return fmt.Errorf("preview %d: row vanished before delete", id)
 	}
 	var refreshed PreviewDeployment
 	if err := ps.db.Select("id", "generation").First(&refreshed, id).Error; err != nil {
-		ps.createMu.Unlock()
+		mu.Unlock()
 		return fmt.Errorf("preview %d: re-read after bump: %w", id, err)
 	}
 	deleteGen := refreshed.Generation
@@ -760,9 +803,11 @@ func (ps *PreviewService) DeletePreview(id uint) error {
 	ps.jobsMu.Lock()
 	job := ps.jobs[id]
 	ps.jobsMu.Unlock()
-	ps.createMu.Unlock()
+	mu.Unlock()
 
-	// 2. Cancel + drain (lock released; could take 30s).
+	// 2. Cancel + drain (lock released; could take 30s — releasing the
+	// per-PR lock here means a concurrent CreatePreview for the SAME
+	// PR could bump generation and take over. We re-verify in step 5).
 	drained := true
 	if job != nil {
 		job.cancel()
@@ -791,13 +836,11 @@ func (ps *PreviewService) DeletePreview(id uint) error {
 		return fmt.Errorf("preview %d: in-flight build did not drain in 30s; retry delete after build completes", id)
 	}
 
-	// 4. Re-take createMu for destructive cleanup. Brief lock — only
-	// covers synchronous external ops, not the 30s drain above.
-	// (R11-M1 noted this still blocks all CPs for the cleanup
-	// duration — accepted limitation for v0.14; per-preview lock
-	// planned for v0.15.)
-	ps.createMu.Lock()
-	defer ps.createMu.Unlock()
+	// 4. Re-take the per-PR lock for destructive cleanup. Brief lock —
+	// only covers synchronous external ops, not the 30s drain above.
+	// Other PRs unaffected (v0.16 R11-M1 fix).
+	mu.Lock()
+	defer mu.Unlock()
 
 	// 5. Re-read the FULL row under the lock and verify ownership.
 	// R12 fix: a CreatePreview that bumped before our bump (then we
@@ -855,9 +898,9 @@ func (ps *PreviewService) DeletePreview(id uint) error {
 	}
 
 	// 7. DB row. cleanup_failed and Delete both gated by deleteGen
-	// (R10-H1, R10-H2). Even though createMu prevents new bumps, the
-	// gen guard is belt-and-suspenders against any future refactor
-	// that releases the lock earlier.
+	// (R10-H1, R10-H2). Even though the per-PR lock prevents new
+	// bumps from same-PR callers, the gen guard is belt-and-suspenders
+	// against any future refactor that releases the lock earlier.
 	if len(errs) > 0 {
 		res := ps.db.Model(&PreviewDeployment{}).
 			Where("id = ? AND generation = ?", id, deleteGen).
@@ -880,7 +923,7 @@ func (ps *PreviewService) DeletePreview(id uint) error {
 		return fmt.Errorf("delete record: %w", dres.Error)
 	}
 	if dres.RowsAffected == 0 {
-		// Should be impossible given createMu but log as defense in depth.
+		// Should be impossible given the per-PR lock but log as defense in depth.
 		ps.logger.Warn("preview row delete skipped (gen advanced under lock — should be impossible)",
 			"id", id, "expected_gen", deleteGen)
 		return fmt.Errorf("preview %d: superseded between cleanup and row delete", id)
@@ -893,6 +936,12 @@ func (ps *PreviewService) DeletePreview(id uint) error {
 	if preview.PRCommentID > 0 {
 		ps.deletePRCommentBestEffort(&preview)
 	}
+	// R11-M1 v0.16: evict the per-PR lock entry. The PR is terminal —
+	// no more webhooks expected for this number. If a fresh PR
+	// happens to reuse the number later (uncommon but possible after
+	// admin deletes + a new PR opens), CreatePreview will lazily
+	// recreate the lock via LoadOrStore.
+	ps.evictPreviewLock(preview.ProjectID, preview.PRNumber)
 	ps.logger.Info("preview deployment deleted", "id", id, "domain", preview.Domain)
 	return nil
 }

@@ -13,11 +13,17 @@ import (
 // newTestService returns a minimal Service sufficient for exercising Build()
 // dedup semantics. DB and downstream fields are left nil; the test must inject
 // a buildRunner so runBuildOnce is never reached.
+//
+// buildSem is sized at 64 (the production cap) so dedup-concurrency tests
+// can exercise multi-project parallelism without hitting the v0.16
+// queue-depth limit. Tests that specifically want to verify queue-full
+// behaviour should construct a Service directly with a smaller channel.
 func newTestService() *Service {
 	return &Service{
 		logger:        slog.New(slog.NewTextHandler(io.Discard, nil)),
 		buildInflight: make(map[uint]bool),
 		buildPending:  make(map[uint]bool),
+		buildSem:      make(chan struct{}, 64),
 	}
 }
 
@@ -153,6 +159,82 @@ func TestBuild_ParallelProjectsIndependent(t *testing.T) {
 
 	for id := uint(1); id <= 5; id++ {
 		waitInflightClear(t, s, id, 2*time.Second)
+	}
+}
+
+// TestBuild_QueueFull_RejectsExcess verifies the v0.16 panel-wide
+// concurrency cap. With buildSem sized at 2, the third concurrent
+// build for a different project must return ErrBuildQueueFull
+// immediately (no in-memory queue grows). After one of the held
+// builds releases its slot, a fresh Build() succeeds.
+func TestBuild_QueueFull_RejectsExcess(t *testing.T) {
+	s := &Service{
+		logger:        slog.New(slog.NewTextHandler(io.Discard, nil)),
+		buildInflight: make(map[uint]bool),
+		buildPending:  make(map[uint]bool),
+		buildSem:      make(chan struct{}, 2),
+	}
+
+	release := make(chan struct{})
+	s.buildRunner = func(projectID uint) error {
+		<-release
+		return nil
+	}
+
+	// Fill the slots.
+	if err := s.Build(1); err != nil {
+		t.Fatalf("Build(1) = %v, want nil", err)
+	}
+	if err := s.Build(2); err != nil {
+		t.Fatalf("Build(2) = %v, want nil", err)
+	}
+
+	// Wait until both builds are actually inflight (semaphore acquired).
+	deadline := time.Now().Add(1 * time.Second)
+	for time.Now().Before(deadline) {
+		s.buildMu.Lock()
+		n := len(s.buildInflight)
+		s.buildMu.Unlock()
+		if n == 2 {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+
+	// Third project: should reject.
+	if err := s.Build(3); !errors.Is(err, ErrBuildQueueFull) {
+		t.Fatalf("Build(3) at capacity = %v, want ErrBuildQueueFull", err)
+	}
+
+	// Release one slot — either goroutine could receive first.
+	// Wait until inflight count drops to 1 instead of asserting which.
+	release <- struct{}{}
+	deadline = time.Now().Add(1 * time.Second)
+	for time.Now().Before(deadline) {
+		s.buildMu.Lock()
+		n := len(s.buildInflight)
+		s.buildMu.Unlock()
+		if n == 1 {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+
+	// Now a fresh Build should succeed (slot freed).
+	if err := s.Build(4); err != nil {
+		t.Fatalf("Build(4) after one slot freed = %v, want nil", err)
+	}
+
+	close(release)
+	// Drain remaining slots without caring about order.
+	for time.Now().Before(time.Now().Add(2 * time.Second)) {
+		s.buildMu.Lock()
+		n := len(s.buildInflight)
+		s.buildMu.Unlock()
+		if n == 0 {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
 	}
 }
 

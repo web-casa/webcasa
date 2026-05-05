@@ -239,6 +239,13 @@ func (h *Handler) BuildProject(c *gin.Context) {
 			c.JSON(http.StatusOK, gin.H{"ok": true, "message": "build coalesced into queued request"})
 			return
 		}
+		if errors.Is(err, ErrBuildQueueFull) {
+			c.JSON(http.StatusServiceUnavailable, gin.H{
+				"error":   err.Error(),
+				"message": "panel is at concurrent-build capacity; retry shortly",
+			})
+			return
+		}
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
 	}
@@ -412,6 +419,16 @@ func (h *Handler) Webhook(c *gin.Context) {
 	if err := h.svc.Build(project.ID); err != nil {
 		if errors.Is(err, ErrBuildCoalesced) {
 			c.JSON(http.StatusOK, gin.H{"ok": true, "message": "build coalesced into queued request"})
+			return
+		}
+		if errors.Is(err, ErrBuildQueueFull) {
+			// 503 makes GitHub's webhook delivery retry per its
+			// exponential backoff schedule — exactly what we want
+			// when the panel is overloaded.
+			c.JSON(http.StatusServiceUnavailable, gin.H{
+				"error":   err.Error(),
+				"message": "panel is at concurrent-build capacity; webhook will retry",
+			})
 			return
 		}
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})

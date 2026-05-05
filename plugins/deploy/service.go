@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"log/slog"
 	"os"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -21,6 +22,19 @@ import (
 // ErrBuildCoalesced is returned when a build request is merged into an already-queued build.
 // The caller should treat this as a non-error (build will still happen, just coalesced).
 var ErrBuildCoalesced = fmt.Errorf("build coalesced into queued request")
+
+// ErrBuildQueueFull is returned when the panel-wide concurrent-build
+// semaphore is saturated. Callers (HTTP handlers, webhooks) should map
+// this to 503 so GitHub / cron retries; we deliberately do NOT queue
+// in-memory because an unbounded queue is the failure mode we're
+// trying to prevent (v0.16 build-queue-depth fix).
+var ErrBuildQueueFull = fmt.Errorf("build queue at capacity")
+
+// defaultMaxConcurrentBuilds is the per-panel build concurrency cap
+// when WEBCASA_MAX_CONCURRENT_BUILDS isn't set. 3 is conservative for
+// a 2 GiB minimum-spec host running git clone + docker build under
+// concurrent webhook load.
+const defaultMaxConcurrentBuilds = 3
 
 // Service is the main deploy service that coordinates Git, Builder, and ProcessManager.
 type Service struct {
@@ -53,6 +67,17 @@ type Service struct {
 	buildInflight map[uint]bool
 	buildPending  map[uint]bool
 	buildGroup    singleflight.Group
+
+	// buildSem caps the number of CONCURRENT runBuildOnce executions
+	// across ALL projects. Per-project dedup (buildInflight + pending
+	// flag) prevents the same project from running twice; this
+	// semaphore prevents an unrelated webhook flood from spawning N
+	// goroutines that all hit `git clone` + `docker build` and OOM
+	// the host. Capacity is `webcasaMaxConcurrentBuilds` env var,
+	// default 3. Build() does a non-blocking acquire and returns
+	// ErrBuildQueueFull if at capacity — the webhook caller (GitHub)
+	// retries, no in-memory queue to grow unbounded.
+	buildSem chan struct{}
 
 	// buildRunner lets tests replace runBuildOnce; nil in production.
 	buildRunner func(projectID uint) error
@@ -106,6 +131,7 @@ func NewService(db *gorm.DB, coreAPI pluginpkg.CoreAPI, eventBus *pluginpkg.Even
 		activeLogs:    make(map[uint]*LogWriter),
 		buildInflight: make(map[uint]bool),
 		buildPending:  make(map[uint]bool),
+		buildSem:      make(chan struct{}, parseMaxConcurrentBuilds(logger)),
 		ghApp:       &GitHubAppAuth{},
 		configStore: configStore,
 		cron:        NewCronScheduler(db, logger, dataDir),
@@ -427,11 +453,14 @@ func (s *Service) IsBuildInflight(projectID uint) bool {
 //   - Returns nil if a fresh build goroutine was started.
 //   - Returns ErrBuildCoalesced if a build is already running for this project;
 //     a follow-up run is scheduled so the latest source is always eventually built.
-//   - Never waits on semaphores or timers; callers (HTTP handlers, webhooks,
-//     cron, event bus) get an immediate response.
+//   - Returns ErrBuildQueueFull if the panel-wide concurrent-build semaphore
+//     is saturated. Callers (HTTP handler / webhook) should map to 503 so
+//     the upstream (GitHub / cron) retries.
+//   - Never blocks waiting for capacity; we want immediate ack to webhooks.
 //
 // Dedup is enforced by a buildInflight flag plus singleflight.Group as
 // defense-in-depth against accidental parallel runBuildOnce execution.
+// Panel-wide concurrency is gated by buildSem (v0.16 queue-depth fix).
 func (s *Service) Build(projectID uint) error {
 	s.buildMu.Lock()
 	if s.buildInflight[projectID] {
@@ -441,6 +470,17 @@ func (s *Service) Build(projectID uint) error {
 		}
 		s.buildMu.Unlock()
 		return ErrBuildCoalesced
+	}
+	// Try to acquire a build slot WITHOUT releasing the dedup lock —
+	// otherwise a same-project rebuild could slip in between the
+	// inflight check and the slot acquire.
+	select {
+	case s.buildSem <- struct{}{}:
+		// got a slot
+	default:
+		s.buildMu.Unlock()
+		s.logger.Warn("build queue at capacity; rejecting", "project_id", projectID, "cap", cap(s.buildSem))
+		return ErrBuildQueueFull
 	}
 	s.buildInflight[projectID] = true
 	s.buildMu.Unlock()
@@ -458,7 +498,14 @@ func (s *Service) Build(projectID uint) error {
 // concurrent Build() could observe inflight=true, set pending=true, and get
 // ErrBuildCoalesced — all AFTER the loop had decided to exit, stranding the
 // pending request until some later unrelated Build() happened to pick it up.
+//
+// buildSem release: the slot is held for the ENTIRE coalesced loop, not
+// per-iteration. A pending rebuild reuses our slot — that's correct because
+// the rebuild is for the same project and the host resources our build
+// holds (clone dir, Docker context) are still committed. Released exactly
+// once on exit.
 func (s *Service) buildLoop(projectID uint) {
+	defer func() { <-s.buildSem }()
 	for {
 		key := fmt.Sprintf("%d", projectID)
 		_, err, _ := s.buildGroup.Do(key, func() (interface{}, error) {
@@ -484,6 +531,27 @@ func (s *Service) buildLoop(projectID uint) {
 		s.buildMu.Unlock()
 		return
 	}
+}
+
+// parseMaxConcurrentBuilds reads WEBCASA_MAX_CONCURRENT_BUILDS, falling
+// back to defaultMaxConcurrentBuilds. Logs (not fatals) on bad input —
+// a typo in an env var shouldn't prevent the panel from starting.
+func parseMaxConcurrentBuilds(logger *slog.Logger) int {
+	v := os.Getenv("WEBCASA_MAX_CONCURRENT_BUILDS")
+	if v == "" {
+		return defaultMaxConcurrentBuilds
+	}
+	n, err := strconv.Atoi(v)
+	if err != nil || n <= 0 {
+		logger.Warn("invalid WEBCASA_MAX_CONCURRENT_BUILDS, using default",
+			"got", v, "default", defaultMaxConcurrentBuilds, "err", err)
+		return defaultMaxConcurrentBuilds
+	}
+	if n > 64 {
+		logger.Warn("WEBCASA_MAX_CONCURRENT_BUILDS very high; capping at 64", "got", n)
+		return 64
+	}
+	return n
 }
 
 // runBuildOnce performs a single end-to-end build for a project synchronously.
@@ -558,10 +626,28 @@ func (s *Service) runBuild(project *Project, deployment *Deployment, logWriter *
 	}
 
 	// Prepare an in-memory copy of the project with resolved credentials.
+	// v0.16 R8-M4: GitURL becomes the CLEAN HTTPS URL on the token
+	// auth path (was: embedded token via ConvertToHTTPS). Token is
+	// passed separately to Builder.Build → GitClient.Clone/Pull which
+	// inject it via env var, never argv. The token doesn't surface in
+	// `git remote -v` or process listings.
 	buildProject := *project
+	buildToken := ""
 	if (authMethod == "github_app" || authMethod == "github_oauth") && httpsToken != "" {
-		buildProject.GitURL = ConvertToHTTPS(project.GitURL, httpsToken)
+		converted, cerr := ConvertSSHToCleanHTTPS(project.GitURL)
+		if cerr != nil {
+			logWriter.Write([]byte(fmt.Sprintf("ERROR: Convert git URL for token auth failed: %v\n", cerr)))
+			deployment.Status = "failed"
+			s.db.Save(deployment)
+			s.db.Model(&Project{}).Where("id = ?", project.ID).Updates(map[string]interface{}{
+				"status":    "error",
+				"error_msg": fmt.Sprintf("convert git URL: %v", cerr),
+			})
+			return
+		}
+		buildProject.GitURL = converted
 		buildProject.DeployKey = "" // No SSH key needed for HTTPS
+		buildToken = httpsToken
 	} else {
 		buildProject.DeployKey = deployKey // decrypted plaintext key
 	}
@@ -570,7 +656,7 @@ func (s *Service) runBuild(project *Project, deployment *Deployment, logWriter *
 	projectDir := s.git.ProjectDir(project.ID)
 	GenerateEnvFile(projectDir, project.EnvVarList)
 
-	result := s.builder.Build(ctx, &buildProject, logWriter)
+	result := s.builder.Build(ctx, &buildProject, buildToken, logWriter)
 
 	deployment.GitCommit = result.Commit
 	deployment.Duration = int(result.Duration.Seconds())

@@ -252,9 +252,19 @@ func (p *Poller) lsRemoteHead(ctx context.Context, pr *Project, branch string) (
 		return "", err
 	}
 
+	// v0.16 R8-M4: convert SSH→HTTPS when needed, but keep the URL
+	// CLEAN (no embedded token). The token is delivered via env var
+	// in injectHTTPSTokenEnv below — never lands in argv (visible to
+	// `ps`) or the URL (visible in `git remote -v` if anything were
+	// to record it).
 	target := pr.GitURL
-	if (authMethod == "github_app" || authMethod == "github_oauth") && httpsToken != "" {
-		target = ConvertToHTTPS(pr.GitURL, httpsToken)
+	useHTTPSToken := (authMethod == "github_app" || authMethod == "github_oauth") && httpsToken != ""
+	if useHTTPSToken {
+		converted, cerr := ConvertSSHToCleanHTTPS(pr.GitURL)
+		if cerr != nil {
+			return "", fmt.Errorf("convert git URL for token auth: %w", cerr)
+		}
+		target = converted
 	}
 
 	// SSRF guard: reject loopback / link-local / metadata-endpoint targets
@@ -276,6 +286,9 @@ func (p *Poller) lsRemoteHead(ctx context.Context, pr *Project, branch string) (
 			return "", err
 		}
 		defer envCleanup()
+	}
+	if useHTTPSToken {
+		injectHTTPSTokenEnv(cmd, target, httpsToken)
 	}
 
 	out, err := cmd.Output()
