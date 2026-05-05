@@ -213,8 +213,23 @@ func (ps *PreviewService) CreatePreviewWithFork(projectID uint, prNumber int, br
 	// fork bounces back here for re-approval after a force-push.
 	needsApproval := isForkPR && !preview.Approved
 	if needsApproval {
-		// Drain any old build that was triggered for the prior SHA —
-		// the new code won't be built unless re-approved.
+		// v019-R5-M1 fix: write status=awaiting_approval BEFORE
+		// releasing the per-PR lock. Otherwise ApprovePreview can
+		// slip in between unlock and the status write, see the
+		// transient status=pending, take the "no build action
+		// needed" branch (it expects pending→building handled by an
+		// already-spawned runPreview), and silently drop the
+		// approval — admin would have to click approve a second
+		// time to actually trigger the build.
+		ps.db.Model(&PreviewDeployment{}).
+			Where("id = ? AND generation = ?", preview.ID, preview.Generation).
+			Update("status", "awaiting_approval")
+		preview.Status = "awaiting_approval"
+
+		// Snapshot the old job under the same lock, then release.
+		// Drain runs out-of-lock (slow) — by that point status is
+		// already awaiting_approval so any concurrent ApprovePreview
+		// will see the right state.
 		ps.jobsMu.Lock()
 		oldJob := ps.jobs[preview.ID]
 		ps.jobsMu.Unlock()
@@ -228,13 +243,6 @@ func (ps *PreviewService) CreatePreviewWithFork(projectID uint, prNumber int, br
 					"preview_id", preview.ID)
 			}
 		}
-		// Status moves from upsertPreviewRow's "pending" to
-		// "awaiting_approval". gen guard ensures only the current
-		// trigger's status write lands.
-		ps.db.Model(&PreviewDeployment{}).
-			Where("id = ? AND generation = ?", preview.ID, preview.Generation).
-			Update("status", "awaiting_approval")
-		preview.Status = "awaiting_approval"
 		ps.logger.Info("fork PR preview awaiting approval (build deferred)",
 			"project", project.Name, "pr", prNumber, "head_repo", headRepo, "head_sha", headSHA)
 		return &preview, nil
