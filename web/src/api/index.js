@@ -55,7 +55,7 @@ export function wsAuthProtocols() {
  *
  * Returns an AbortController; call .abort() to close early.
  */
-export function streamSSE(url, { onLog, onStatus, onDone, onError } = {}) {
+export function streamSSE(url, { onLog, onStatus, onReset, onDone, onError } = {}) {
     const ctrl = new AbortController()
     const token = localStorage.getItem('token')
         ; (async () => {
@@ -87,6 +87,7 @@ export function streamSSE(url, { onLog, onStatus, onDone, onError } = {}) {
                         }
                         if (event === 'log') onLog?.(data)
                         else if (event === 'status') onStatus?.(data)
+                        else if (event === 'reset') onReset?.(data)
                         else if (event === 'done') { onDone?.(data); return }
                     }
                 }

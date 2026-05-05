@@ -295,6 +295,11 @@ export default function ProjectDetail() {
             previewStreamCtrl.current = streamSSE(deployAPI.previewLogStreamURL(preview.id), {
                 onLog: (line) => setPreviewLog((prev) => appendCappedLog(prev, line + '\n')),
                 onStatus: (s) => setPreviewLogStatus(s),
+                // PB-R2-H1 fix: backend emits `reset` when build.log
+                // is truncated by a fresh NewLogWriter (PR rebuild).
+                // Clear our buffer so we don't show stale content
+                // mixed with the new build's output.
+                onReset: () => setPreviewLog(''),
                 onDone: (final) => {
                     setPreviewLogStatus(final)
                     fetchPreviews() // refresh table state

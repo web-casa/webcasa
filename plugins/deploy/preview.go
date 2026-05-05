@@ -935,24 +935,29 @@ func (ps *PreviewService) ReadBuildLog(previewID uint) ([]byte, error) {
 		return nil, fmt.Errorf("stat build log: %w", err)
 	}
 	size := stat.Size()
+	// PB-R2-M2 fix: use io.ReadFull so a short read (e.g. concurrent
+	// writer flushes between Stat and Read) doesn't return a buffer
+	// padded with zero bytes.
 	if size <= previewLogMaxBytes {
 		buf := make([]byte, size)
-		if _, err := f.Read(buf); err != nil && err != io.EOF {
+		n, err := io.ReadFull(f, buf)
+		if err != nil && err != io.ErrUnexpectedEOF && err != io.EOF {
 			return nil, fmt.Errorf("read build log: %w", err)
 		}
-		return buf, nil
+		return buf[:n], nil
 	}
 	// Tail the last previewLogMaxBytes bytes.
 	if _, err := f.Seek(size-previewLogMaxBytes, 0); err != nil {
 		return nil, fmt.Errorf("seek build log: %w", err)
 	}
 	buf := make([]byte, previewLogMaxBytes)
-	if _, err := f.Read(buf); err != nil && err != io.EOF {
+	n, err := io.ReadFull(f, buf)
+	if err != nil && err != io.ErrUnexpectedEOF && err != io.EOF {
 		return nil, fmt.Errorf("read build log tail: %w", err)
 	}
 	// Prepend a marker so callers know we truncated.
 	prefix := []byte(fmt.Sprintf("[…truncated to last %d bytes…]\n", previewLogMaxBytes))
-	return append(prefix, buf...), nil
+	return append(prefix, buf[:n]...), nil
 }
 
 // StreamBuildLog tails the preview's build.log over Server-Sent Events.
@@ -1011,8 +1016,9 @@ func (ps *PreviewService) StreamBuildLog(c *gin.Context, previewID uint) {
 		size := stat.Size()
 		if size < offset {
 			// File was truncated. Tell the client to discard its buffer
-			// and resume from byte 0.
-			if _, err := fmt.Fprintf(c.Writer, "event: reset\ndata: log truncated\n\n"); err != nil {
+			// and resume from byte 0. Use emit() (not raw Fprintf) so
+			// the write is flushed immediately — PB-R2-M1 fix.
+			if !emit("reset", "log truncated") {
 				return false
 			}
 			offset = 0
@@ -1024,8 +1030,7 @@ func (ps *PreviewService) StreamBuildLog(c *gin.Context, previewID uint) {
 		if readN > previewLogMaxBytes {
 			// Skip to the tail; UI will see a marker line.
 			offset = size - previewLogMaxBytes
-			if _, err := fmt.Fprintf(c.Writer,
-				"event: log\ndata: […truncated %d bytes…]\n\n", readN-previewLogMaxBytes); err != nil {
+			if !emit("log", fmt.Sprintf("[…truncated %d bytes…]", readN-previewLogMaxBytes)) {
 				return false
 			}
 			readN = previewLogMaxBytes
@@ -1034,7 +1039,10 @@ func (ps *PreviewService) StreamBuildLog(c *gin.Context, previewID uint) {
 			return true
 		}
 		buf := make([]byte, readN)
-		n, _ := f.Read(buf)
+		n, err := io.ReadFull(f, buf)
+		if err != nil && err != io.ErrUnexpectedEOF && err != io.EOF {
+			return true
+		}
 		if n <= 0 {
 			return true
 		}

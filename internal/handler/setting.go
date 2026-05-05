@@ -2,6 +2,8 @@ package handler
 
 import (
 	"net/http"
+	"regexp"
+	"strings"
 
 	"github.com/web-casa/webcasa/internal/model"
 	"github.com/gin-gonic/gin"
@@ -32,8 +34,10 @@ func (h *SettingHandler) GetAll(c *gin.Context) {
 // Update updates a setting by key
 func (h *SettingHandler) Update(c *gin.Context) {
 	var req struct {
-		Key   string `json:"key" binding:"required"`
-		Value string `json:"value" binding:"required"`
+		Key string `json:"key" binding:"required"`
+		// Value is intentionally NOT required — `wildcard_domain=""`
+		// is a valid "disable preview deploys" state.
+		Value string `json:"value"`
 	}
 	if err := c.ShouldBindJSON(&req); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
@@ -41,12 +45,38 @@ func (h *SettingHandler) Update(c *gin.Context) {
 	}
 
 	// Only allow known settings
-	allowed := map[string]bool{"auto_reload": true, "server_ipv4": true, "server_ipv6": true}
+	allowed := map[string]bool{
+		"auto_reload":     true,
+		"server_ipv4":     true,
+		"server_ipv6":     true,
+		"wildcard_domain": true, // PB-R2-H2: required by Preview Deploy (v0.14+)
+	}
 	if !allowed[req.Key] {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "unknown setting: " + req.Key})
 		return
 	}
 
+	// Per-key normalize + validate. Defense-in-depth against a UI that
+	// bypassed the frontend regex.
+	if req.Key == "wildcard_domain" && req.Value != "" {
+		v := strings.ToLower(strings.TrimSpace(req.Value))
+		if !validWildcardDomain(v) {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "invalid wildcard_domain — must be a bare DNS suffix (e.g. preview.example.com)"})
+			return
+		}
+		req.Value = v
+	}
+
 	h.db.Where("key = ?", req.Key).Assign(model.Setting{Value: req.Value}).FirstOrCreate(&model.Setting{Key: req.Key})
 	c.JSON(http.StatusOK, gin.H{"message": "Setting updated"})
+}
+
+// validWildcardDomain matches a bare DNS suffix: at least two labels,
+// each label `a-z0-9` with optional `-` (not at edges). Same rule the
+// frontend enforces; duplicated here so a non-browser client can't
+// bypass.
+var wildcardDomainRE = regexp.MustCompile(`^[a-z0-9]([a-z0-9-]*[a-z0-9])?(\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)+$`)
+
+func validWildcardDomain(s string) bool {
+	return wildcardDomainRE.MatchString(s)
 }
