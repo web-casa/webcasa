@@ -3,11 +3,12 @@ package deploy
 import (
 	"bytes"
 	"crypto/hmac"
-	"errors"
 	"crypto/sha256"
 	"crypto/subtle"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"strconv"
@@ -565,6 +566,37 @@ func (h *Handler) DetectFramework(c *gin.Context) {
 		return
 	}
 	c.JSON(http.StatusOK, preset)
+}
+
+// NixpacksStatus GET /api/plugins/deploy/builders/nixpacks/status
+// Returns {installed: bool, version: string, path: string}.
+// Used by ProjectCreate / ProjectDetail to show an install button
+// when build_type=nixpacks but the CLI isn't on PATH.
+func (h *Handler) NixpacksStatus(c *gin.Context) {
+	c.JSON(http.StatusOK, CheckNixpacks())
+}
+
+// InstallNixpacks POST /api/plugins/deploy/builders/nixpacks/install
+// (admin) Streams the official installer's output via SSE. The
+// stream ends with `event: done` (success) or `event: error`
+// (failure). Mirrors backup plugin's InstallKopia contract so the
+// frontend SSE consumer is reusable.
+func (h *Handler) InstallNixpacks(c *gin.Context) {
+	c.Header("Content-Type", "text/event-stream")
+	c.Header("Cache-Control", "no-cache")
+	c.Header("Connection", "keep-alive")
+	c.Header("X-Accel-Buffering", "no")
+	c.Writer.Flush()
+
+	writeSSE := func(data string) {
+		fmt.Fprintf(c.Writer, "data: %s\n\n", data)
+		c.Writer.Flush()
+	}
+	writeEvent := func(event, data string) {
+		fmt.Fprintf(c.Writer, "event: %s\ndata: %s\n\n", event, data)
+		c.Writer.Flush()
+	}
+	InstallNixpacks(c.Request.Context(), writeSSE, writeEvent)
 }
 
 // GetFrameworks GET /api/plugins/deploy/frameworks

@@ -6,6 +6,31 @@
 
 ---
 
+## [0.18.0] - 2026-05-05
+
+### Nixpacks installer (UI)
+
+The deploy plugin has supported `BuildType=nixpacks` since v0.10, but
+required admin to manually install the `nixpacks` CLI on the host.
+Now the panel detects + installs it on demand:
+
+- **Backend**: `GET /api/plugins/deploy/builders/nixpacks/status`
+  reports installed/version/path. `POST /builders/nixpacks/install`
+  (admin) streams the official installer's output via SSE — same
+  contract as the v0.10 Kopia installer.
+- **UI**: When admin picks `build_type=nixpacks` in ProjectCreate,
+  panel lazily probes the CLI. If missing, shows a callout with
+  install button + live log viewer (~10s install time on a typical
+  AlmaLinux 9 host).
+- Serialized via `nixpacksInstallMu` so two admins clicking at once
+  don't race the installer.
+
+Other builder CLIs (`paketo` / `railpack`) follow the same pattern —
+extending to them is a copy of `nixpacks_installer.go` when there's
+demand.
+
+---
+
 ## [0.17.0] - 2026-05-05
 
 ### Build queue UI + Preview Deploy operator guide

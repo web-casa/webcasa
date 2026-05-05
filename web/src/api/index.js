@@ -319,6 +319,11 @@ export const deployAPI = {
     deleteProcess: (id, procId) => api.delete(`/plugins/deploy/projects/${id}/processes/${procId}`),
     restartProcess: (id, procId) => api.post(`/plugins/deploy/projects/${id}/processes/${procId}/restart`),
 
+    // Builders (v0.18+) — Nixpacks CLI status + install
+    nixpacksStatus: () => api.get('/plugins/deploy/builders/nixpacks/status'),
+    // Install streams via SSE; caller uses streamSSE() with this URL
+    nixpacksInstallURL: () => `/api/plugins/deploy/builders/nixpacks/install`,
+
     // Preview deployments (v0.14+)
     listPreviews: (id) => api.get(`/plugins/deploy/projects/${id}/previews`),
     deletePreview: (previewId) => api.delete(`/plugins/deploy/previews/${previewId}`),

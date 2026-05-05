@@ -87,6 +87,11 @@ func (p *Plugin) Init(ctx *pluginpkg.Context) error {
 	r.GET("/suggest-env", p.handler.SuggestEnv)
 	a.GET("/detect", p.handler.DetectFramework) // admin only — triggers git clone
 
+	// Builders (v0.18+) — Nixpacks CLI status + admin install endpoint.
+	// Status is read-only; install is admin (writes to /usr/local/bin).
+	r.GET("/builders/nixpacks/status", p.handler.NixpacksStatus)
+	a.POST("/builders/nixpacks/install", p.handler.InstallNixpacks)
+
 	// Projects CRUD (read + admin mutations)
 	r.GET("/projects", p.handler.ListProjects)
 	a.POST("/projects", p.handler.CreateProject)
