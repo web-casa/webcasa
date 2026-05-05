@@ -1141,8 +1141,13 @@ export default function ProjectDetail() {
                                         </Table.Header>
                                         <Table.Body>
                                             {previews.map((p) => {
-                                                // v0.19: fork PR awaiting approval = built but no host yet
-                                                const awaitingApproval = p.is_fork_pr && !p.approved && p.status === 'running'
+                                                // v0.19 R4-H1: fork PR awaiting approval can be in two
+                                                // states — `awaiting_approval` (build deferred entirely,
+                                                // never cloned) or the legacy `running + !approved` (build
+                                                // happened pre-R4-H1 and host was gated). UI treats both
+                                                // identically: show approve button, hide URL.
+                                                const awaitingApproval = p.status === 'awaiting_approval' ||
+                                                    (p.is_fork_pr && !p.approved && p.status === 'running')
                                                 const liveURL = p.status === 'running' && !awaitingApproval
                                                 return (
                                                 <Table.Row key={p.id}>

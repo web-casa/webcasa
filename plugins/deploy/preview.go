@@ -202,6 +202,47 @@ func (ps *PreviewService) CreatePreviewWithFork(projectID uint, prNumber int, br
 		return nil, err
 	}
 
+	// v019-R4-H1 fix (Option A — Vercel approval-before-build): for
+	// fork PRs that aren't yet approved for the current head SHA, do
+	// NOT spawn the build goroutine. The fork's code stays unread and
+	// unrun until admin clicks Approve. Status moves to
+	// "awaiting_approval" so the UI surfaces the gate clearly.
+	//
+	// Force-push case: upsertPreviewRow's rebuild path resets Approved
+	// when head.sha changes (R4-H3). So even a previously-approved
+	// fork bounces back here for re-approval after a force-push.
+	needsApproval := isForkPR && !preview.Approved
+	if needsApproval {
+		// Drain any old build that was triggered for the prior SHA —
+		// the new code won't be built unless re-approved.
+		ps.jobsMu.Lock()
+		oldJob := ps.jobs[preview.ID]
+		ps.jobsMu.Unlock()
+		mu.Unlock()
+		if oldJob != nil {
+			oldJob.cancel()
+			select {
+			case <-oldJob.done:
+			case <-time.After(30 * time.Second):
+				ps.logger.Warn("previous preview job did not drain in 30s",
+					"preview_id", preview.ID)
+			}
+		}
+		// Status moves from upsertPreviewRow's "pending" to
+		// "awaiting_approval". gen guard ensures only the current
+		// trigger's status write lands.
+		ps.db.Model(&PreviewDeployment{}).
+			Where("id = ? AND generation = ?", preview.ID, preview.Generation).
+			Update("status", "awaiting_approval")
+		preview.Status = "awaiting_approval"
+		ps.logger.Info("fork PR preview awaiting approval (build deferred)",
+			"project", project.Name, "pr", prNumber, "head_repo", headRepo, "head_sha", headSHA)
+		return &preview, nil
+	}
+
+	// Same-repo PR or already-approved fork (no SHA change): spawn the
+	// runPreview goroutine immediately.
+
 	// Atomically install a new job placeholder. Whoever installs gets
 	// the previous job back as oldJob and is responsible for cancelling
 	// + draining it. Two webhooks racing each see the other's job here
@@ -1207,27 +1248,81 @@ func (ps *PreviewService) ApprovePreview(id uint, approverUserID uint) error {
 		preview.ApprovedHeadSHA = preview.HeadSHA
 	}
 
-	// Create the Caddy host now if the build is done AND host is
-	// missing. Runs both first-approve and retry-after-failure paths.
-	// If the build is still in progress (status=pending/building),
-	// skip — runPreview will pick up Approved=true on its re-read
-	// (R1-1 fix added a fresh re-read at the gate point) and create
-	// the host itself.
-	if preview.Status == "running" && preview.HostID == 0 {
+	// v019-R4-H1 Option A: ApprovePreview now triggers the build
+	// itself when the row is in "awaiting_approval" (the new state
+	// CreatePreviewWithFork sets for unapproved fork PRs). The build
+	// goroutine clones, builds, runs, AND creates the host — so on
+	// successful approve+build, no separate createApprovedHost call
+	// is needed.
+	//
+	// Three branches:
+	//   awaiting_approval → spawn runPreview (clean build from scratch)
+	//   running + HostID==0 → createApprovedHost (legacy v0.19-pre-R4-H1
+	//     state — build done, host missing. Shouldn't happen with
+	//     R4-H1 but kept as defense in depth for any prior rows.)
+	//   else → nothing to do (host already up, or build still in
+	//     progress and will pick up Approved on re-read)
+	switch {
+	case preview.Status == "awaiting_approval":
+		ps.spawnPreviewBuild(&preview)
+		ps.logger.Info("preview approved; build kicked off",
+			"preview_id", id, "approver", approverUserID, "head_repo", preview.HeadRepo)
+	case preview.Status == "running" && preview.HostID == 0:
 		if err := ps.createApprovedHost(&preview); err != nil {
-			// Approval persisted; host create failed. Admin can
-			// retry by clicking approve again — the new
-			// idempotency check above triggers a fresh attempt.
 			return fmt.Errorf("approval recorded but host create failed: %w", err)
 		}
-		// Now that the URL is reachable, post the PR comment that
-		// runPreview deferred (v019-R1-4). Best-effort.
 		if project, err := ps.svc.GetProject(preview.ProjectID); err == nil {
 			ps.postOrUpdatePRComment(&preview, project)
 		}
+		ps.logger.Info("preview approved (legacy build-already-done path)",
+			"preview_id", id, "approver", approverUserID, "head_repo", preview.HeadRepo)
+	default:
+		ps.logger.Info("preview approved (no build action needed)",
+			"preview_id", id, "approver", approverUserID, "status", preview.Status)
 	}
-	ps.logger.Info("preview approved", "preview_id", id, "approver", approverUserID, "head_repo", preview.HeadRepo)
 	return nil
+}
+
+// spawnPreviewBuild registers a runPreview goroutine for a preview
+// whose build was deferred (fork PR awaiting approval). Caller must
+// hold the per-PR lock OR be confident no concurrent CreatePreview
+// is racing — typically called from ApprovePreview which holds the
+// lock. Mirrors the goroutine-spawn block at the end of
+// CreatePreviewWithFork.
+func (ps *PreviewService) spawnPreviewBuild(preview *PreviewDeployment) {
+	jobCtx, jobCancel := context.WithCancel(ps.rootCtx)
+	newJob := &previewJob{cancel: jobCancel, done: make(chan struct{})}
+	ps.jobsMu.Lock()
+	oldJob := ps.jobs[preview.ID]
+	ps.jobs[preview.ID] = newJob
+	ps.jobsMu.Unlock()
+	if oldJob != nil {
+		// Should be drained already (CreatePreviewWithFork drained it
+		// on the awaiting-approval path). Defensive: cancel + wait
+		// briefly.
+		oldJob.cancel()
+		select {
+		case <-oldJob.done:
+		case <-time.After(5 * time.Second):
+			ps.logger.Warn("approve: stale job did not drain in 5s; proceeding",
+				"preview_id", preview.ID)
+		}
+	}
+	// Reset status to pending so runPreview's setStatus("building")
+	// passes the gen guard.
+	ps.db.Model(&PreviewDeployment{}).
+		Where("id = ?", preview.ID).
+		Update("status", "pending")
+	previewID := preview.ID
+	projectID := preview.ProjectID
+	branch := preview.Branch
+	ps.wg.Add(1)
+	go func() {
+		defer ps.wg.Done()
+		defer close(newJob.done)
+		defer ps.clearJob(previewID, newJob)
+		ps.runPreview(jobCtx, previewID, projectID, branch)
+	}()
 }
 
 // RevokePreview (v0.19+) clears approval and tears down the Caddy
