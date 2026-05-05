@@ -672,17 +672,22 @@ jobs:
       # WEBCASA_DOCKER_SOCKET_PATH env var.
       - name: Symlink docker.sock → Podman socket
         run: |
+          # Both /var/run/docker.sock and /run/docker.sock are bind-
+          # mounted by the GitHub Actions outer Docker (the runner
+          # uses Docker to spawn this container). On EBUSY we fall
+          # back to /tmp which is writable container-local storage.
+          # Real production hosts always use /var/run/docker.sock —
+          # this override is CI-only.
           mkdir -p /var/run
           if ln -sf /run/podman/podman.sock /var/run/docker.sock 2>/dev/null; then
             echo "WEBCASA_DOCKER_SOCKET_PATH=/var/run/docker.sock" >> "$GITHUB_ENV"
             echo "✅ symlinked /var/run/docker.sock"
           else
-            ln -sf /run/podman/podman.sock /run/docker.sock
-            echo "WEBCASA_DOCKER_SOCKET_PATH=/run/docker.sock" >> "$GITHUB_ENV"
-            echo "⚠️  /var/run/docker.sock is host-mounted, fell back to /run/docker.sock"
+            ln -sf /run/podman/podman.sock /tmp/docker.sock
+            echo "WEBCASA_DOCKER_SOCKET_PATH=/tmp/docker.sock" >> "$GITHUB_ENV"
+            echo "⚠️  /var/run/docker.sock is host-mounted, fell back to /tmp/docker.sock"
           fi
-          ls -la "${WEBCASA_DOCKER_SOCKET_PATH:-/var/run/docker.sock}" 2>/dev/null || \
-            ls -la /run/docker.sock
+          ls -la "${WEBCASA_DOCKER_SOCKET_PATH:-/var/run/docker.sock}"
 
       - name: Run Podman integration tests
         env:
