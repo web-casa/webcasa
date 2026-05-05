@@ -12,6 +12,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/gin-gonic/gin"
 	pluginpkg "github.com/web-casa/webcasa/internal/plugin"
 	"gorm.io/gorm"
 )
@@ -578,9 +579,19 @@ func (ps *PreviewService) runPreview(jobCtx context.Context, previewID, projectI
 		ps.svc.docker.StopAndRemove(nextContainer)
 		return
 	}
+	// Reflect the persisted slot/port on the local snapshot so the PR
+	// comment uses the new values, not the pre-swap ones.
+	preview.Slot = nextSlot
+	preview.Port = nextPort
+	preview.ContainerName = nextContainer
+
 	ps.logger.Info("preview deployment running",
 		"project", project.Name, "pr", preview.PRNumber,
 		"domain", preview.Domain, "port", nextPort, "slot", nextSlot)
+
+	// B6: post / update the PR comment with the live URL. Best-effort —
+	// failures don't affect the deploy status (already committed above).
+	ps.postOrUpdatePRComment(&preview, project)
 }
 
 // setStatus updates the preview row's status atomically and returns false
@@ -889,6 +900,174 @@ func (ps *PreviewService) ListByProject(projectID uint) ([]PreviewDeployment, er
 	var previews []PreviewDeployment
 	err := ps.db.Where("project_id = ?", projectID).Order("created_at DESC").Find(&previews).Error
 	return previews, err
+}
+
+// previewLogPath returns the canonical path to a preview's build log.
+// All path components are derived from the validated integer ID; no
+// user-controlled string is ever joined into this path.
+func (ps *PreviewService) previewLogPath(previewID uint) string {
+	return filepath.Join(ps.svc.dataDir, "logs", fmt.Sprintf("preview_%d", previewID), "build.log")
+}
+
+// ReadBuildLog returns the current contents of the preview's build log.
+// Empty file (or missing — pending preview that hasn't started writing)
+// returns an empty slice, not an error.
+func (ps *PreviewService) ReadBuildLog(previewID uint) ([]byte, error) {
+	path := ps.previewLogPath(previewID)
+	data, err := os.ReadFile(path)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return []byte{}, nil
+		}
+		return nil, fmt.Errorf("read build log: %w", err)
+	}
+	return data, nil
+}
+
+// StreamBuildLog tails the preview's build.log over Server-Sent Events.
+//
+// Protocol:
+//   - First flush: full existing file content as a single `event: log`
+//   - Then poll every 500ms for new bytes, emit as `event: log`
+//   - Every 2s, re-read the row's status; emit `event: status` when it
+//     changes
+//   - When status leaves the in-progress set ("pending", "building"),
+//     emit `event: done` with the final status and close
+//   - Closes early on client disconnect
+//
+// Single-flight per request — no central pub/sub. Polling is cheap
+// (small file, local fs) and avoids the complexity of inotify or
+// fanout to multiple subscribers. Phase B trade-off; can move to
+// hub-based fanout later if needed.
+func (ps *PreviewService) StreamBuildLog(c *gin.Context, previewID uint) {
+	c.Writer.Header().Set("Content-Type", "text/event-stream")
+	c.Writer.Header().Set("Cache-Control", "no-cache")
+	c.Writer.Header().Set("X-Accel-Buffering", "no") // disable nginx buffering if proxied
+	c.Writer.Flush()
+
+	path := ps.previewLogPath(previewID)
+	clientGone := c.Request.Context().Done()
+
+	// Track read offset and current status.
+	var offset int64
+	emit := func(event, data string) bool {
+		if _, err := fmt.Fprintf(c.Writer, "event: %s\ndata: %s\n\n", event, data); err != nil {
+			return false
+		}
+		c.Writer.Flush()
+		return true
+	}
+
+	// Read+emit any new bytes since `offset`. Returns false on write
+	// failure (client gone).
+	emitNewBytes := func() bool {
+		f, err := os.Open(path)
+		if err != nil {
+			if !os.IsNotExist(err) {
+				ps.logger.Debug("stream open log", "id", previewID, "err", err)
+			}
+			return true
+		}
+		defer f.Close()
+		stat, err := f.Stat()
+		if err != nil {
+			return true
+		}
+		size := stat.Size()
+		if size <= offset {
+			return true
+		}
+		if _, err := f.Seek(offset, 0); err != nil {
+			return true
+		}
+		buf := make([]byte, size-offset)
+		n, _ := f.Read(buf)
+		if n <= 0 {
+			return true
+		}
+		offset += int64(n)
+		// SSE data lines must escape newlines — split into multiple
+		// data: lines per spec, OR base64 to keep it simple. We use
+		// the multi-line form because it's human-readable in DevTools.
+		for _, line := range strings.Split(strings.TrimRight(string(buf[:n]), "\n"), "\n") {
+			if _, err := fmt.Fprintf(c.Writer, "event: log\ndata: %s\n\n", line); err != nil {
+				return false
+			}
+		}
+		c.Writer.Flush()
+		return true
+	}
+
+	// Read current status and emit `status` event if it changed since
+	// last poll. Returns (terminal, ok). terminal=true when status is
+	// outside the in-progress set; ok=false on write failure.
+	var lastStatus string
+	checkStatus := func() (terminal bool, ok bool) {
+		var p PreviewDeployment
+		if err := ps.db.Select("status").First(&p, previewID).Error; err != nil {
+			// Row vanished — treat as terminal ("deleted").
+			if lastStatus != "deleted" {
+				if !emit("status", "deleted") {
+					return true, false
+				}
+				lastStatus = "deleted"
+			}
+			return true, true
+		}
+		if p.Status != lastStatus {
+			if !emit("status", p.Status) {
+				return false, false
+			}
+			lastStatus = p.Status
+		}
+		switch p.Status {
+		case "pending", "building":
+			return false, true
+		default:
+			return true, true
+		}
+	}
+
+	if !emitNewBytes() {
+		return
+	}
+	if terminal, ok := checkStatus(); !ok {
+		return
+	} else if terminal {
+		emit("done", lastStatus)
+		return
+	}
+
+	logTick := time.NewTicker(500 * time.Millisecond)
+	defer logTick.Stop()
+	statusTick := time.NewTicker(2 * time.Second)
+	defer statusTick.Stop()
+
+	// Hard ceiling so a stuck client doesn't pin a goroutine forever.
+	timeout := time.After(20 * time.Minute)
+
+	for {
+		select {
+		case <-clientGone:
+			return
+		case <-timeout:
+			emit("done", "stream-timeout")
+			return
+		case <-logTick.C:
+			if !emitNewBytes() {
+				return
+			}
+		case <-statusTick.C:
+			if terminal, ok := checkStatus(); !ok {
+				return
+			} else if terminal {
+				// One last log read so we don't miss the final write.
+				emitNewBytes()
+				emit("done", lastStatus)
+				return
+			}
+		}
+	}
 }
 
 // sanitizeForDomain converts a string to a DNS-safe label.

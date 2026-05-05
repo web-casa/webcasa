@@ -157,7 +157,13 @@ type PreviewDeployment struct {
 	// timed out cannot clobber the row state because the row's
 	// generation has advanced. Codex R9-H1/H2 fix.
 	Generation    int       `gorm:"default:0" json:"generation"`
-	HostID        uint      `gorm:"default:0" json:"host_id"`
+	HostID uint `gorm:"default:0" json:"host_id"`
+	// PRCommentID: GitHub issue-comment ID for the bot's "preview ready"
+	// comment. 0 if never posted (no GitHub token, or post failed).
+	// First successful deploy POSTs and stores the ID; subsequent
+	// rebuilds PATCH the same comment so the PR thread doesn't fill
+	// with bot noise on every push (B6, v0.15+).
+	PRCommentID   int64     `gorm:"default:0" json:"pr_comment_id,omitempty"`
 	Status        string    `gorm:"size:16;default:pending" json:"status"` // pending | building | running | failed | cleanup_failed
 	FailureReason string    `gorm:"size:512" json:"failure_reason,omitempty"`
 	CreatedAt     time.Time `json:"created_at"`

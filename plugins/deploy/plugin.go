@@ -128,9 +128,12 @@ func (p *Plugin) Init(ctx *pluginpkg.Context) error {
 	r.GET("/projects/:id/logs", p.handler.GetBuildLog)
 
 	// Preview deployments (v0.14+). Webhook is unauthenticated (signed);
-	// list is read-only; delete is admin because it tears down Caddy
-	// hosts and containers.
+	// list + log are read-only; delete is admin because it tears down
+	// Caddy hosts and containers. Log endpoints (v0.15) feed the
+	// Previews tab build-log viewer (static + SSE stream).
 	r.GET("/projects/:id/previews", p.handler.ListPreviews)
+	r.GET("/previews/:previewId/log", p.handler.GetPreviewLog)
+	r.GET("/previews/:previewId/log/stream", p.handler.StreamPreviewLog)
 	a.DELETE("/previews/:previewId", p.handler.DeletePreview)
 
 	// GitHub OAuth endpoints

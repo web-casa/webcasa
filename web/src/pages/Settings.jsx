@@ -122,6 +122,7 @@ function GeneralTab({ showMessage }) {
     const [autoReload, setAutoReload] = useState(true)
     const [serverIpv4, setServerIpv4] = useState('')
     const [serverIpv6, setServerIpv6] = useState('')
+    const [wildcardDomain, setWildcardDomain] = useState('')
     const [isMobile, setIsMobile] = useState(() =>
         typeof window !== 'undefined' && window.matchMedia('(max-width: 767px)').matches
     )
@@ -177,7 +178,17 @@ function GeneralTab({ showMessage }) {
             setAutoReload(settings.auto_reload !== 'false')
             setServerIpv4(settings.server_ipv4 || '')
             setServerIpv6(settings.server_ipv6 || '')
+            setWildcardDomain(settings.wildcard_domain || '')
         } catch { /* ignore */ }
+    }
+
+    const handleSaveWildcard = async () => {
+        try {
+            await settingAPI.update('wildcard_domain', wildcardDomain.trim())
+            showMessage('success', t('settings.wildcard_saved'))
+        } catch {
+            showMessage('error', t('settings.save_failed'))
+        }
     }
 
     useEffect(() => {
@@ -466,6 +477,26 @@ function GeneralTab({ showMessage }) {
                         </Flex>
                         <Flex justify="end">
                             <Button size="1" variant="soft" onClick={handleSaveIPs}>{t('settings.save_ip')}</Button>
+                        </Flex>
+                    </Flex>
+                </Card>
+
+                {/* Wildcard preview domain — required for Preview Deploy (v0.14+) */}
+                <Card mt="4" style={{ background: 'var(--cp-card)', border: '1px solid var(--cp-border)' }}>
+                    <Heading size="3" mb="3">{t('deploy.wildcard_domain_label')}</Heading>
+                    <Text size="1" color="gray" mb="3" as="p">{t('deploy.wildcard_domain_hint')}</Text>
+                    <Flex direction="column" gap="2">
+                        <Flex align={isMobile ? 'stretch' : 'center'} gap="2" direction={isMobile ? 'column' : 'row'}>
+                            <TextField.Root
+                                placeholder="preview.example.com"
+                                value={wildcardDomain}
+                                onChange={(e) => setWildcardDomain(e.target.value)}
+                                size="2"
+                                style={{ flex: 1 }}
+                            />
+                        </Flex>
+                        <Flex justify="end">
+                            <Button size="1" variant="soft" onClick={handleSaveWildcard}>{t('common.save')}</Button>
                         </Flex>
                     </Flex>
                 </Card>

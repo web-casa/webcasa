@@ -41,6 +41,62 @@ export function wsAuthProtocols() {
     return token ? [`webcasa.token.${token}`] : []
 }
 
+/**
+ * Stream a Server-Sent Events endpoint with proper Authorization header.
+ * Browser-native EventSource doesn't support custom headers, so we use
+ * fetch + ReadableStream + a small SSE parser instead. Avoids dragging
+ * in event-source-polyfill or stuffing the JWT into the URL.
+ *
+ * Callbacks:
+ *   onLog(line)     — fired for each `event: log` data line
+ *   onStatus(s)     — fired for each `event: status` data line
+ *   onDone(final)   — fired once on `event: done`; stream is closed
+ *   onError(err)    — fired on network/HTTP error; stream is closed
+ *
+ * Returns an AbortController; call .abort() to close early.
+ */
+export function streamSSE(url, { onLog, onStatus, onDone, onError } = {}) {
+    const ctrl = new AbortController()
+    const token = localStorage.getItem('token')
+        ; (async () => {
+            try {
+                const resp = await fetch(url, {
+                    headers: token ? { Authorization: `Bearer ${token}` } : {},
+                    signal: ctrl.signal,
+                })
+                if (!resp.ok) {
+                    onError?.(new Error(`stream HTTP ${resp.status}`))
+                    return
+                }
+                const reader = resp.body.getReader()
+                const decoder = new TextDecoder()
+                let buf = ''
+                while (true) {
+                    const { done, value } = await reader.read()
+                    if (done) break
+                    buf += decoder.decode(value, { stream: true })
+                    let nl
+                    while ((nl = buf.indexOf('\n\n')) !== -1) {
+                        const block = buf.slice(0, nl)
+                        buf = buf.slice(nl + 2)
+                        let event = 'message'
+                        let data = ''
+                        for (const line of block.split('\n')) {
+                            if (line.startsWith('event: ')) event = line.slice(7)
+                            else if (line.startsWith('data: ')) data += (data ? '\n' : '') + line.slice(6)
+                        }
+                        if (event === 'log') onLog?.(data)
+                        else if (event === 'status') onStatus?.(data)
+                        else if (event === 'done') { onDone?.(data); return }
+                    }
+                }
+            } catch (err) {
+                if (err.name !== 'AbortError') onError?.(err)
+            }
+        })()
+    return ctrl
+}
+
 // ============ Auth ============
 export const authAPI = {
     needSetup: () => api.get('/auth/need-setup'),
@@ -260,6 +316,15 @@ export const deployAPI = {
     updateProcess: (id, procId, data) => api.put(`/plugins/deploy/projects/${id}/processes/${procId}`, data),
     deleteProcess: (id, procId) => api.delete(`/plugins/deploy/projects/${id}/processes/${procId}`),
     restartProcess: (id, procId) => api.post(`/plugins/deploy/projects/${id}/processes/${procId}/restart`),
+
+    // Preview deployments (v0.14+)
+    listPreviews: (id) => api.get(`/plugins/deploy/projects/${id}/previews`),
+    deletePreview: (previewId) => api.delete(`/plugins/deploy/previews/${previewId}`),
+    getPreviewLog: (previewId) => api.get(`/plugins/deploy/previews/${previewId}/log`, { responseType: 'text' }),
+    // SSE log stream — returns the URL for the caller to wire up an
+    // EventSource. EventSource doesn't go through the axios interceptor
+    // chain, so the caller must include /api prefix + JWT cookie themselves.
+    previewLogStreamURL: (previewId) => `/api/plugins/deploy/previews/${previewId}/log/stream`,
 
     // GitHub OAuth
     githubConfig: () => api.get('/plugins/deploy/github/config'),

@@ -541,6 +541,60 @@ func (h *Handler) DeletePreview(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"message": "preview deleted"})
 }
 
+// GetPreviewLog GET /api/plugins/deploy/previews/:previewId/log
+// Returns the static contents of the preview's build.log. Used by the
+// Previews tab when streaming isn't requested (or as fallback after the
+// stream closes).
+//
+// Security: previewId is validated to exist as a row in our DB; the file
+// path is then derived from the validated integer ID (no user-controlled
+// path component reaches the filesystem). Path traversal isn't possible.
+func (h *Handler) GetPreviewLog(c *gin.Context) {
+	id, err := parseUintParam(c, "previewId")
+	if err != nil {
+		return
+	}
+	var preview PreviewDeployment
+	if err := h.svc.db.Select("id").First(&preview, id).Error; err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "preview not found"})
+		return
+	}
+	content, err := h.svc.preview.ReadBuildLog(id)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	c.Data(http.StatusOK, "text/plain; charset=utf-8", content)
+}
+
+// StreamPreviewLog GET /api/plugins/deploy/previews/:previewId/log/stream
+// Server-Sent Events stream of the build log. Sends the existing content
+// as the first events, then tails the file until the build finishes
+// (status leaves "building"/"pending") or the client disconnects.
+//
+// Event format:
+//
+//	event: log
+//	data: <base64-encoded log line(s)>
+//
+//	event: status
+//	data: <preview status>
+//
+//	event: done
+//	data: <final status>
+func (h *Handler) StreamPreviewLog(c *gin.Context) {
+	id, err := parseUintParam(c, "previewId")
+	if err != nil {
+		return
+	}
+	var preview PreviewDeployment
+	if err := h.svc.db.Select("id").First(&preview, id).Error; err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "preview not found"})
+		return
+	}
+	h.svc.preview.StreamBuildLog(c, id)
+}
+
 // GetWebhookInfo GET /api/plugins/deploy/projects/:id/webhook (admin only)
 // Returns the webhook token so the admin can set up Git hooks.
 func (h *Handler) GetWebhookInfo(c *gin.Context) {
