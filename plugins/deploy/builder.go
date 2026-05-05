@@ -24,10 +24,10 @@ func NewBuilder(git *GitClient, dataDir string) *Builder {
 
 // BuildResult holds the outcome of a build.
 type BuildResult struct {
-	Success   bool
-	Commit    string
-	Duration  time.Duration
-	ErrorMsg  string
+	Success  bool
+	Commit   string
+	Duration time.Duration
+	ErrorMsg string
 }
 
 // CacheDir returns the shared cache directory for a project.

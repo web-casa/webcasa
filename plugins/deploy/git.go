@@ -3,6 +3,7 @@ package deploy
 import (
 	"context"
 	"fmt"
+	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -95,6 +96,98 @@ func injectHTTPSTokenEnv(cmd *exec.Cmd, url, token string) {
 	cmd.Env = env
 }
 
+// CloneAtSHA clones a git repository AT A SPECIFIC COMMIT, not at branch
+// HEAD. Used by the preview deploy flow when an explicit head_sha is
+// known from the webhook payload — eliminates the race window where a
+// fork author can force-push between admin approval and the build's
+// `git clone` execution (security review v0.19 R10-H1).
+//
+// Implementation: `git init` + `git fetch --depth 1 <url> <sha>` +
+// `git checkout FETCH_HEAD`. GitHub serves the SHA explicitly via the
+// uploadpack.allowReachableSHA1InWant capability (enabled by default).
+//
+// Falls back to CloneToDir (branch HEAD) when sha is empty.
+func (g *GitClient) CloneAtSHA(ctx context.Context, url, sha, deployKey, httpsToken, dstDir string, logWriter *LogWriter) error {
+	if sha == "" {
+		return fmt.Errorf("CloneAtSHA: sha is required (use CloneToDir for branch HEAD)")
+	}
+	if dstDir == "" {
+		return fmt.Errorf("dstDir is required")
+	}
+	if _, err := os.Stat(dstDir); err == nil {
+		if err := os.RemoveAll(dstDir); err != nil {
+			return fmt.Errorf("cleanup existing dir: %w", err)
+		}
+	}
+	if err := os.MkdirAll(dstDir, 0755); err != nil {
+		return fmt.Errorf("mkdir dst: %w", err)
+	}
+	// v019-R11-L1: clean up partial state on failure. Any of git
+	// init/fetch/checkout/verify can leave a half-populated dstDir
+	// (.git stub, partial tree). Caller's preview row would later
+	// reference srcDir as if it had the right content; subsequent
+	// runs would skip the clone (no, they re-RemoveAll above) — but
+	// admin manual retry might use stale partial content. Defer
+	// cleanup that only fires on error.
+	cleanupOnError := true
+	defer func() {
+		if cleanupOnError {
+			_ = os.RemoveAll(dstDir)
+		}
+	}()
+
+	// Helper to invoke git in dstDir with the same auth env CloneToDir uses.
+	runGit := func(args []string) error {
+		cmd := exec.CommandContext(ctx, "git", args...)
+		cmd.Dir = dstDir
+		cleanup, err := g.setupDeployKey(cmd, deployKey)
+		if err != nil {
+			return err
+		}
+		if cleanup != nil {
+			defer cleanup()
+		}
+		if httpsToken != "" {
+			injectHTTPSTokenEnv(cmd, url, httpsToken)
+		}
+		if logWriter != nil {
+			cmd.Stdout = logWriter
+			cmd.Stderr = logWriter
+		}
+		return cmd.Run()
+	}
+
+	if logWriter != nil {
+		logWriter.Write([]byte(fmt.Sprintf("$ git init && git fetch --depth 1 %s %s && git checkout %s\n",
+			sanitizeURL(url), sha, sha)))
+	}
+	if err := runGit([]string{"init", "-q"}); err != nil {
+		return fmt.Errorf("git init failed: %w", err)
+	}
+	if err := runGit([]string{"fetch", "--depth", "1", url, sha}); err != nil {
+		return fmt.Errorf("git fetch %s failed: %w (the SHA may not exist on the fork — fork author may have force-pushed before our build started)", sha, err)
+	}
+	if err := runGit([]string{"checkout", "-q", "FETCH_HEAD"}); err != nil {
+		return fmt.Errorf("git checkout %s failed: %w", sha, err)
+	}
+	// Defense-in-depth: verify the actual checked-out SHA matches what we
+	// asked for. fetch+checkout-FETCH_HEAD should always resolve to the
+	// requested SHA, but a misconfigured server or git client behavior
+	// change should not silently let a different commit through.
+	verify := exec.CommandContext(ctx, "git", "rev-parse", "HEAD")
+	verify.Dir = dstDir
+	out, err := verify.Output()
+	if err != nil {
+		return fmt.Errorf("verify checkout: %w", err)
+	}
+	got := strings.TrimSpace(string(out))
+	if got != sha {
+		return fmt.Errorf("checked-out SHA %q != requested %q (server returned a different commit)", got, sha)
+	}
+	cleanupOnError = false
+	return nil
+}
+
 // CloneToDir clones a git repository into an arbitrary destination directory
 // (rather than the per-project default path returned by ProjectDir). Used
 // by the preview deploy flow which maintains a separate source tree per
@@ -154,22 +247,31 @@ func (g *GitClient) CloneToDir(ctx context.Context, url, branch, deployKey, http
 // extractHost returns the host portion of an HTTPS URL (e.g.
 // "github.com" for "https://github.com/owner/repo.git"), or "" if the
 // URL isn't in a recognizable HTTPS form. Used to scope git's
-// extraHeader config to the requesting origin only.
+// extraHeader config to the requesting origin only AND to validate
+// that fork-PR clone URLs target github.com (v0.19 R1-H2).
+//
+// v019-R2-H2 fix: previously this stripped ALL `@` from the rest
+// string then took the substring up to the next `/`. That trivially
+// allowed `https://evil.test/a@github.com/repo.git` to be reported
+// as host=`github.com` because the `@` in the PATH was treated as a
+// userinfo separator. Use net/url.Parse so the @ in the path stays
+// in the path and the real authority is what's compared.
 func extractHost(u string) string {
-	idx := strings.Index(u, "://")
-	if idx == -1 {
+	parsed, err := url.Parse(u)
+	if err != nil {
 		return ""
 	}
-	rest := u[idx+3:]
-	// Strip any user:pass@ prefix (shouldn't be present in the clean URL
-	// path used for preview, but defensive).
-	if at := strings.Index(rest, "@"); at != -1 {
-		rest = rest[at+1:]
+	// url.Parse accepts schemeless inputs (e.g. "github.com/foo") with
+	// Host=="" — those should not match the github.com guard. We also
+	// require an https/http scheme since git's extraHeader scope and
+	// the fork-PR validator both target HTTP(S) origins.
+	switch parsed.Scheme {
+	case "http", "https":
+		// Host can include a port (`github.com:443`); strip via Hostname().
+		return parsed.Hostname()
+	default:
+		return ""
 	}
-	if slash := strings.Index(rest, "/"); slash != -1 {
-		rest = rest[:slash]
-	}
-	return rest
 }
 
 // Pull performs a git pull in the project directory.

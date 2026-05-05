@@ -41,6 +41,7 @@ type previewJob struct {
 //   - The (project_id, pr_number) unique index on PreviewDeployment
 //     prevents duplicate rows at the DB layer even if two webhooks
 //     race past the lookup-then-create path in application code.
+//
 // previewKey identifies a single PR's lock entry in previewLocks.
 // Same struct also defines the natural identity of a preview from
 // the webhook side (project + PR number).
@@ -140,7 +141,26 @@ func (ps *PreviewService) Stop(drainTimeout time.Duration) {
 //
 // Runs asynchronously: DB row is returned with status="pending" and a
 // goroutine performs steps 3–5.
+// CreatePreview is the same-repo PR convenience wrapper around
+// CreatePreviewWithFork. Preserves the v0.14 signature for callers
+// that don't care about fork-PR fields.
 func (ps *PreviewService) CreatePreview(projectID uint, prNumber int, branch string) (*PreviewDeployment, error) {
+	return ps.CreatePreviewWithFork(projectID, prNumber, branch, "", false, "", "")
+}
+
+// CreatePreviewWithFork (v0.19+) — extended CreatePreview that records
+// fork-PR provenance. When isForkPR is true, the build uses
+// headCloneURL (the fork's repo) instead of project.GitURL, and the
+// preview's Caddy host is NOT created until an admin approves via
+// POST /previews/:id/approve. Same-repo PRs (isForkPR=false) behave
+// identically to v0.18 — no approval gate.
+//
+// headSHA: the commit SHA the build was triggered for (from
+// payload.pull_request.head.sha). Used to revoke approval on
+// force-push (v019-R4-H3): when a new synchronize webhook arrives
+// with a different SHA, upsertPreviewRow resets Approved to false
+// if it was approved for an older SHA.
+func (ps *PreviewService) CreatePreviewWithFork(projectID uint, prNumber int, branch, headSHA string, isForkPR bool, headRepo, headCloneURL string) (*PreviewDeployment, error) {
 	if prNumber <= 0 {
 		return nil, fmt.Errorf("pr_number must be positive (got %d)", prNumber)
 	}
@@ -176,11 +196,86 @@ func (ps *PreviewService) CreatePreview(projectID uint, prNumber int, branch str
 	// aren't blocked.
 	mu := ps.previewLock(projectID, prNumber)
 	mu.Lock()
-	preview, created, err := ps.upsertPreviewRow(project, prNumber, branch, newExpiry, domain)
+	preview, created, revokedHostID, err := ps.upsertPreviewRow(project, prNumber, branch, headSHA, newExpiry, domain, isForkPR, headRepo, headCloneURL)
 	if err != nil {
 		mu.Unlock()
 		return nil, err
 	}
+
+	// v019-R4-H1 fix (Option A — Vercel approval-before-build): for
+	// fork PRs that aren't yet approved for the current head SHA, do
+	// NOT spawn the build goroutine. The fork's code stays unread and
+	// unrun until admin clicks Approve. Status moves to
+	// "awaiting_approval" so the UI surfaces the gate clearly.
+	//
+	// Force-push case: upsertPreviewRow's rebuild path resets Approved
+	// when head.sha changes (R4-H3). So even a previously-approved
+	// fork bounces back here for re-approval after a force-push.
+	needsApproval := isForkPR && !preview.Approved
+	if needsApproval {
+		// v019-R5-M1: write status=awaiting_approval BEFORE
+		// releasing the per-PR lock so ApprovePreview can't see
+		// the transient status=pending.
+		ps.db.Model(&PreviewDeployment{}).
+			Where("id = ? AND generation = ?", preview.ID, preview.Generation).
+			Update("status", "awaiting_approval")
+		preview.Status = "awaiting_approval"
+
+		// v019-R9-M1 + R9-M2: tear down the revoked host UNDER the
+		// per-PR lock, BEFORE the drain. Strict gate: URL must stop
+		// resolving the moment we transition to awaiting_approval —
+		// not after a 30s drain. Caddy reload is bounded (~1-3s);
+		// holding the lock through it blocks ApprovePreview /
+		// RevokePreview / next CreatePreview for this PR briefly,
+		// other PRs unaffected.
+		//
+		// Only clear DB host_id on DeleteHost SUCCESS — failure
+		// preserves the reference so admin can retry via revoke.
+		if revokedHostID > 0 {
+			if err := ps.coreAPI.DeleteHost(revokedHostID); err != nil {
+				ps.logger.Warn("force-push: DeleteHost failed; host_id retained for retry",
+					"preview_id", preview.ID, "host_id", revokedHostID, "err", err)
+			} else {
+				ps.db.Model(&PreviewDeployment{}).
+					Where("id = ? AND host_id = ?", preview.ID, revokedHostID).
+					Update("host_id", 0)
+				preview.HostID = 0
+				ps.logger.Info("force-push: tore down old approved host",
+					"preview_id", preview.ID, "host_id", revokedHostID)
+			}
+		}
+
+		// v019-R6-H1: drain the old job UNDER the lock too. Release
+		// after drain so spawnPreviewBuild (from a racing Approve)
+		// doesn't see the still-draining job.
+		ps.jobsMu.Lock()
+		oldJob := ps.jobs[preview.ID]
+		ps.jobsMu.Unlock()
+		if oldJob != nil {
+			oldJob.cancel()
+			select {
+			case <-oldJob.done:
+			case <-time.After(30 * time.Second):
+				ps.logger.Warn("previous preview job did not drain in 30s",
+					"preview_id", preview.ID)
+			}
+		}
+		mu.Unlock()
+		ps.logger.Info("fork PR preview awaiting approval (build deferred)",
+			"project", project.Name, "pr", prNumber, "head_repo", headRepo, "head_sha", headSHA)
+		return &preview, nil
+	}
+	// Non-awaiting path (same-repo OR already-approved fork no SHA change):
+	// revokedHostID should be 0 here since approval reset only fires for
+	// fork+SHA-change which routes to needsApproval=true above. Defensive
+	// log if it's not — indicates a logic bug above.
+	if revokedHostID > 0 {
+		ps.logger.Warn("revokedHostID set on non-awaiting path; should not happen",
+			"preview_id", preview.ID, "host_id", revokedHostID)
+	}
+
+	// Same-repo PR or already-approved fork (no SHA change): spawn the
+	// runPreview goroutine immediately.
 
 	// Atomically install a new job placeholder. Whoever installs gets
 	// the previous job back as oldJob and is responsible for cancelling
@@ -214,12 +309,18 @@ func (ps *PreviewService) CreatePreview(projectID uint, prNumber int, branch str
 		}
 	}
 
+	// v019-R11-H1: capture spawn-time gen + headSHA so runPreview
+	// uses these snapshots instead of re-reading from DB. A force-push
+	// webhook between spawn and the DB-read inside runPreview would
+	// otherwise let runPreview build the new (unapproved) SHA.
+	spawnGen := preview.Generation
+	spawnSHA := preview.HeadSHA
 	ps.wg.Add(1)
 	go func() {
 		defer ps.wg.Done()
 		defer close(newJob.done)
 		defer ps.clearJob(preview.ID, newJob)
-		ps.runPreview(jobCtx, preview.ID, project.ID, branch)
+		ps.runPreview(jobCtx, preview.ID, project.ID, branch, spawnGen, spawnSHA)
 	}()
 
 	return &preview, nil
@@ -232,8 +333,16 @@ func (ps *PreviewService) CreatePreview(projectID uint, prNumber int, branch str
 // hold the per-PR lock from previewLock(projectID, prNumber) so port
 // allocation is single-flight for this PR.
 //
-// Returns the resolved preview row + a `created` flag.
-func (ps *PreviewService) upsertPreviewRow(project *Project, prNumber int, branch string, expiry time.Time, wildcardDomain string) (PreviewDeployment, bool, error) {
+// Returns:
+//   - resolved preview row
+//   - `created` flag
+//   - `revokedHostID`: when force-push triggered an approval reset on
+//     a previously-live preview, this is the old HostID. Caller is
+//     responsible for DeleteHosting it (R8-M1: gate semantics demand
+//     the URL stops resolving as soon as the new commit's approval
+//     is pending).
+//   - error
+func (ps *PreviewService) upsertPreviewRow(project *Project, prNumber int, branch, headSHA string, expiry time.Time, wildcardDomain string, isForkPR bool, headRepo, headCloneURL string) (PreviewDeployment, bool, uint, error) {
 	var preview PreviewDeployment
 	err := ps.db.Where("project_id = ? AND pr_number = ?", project.ID, prNumber).First(&preview).Error
 	if err == nil {
@@ -241,22 +350,64 @@ func (ps *PreviewService) upsertPreviewRow(project *Project, prNumber int, branc
 		// keeps serving until runPreview swaps it out. Bump Generation
 		// (R9-H1) so any stale runPreview from the previous trigger
 		// fails its WHERE generation = snapshot writes.
-		if uerr := ps.db.Model(&preview).Updates(map[string]interface{}{
+		// v019-R4-H3: approval persists across rebuilds ONLY if the
+		// head SHA hasn't changed. A force-push (or any new commit)
+		// must require fresh admin review — fork author could have
+		// approved-then-pushed-malicious-code otherwise. Compare
+		// against ApprovedHeadSHA (the SHA admin actually saw).
+		updates := map[string]interface{}{
 			"branch":         branch,
 			"status":         "pending",
 			"expires_at":     expiry,
 			"failure_reason": "",
 			"generation":     gorm.Expr("generation + 1"),
-		}).Error; uerr != nil {
-			return preview, false, fmt.Errorf("update existing preview: %w", uerr)
+			"is_fork_pr":     isForkPR,
+			"head_repo":      headRepo,
+			"head_clone_url": headCloneURL,
+			"head_sha":       headSHA,
+		}
+		approvalReset := false
+		// v019-R8-M1 + R9-M2: revokedHostID is the host the CALLER
+		// should DeleteHost (under lock). DB host_id is NOT cleared
+		// here — only after DeleteHost succeeds (caller's responsi-
+		// bility) so a failed DeleteHost retains the reference for
+		// retry instead of orphaning a Caddy host with no DB pointer.
+		var revokedHostID uint
+		if isForkPR && preview.Approved && headSHA != "" && preview.ApprovedHeadSHA != "" && headSHA != preview.ApprovedHeadSHA {
+			updates["approved"] = false
+			updates["approved_at"] = nil
+			updates["approved_by_user_id"] = 0
+			updates["approved_head_sha"] = ""
+			if preview.HostID > 0 {
+				revokedHostID = preview.HostID
+				// host_id NOT cleared here — see R9-M2 above.
+			}
+			approvalReset = true
+		}
+		oldSHA := preview.ApprovedHeadSHA // capture before zeroing for log
+		if uerr := ps.db.Model(&preview).Updates(updates).Error; uerr != nil {
+			return preview, false, 0, fmt.Errorf("update existing preview: %w", uerr)
 		}
 		preview.Branch = branch
 		preview.Status = "pending"
 		preview.Generation++
-		return preview, false, nil
+		preview.IsForkPR = isForkPR
+		preview.HeadRepo = headRepo
+		preview.HeadCloneURL = headCloneURL
+		preview.HeadSHA = headSHA
+		if approvalReset {
+			preview.Approved = false
+			preview.ApprovedAt = nil
+			preview.ApprovedByUserID = 0
+			preview.ApprovedHeadSHA = ""
+			ps.logger.Info("fork PR approval reset on force-push",
+				"preview_id", preview.ID, "old_sha", oldSHA, "new_sha", headSHA,
+				"revoked_host_id", revokedHostID)
+		}
+		return preview, false, revokedHostID, nil
 	}
 	if err != gorm.ErrRecordNotFound {
-		return preview, false, fmt.Errorf("lookup existing preview: %w", err)
+		return preview, false, 0, fmt.Errorf("lookup existing preview: %w", err)
 	}
 
 	// Fresh-create path. R8-M1 fix: wrap Create + allocate + backfill in
@@ -268,13 +419,20 @@ func (ps *PreviewService) upsertPreviewRow(project *Project, prNumber int, branc
 	// sees uncommitted siblings and the rollback on failure releases
 	// the port for retry.
 	preview = PreviewDeployment{
-		ProjectID:  project.ID,
-		PRNumber:   prNumber,
-		Branch:     branch,
-		Status:     "pending",
-		ExpiresAt:  expiry,
-		Slot:       -1,
-		Generation: 1, // first deploy is generation 1; rebuild path will bump.
+		ProjectID:    project.ID,
+		PRNumber:     prNumber,
+		Branch:       branch,
+		Status:       "pending",
+		ExpiresAt:    expiry,
+		Slot:         -1,
+		Generation:   1, // first deploy is generation 1; rebuild path will bump.
+		IsForkPR:     isForkPR,
+		HeadRepo:     headRepo,
+		HeadCloneURL: headCloneURL,
+		HeadSHA:      headSHA,
+		// Approved stays false on create — admin must explicitly
+		// approve fork PRs. Same-repo PRs (isForkPR=false) skip the
+		// approval gate entirely in runPreview.
 	}
 	var raceFallback *PreviewDeployment
 	txErr := ps.db.Transaction(func(tx *gorm.DB) error {
@@ -316,28 +474,58 @@ func (ps *PreviewService) upsertPreviewRow(project *Project, prNumber int, branc
 		return nil
 	})
 	if txErr != nil {
-		return preview, false, txErr
+		return preview, false, 0, txErr
 	}
 
 	if raceFallback != nil {
 		ps.logger.Info("preview row created by concurrent webhook; updating",
 			"project", project.Name, "pr", prNumber)
-		if uerr := ps.db.Model(raceFallback).Updates(map[string]interface{}{
+		// v019-R4-H3 + R8-M1: same approval-reset-on-SHA-change
+		// logic as the rebuild path above. Also tear down the
+		// host on reset (return revokedHostID for caller to delete).
+		updates := map[string]interface{}{
 			"branch":         branch,
 			"status":         "pending",
 			"expires_at":     expiry,
 			"failure_reason": "",
 			"generation":     gorm.Expr("generation + 1"),
-		}).Error; uerr != nil {
-			return *raceFallback, false, fmt.Errorf("update existing preview after race: %w", uerr)
+			"is_fork_pr":     isForkPR,
+			"head_repo":      headRepo,
+			"head_clone_url": headCloneURL,
+			"head_sha":       headSHA,
+		}
+		approvalReset := false
+		var revokedHostID uint // R9-M2: host_id NOT cleared in DB; caller does post-DeleteHost
+		if isForkPR && raceFallback.Approved && headSHA != "" && raceFallback.ApprovedHeadSHA != "" && headSHA != raceFallback.ApprovedHeadSHA {
+			updates["approved"] = false
+			updates["approved_at"] = nil
+			updates["approved_by_user_id"] = 0
+			updates["approved_head_sha"] = ""
+			if raceFallback.HostID > 0 {
+				revokedHostID = raceFallback.HostID
+			}
+			approvalReset = true
+		}
+		if uerr := ps.db.Model(raceFallback).Updates(updates).Error; uerr != nil {
+			return *raceFallback, false, 0, fmt.Errorf("update existing preview after race: %w", uerr)
 		}
 		raceFallback.Branch = branch
 		raceFallback.Status = "pending"
 		raceFallback.Generation++
-		return *raceFallback, false, nil
+		raceFallback.IsForkPR = isForkPR
+		raceFallback.HeadRepo = headRepo
+		raceFallback.HeadCloneURL = headCloneURL
+		raceFallback.HeadSHA = headSHA
+		if approvalReset {
+			raceFallback.Approved = false
+			raceFallback.ApprovedAt = nil
+			raceFallback.ApprovedByUserID = 0
+			raceFallback.ApprovedHeadSHA = ""
+		}
+		return *raceFallback, false, revokedHostID, nil
 	}
 
-	return preview, true, nil
+	return preview, true, 0, nil
 }
 
 // clearJob removes the job from the registry iff it still matches — so a
@@ -392,7 +580,17 @@ func slotName(previewID uint, slot int) string {
 // (image / container / host) so a retry (PR `synchronize` event) can
 // start fresh. The preview DB row itself is NOT deleted on failure —
 // the UI uses it to surface the error to the admin.
-func (ps *PreviewService) runPreview(jobCtx context.Context, previewID, projectID uint, branch string) {
+// runPreview executes the preview build pipeline. expectedGen and
+// expectedSHA are SNAPSHOT values captured by the spawning caller —
+// runPreview uses them as the authoritative source of truth instead
+// of re-reading from DB, which would race with a concurrent webhook
+// that bumped generation/head_sha between spawn and DB-read
+// (security review v0.19 R11-H1).
+//
+// expectedGen=0 → spawn-time gen unknown (legacy callers); falls
+// back to reading gen from DB. expectedSHA="" → fall back to
+// branch-HEAD clone.
+func (ps *PreviewService) runPreview(jobCtx context.Context, previewID, projectID uint, branch string, expectedGen int, expectedSHA string) {
 	// Per-job deadline on top of the service-wide root context. 15 min is
 	// generous for most projects but bounded so a stuck build doesn't hold
 	// the job slot forever.
@@ -406,12 +604,30 @@ func (ps *PreviewService) runPreview(jobCtx context.Context, previewID, projectI
 		ps.logger.Info("runPreview: preview row gone, exiting", "id", previewID)
 		return
 	}
-	// R9-H1/H2: snapshot generation. Every DB write below is gated on
-	// `WHERE generation = gen`. A subsequent CreatePreview rebuild or
-	// DeletePreview will bump generation, causing all our writes to
-	// fail RowsAffected==0 — at which point we tear down any external
-	// resources we created and exit clean.
-	gen := preview.Generation
+	// R11-H1: trust the spawn-time snapshot over the DB read. If a
+	// concurrent webhook bumped generation between our spawn and our
+	// First() read, the DB shows the new gen — but we should still
+	// build the OLD (approved-as-of-spawn) commit. Use expectedGen
+	// for fence checks and expectedSHA for the clone target. Cancel
+	// signal will stop us promptly anyway; this guarantee is for
+	// the window between bump and cancel propagation.
+	gen := expectedGen
+	if gen == 0 {
+		// Legacy caller / paranoia fallback.
+		gen = preview.Generation
+	} else if preview.Generation != gen {
+		// DB already moved on (force-push delivered between spawn and
+		// our DB-read). Cancellation is in flight; exit before any
+		// external resources are created.
+		ps.logger.Info("runPreview: generation advanced before first DB read; aborting",
+			"id", previewID, "spawn_gen", gen, "db_gen", preview.Generation)
+		return
+	}
+	// Pin HeadSHA to the spawn-time value. preview.HeadSHA from DB
+	// could be a NEWER (force-pushed, unapproved) SHA.
+	if expectedSHA != "" {
+		preview.HeadSHA = expectedSHA
+	}
 
 	project, err := ps.svc.GetProject(projectID)
 	if err != nil {
@@ -451,8 +667,13 @@ func (ps *PreviewService) runPreview(jobCtx context.Context, previewID, projectI
 	// R8-M2: surface conversion errors instead of silently falling back
 	// to the SSH URL (which would clone-fail without a deploy key).
 	cloneURL := project.GitURL
+	// v0.19: fork PR clones come from the FORK's clone_url, not the
+	// project's base GitURL — head.ref only exists in the fork's repo.
+	if preview.IsForkPR && preview.HeadCloneURL != "" {
+		cloneURL = preview.HeadCloneURL
+	}
 	if (authMethod == "github_app" || authMethod == "github_oauth") && httpsToken != "" {
-		converted, cerr := ConvertSSHToCleanHTTPS(project.GitURL)
+		converted, cerr := ConvertSSHToCleanHTTPS(cloneURL)
 		if cerr != nil {
 			ps.markFailed(previewID, gen, fmt.Sprintf("convert git URL to HTTPS for token auth: %v", cerr))
 			return
@@ -460,13 +681,28 @@ func (ps *PreviewService) runPreview(jobCtx context.Context, previewID, projectI
 		cloneURL = converted
 		deployKey = "" // SSH key not needed on the HTTPS path
 	}
-	// H3/R6-H1 fix: pass the clean URL + token separately. CloneToDir
-	// delivers the token via the GIT_CONFIG_COUNT env-var ladder
-	// (invisible to `ps`) scoped to the requesting origin — so the
-	// token never lands in argv and cannot leak on redirect.
-	if err := ps.svc.git.CloneToDir(ctx, cloneURL, branch, deployKey, httpsToken, srcDir, logWriter); err != nil {
-		ps.markFailed(previewID, gen, fmt.Sprintf("git clone: %v", err))
-		return
+	// v019-R10-H1 fix: when we know the exact head SHA from the
+	// webhook, fetch THAT commit specifically — not whatever the
+	// branch HEAD is at clone-execution time. Without this, a fork
+	// author who force-pushes between admin approval and our git
+	// clone gets their new (potentially malicious) code into the
+	// build despite the approval gate. CloneAtSHA uses
+	// `git fetch --depth 1 <url> <sha>` + `git checkout FETCH_HEAD`
+	// + `git rev-parse HEAD` verification, so the only commit that
+	// can run is the one the webhook payload identified.
+	//
+	// Falls back to branch-HEAD CloneToDir when HeadSHA is empty
+	// (legacy rows from before v0.19; no webhook-provided SHA).
+	if preview.HeadSHA != "" {
+		if err := ps.svc.git.CloneAtSHA(ctx, cloneURL, preview.HeadSHA, deployKey, httpsToken, srcDir, logWriter); err != nil {
+			ps.markFailed(previewID, gen, fmt.Sprintf("git clone @ %s: %v", preview.HeadSHA, err))
+			return
+		}
+	} else {
+		if err := ps.svc.git.CloneToDir(ctx, cloneURL, branch, deployKey, httpsToken, srcDir, logWriter); err != nil {
+			ps.markFailed(previewID, gen, fmt.Sprintf("git clone: %v", err))
+			return
+		}
 	}
 	if ctx.Err() != nil {
 		return // cancelled mid-pipeline
@@ -498,7 +734,21 @@ func (ps *PreviewService) runPreview(jobCtx context.Context, previewID, projectI
 		return
 	}
 
+	// v0.19: filter Secret-marked env vars when deploying a fork PR.
+	// EnvVar.Secret == true → never sent to fork code (e.g. API
+	// keys, signing secrets). Same-repo PRs get the full set
+	// because fork-author code can't reach them.
 	envVars := project.EnvVarList
+	if preview.IsForkPR {
+		filtered := envVars[:0:0]
+		for _, ev := range envVars {
+			if ev.Secret {
+				continue
+			}
+			filtered = append(filtered, ev)
+		}
+		envVars = filtered
+	}
 	envVars = append(envVars,
 		EnvVar{Key: "WEBCASA_PREVIEW", Value: "1"},
 		EnvVar{Key: "WEBCASA_PREVIEW_PR", Value: fmt.Sprintf("%d", preview.PRNumber)},
@@ -554,11 +804,44 @@ func (ps *PreviewService) runPreview(jobCtx context.Context, previewID, projectI
 		return
 	}
 
-	// Create the host on first run, or update existing host's upstream to
-	// point at the new slot's port. Old slot (if any) keeps serving
-	// until this call returns; so failed upstream update leaves the old
-	// version live.
-	if preview.HostID == 0 {
+	// v0.19: gate Caddy host creation for unapproved fork PRs. The
+	// container starts and the build verifies the fork's code is
+	// well-formed, but the public URL stays unwired until an admin
+	// approves via POST /previews/:id/approve.
+	//
+	// v019-R7-H1 fix: NO per-PR lock here. The R3-H1 attempt to take
+	// the lock created a deadlock — runPreview holding it while
+	// CreatePreviewWithFork's drain waits for runPreview to exit
+	// (which runPreview can't do without re-acquiring the lock).
+	// Instead, rely on CAS-style conditional UPDATEs:
+	//
+	//   - host_id write WHERE generation=gen [AND approved=true if fork]
+	//   - on RowsAffected==0 we DeleteHost the orphan we just created
+	//
+	// Race scenarios handled:
+	//   1. RevokePreview commits approved=false between our CreateHost
+	//      and our write → write fails → DeleteHost. ✓
+	//   2. ApprovePreview's createApprovedHost runs concurrently →
+	//      first write wins; loser's WHERE host_id=0 in createApproved-
+	//      Host fails → DeleteHost. ✓
+	//   3. Generation advanced (concurrent rebuild) → write fails →
+	//      DeleteHost (already covered since v0.14). ✓
+	//
+	// Same-repo PRs (IsForkPR=false) skip the approval re-read since
+	// they're never gated.
+	if preview.IsForkPR {
+		var fresh PreviewDeployment
+		if err := ps.db.Select("approved", "host_id").First(&fresh, previewID).Error; err == nil {
+			preview.Approved = fresh.Approved
+			preview.HostID = fresh.HostID
+		}
+	}
+	skipHostForFork := preview.IsForkPR && !preview.Approved
+	if skipHostForFork {
+		ps.logger.Info("preview built but host gated pending fork-PR approval",
+			"preview_id", previewID, "head_repo", preview.HeadRepo)
+	} else if preview.HostID == 0 {
+		// Create the host on first run.
 		hostID, err := ps.coreAPI.CreateHost(pluginpkg.CreateHostRequest{
 			Domain:       preview.Domain,
 			HostType:     "proxy",
@@ -573,15 +856,19 @@ func (ps *PreviewService) runPreview(jobCtx context.Context, previewID, projectI
 			ps.markFailed(previewID, gen, fmt.Sprintf("create host: %v", err))
 			return
 		}
-		// R9-H1: write host_id under generation guard. If our generation
-		// is stale, the host we just created is an orphan — undo it
-		// rather than leak a Caddy host pointing at a soon-to-be-killed
-		// container.
-		hres := ps.db.Model(&PreviewDeployment{}).
-			Where("id = ? AND generation = ?", previewID, gen).
-			Update("host_id", hostID)
+		// CAS-style write: WHERE generation=gen AND host_id=0
+		// [AND approved=true if fork]. Defends against:
+		//   - stale generation (concurrent rebuild)
+		//   - revoke-during-create (fork)
+		//   - double-create from ApprovePreview's createApprovedHost
+		hostQuery := ps.db.Model(&PreviewDeployment{}).
+			Where("id = ? AND generation = ? AND host_id = 0", previewID, gen)
+		if preview.IsForkPR {
+			hostQuery = hostQuery.Where("approved = ?", true)
+		}
+		hres := hostQuery.Update("host_id", hostID)
 		if hres.Error != nil || hres.RowsAffected == 0 {
-			ps.logger.Warn("host_id write failed (stale generation); rolling back created host",
+			ps.logger.Warn("host_id write failed (stale gen / revoked / raced); rolling back created host",
 				"id", previewID, "gen", gen, "host_id", hostID, "err", hres.Error)
 			_ = ps.coreAPI.DeleteHost(hostID)
 			ps.svc.docker.StopAndRemove(nextContainer)
@@ -589,6 +876,9 @@ func (ps *PreviewService) runPreview(jobCtx context.Context, previewID, projectI
 		}
 		preview.HostID = hostID
 	} else {
+		// Update existing host's upstream to point at the new slot's port.
+		// Old slot (if any) keeps serving until this call returns; failed
+		// upstream update leaves the old version live.
 		if err := ps.coreAPI.UpdateHostUpstream(preview.HostID, fmt.Sprintf("localhost:%d", nextPort)); err != nil {
 			ps.svc.docker.StopAndRemove(nextContainer)
 			ps.markFailed(previewID, gen, fmt.Sprintf("update host upstream: %v", err))
@@ -636,9 +926,44 @@ func (ps *PreviewService) runPreview(jobCtx context.Context, previewID, projectI
 		"project", project.Name, "pr", preview.PRNumber,
 		"domain", preview.Domain, "port", nextPort, "slot", nextSlot)
 
+	// v019-R2-H1 + R7-H1: post-finalize approval reconciliation.
+	// LOCK-FREE — relies on the same conditional UPDATEs createApproved-
+	// Host uses (WHERE host_id=0 AND approved=true). If the gate-
+	// region re-read missed an ApprovePreview that landed during the
+	// build, we createApprovedHost here. If we race ApprovePreview's
+	// own createApprovedHost call, the loser's WHERE host_id=0 fails
+	// and rolls back its CreateHost.
+	//
+	// (R4-H1 Option A makes this branch effectively unreachable —
+	// runPreview only runs after approval. Kept as defense in depth
+	// in case any future refactor revives the unapproved-but-running
+	// state.)
+	if skipHostForFork {
+		var fresh PreviewDeployment
+		if err := ps.db.First(&fresh, previewID).Error; err == nil &&
+			fresh.IsForkPR && fresh.Approved && fresh.HostID == 0 {
+			fresh.Port = nextPort
+			if err := ps.createApprovedHost(&fresh); err != nil {
+				ps.logger.Warn("post-finalize fork host create failed; admin can re-approve to retry",
+					"preview_id", previewID, "err", err)
+			} else {
+				preview.HostID = fresh.HostID
+			}
+		}
+	}
+
 	// B6: post / update the PR comment with the live URL. Best-effort —
 	// failures don't affect the deploy status (already committed above).
-	ps.postOrUpdatePRComment(&preview, project)
+	//
+	// v019-R1-4 fix: skip when HostID==0 (unapproved fork PR). The
+	// comment text promises a live URL; posting it before approval
+	// would mislead the fork author. ApprovePreview will trigger a
+	// re-post path implicitly: the next webhook (synchronize) sees
+	// HostID populated and posts. For first-approval, admin can
+	// manually re-trigger or rely on next push to update the comment.
+	if preview.HostID > 0 {
+		ps.postOrUpdatePRComment(&preview, project)
+	}
 }
 
 // setStatus updates the preview row's status atomically and returns false
@@ -963,6 +1288,259 @@ func (ps *PreviewService) CleanupExpired() int {
 		}
 	}
 	return count
+}
+
+// ApprovePreview (v0.19+) marks a fork-PR preview as approved by an
+// admin and creates the Caddy host so the public URL becomes
+// reachable. No-op for non-fork previews (they bypass the gate).
+//
+// Caller must verify the user is an admin (handler enforces).
+// Holds the per-PR lock so we don't race a concurrent rebuild's
+// runPreview which is also conditionally creating the host.
+func (ps *PreviewService) ApprovePreview(id uint, approverUserID uint) error {
+	var preview PreviewDeployment
+	if err := ps.db.First(&preview, id).Error; err != nil {
+		return fmt.Errorf("preview not found: %w", err)
+	}
+	if !preview.IsForkPR {
+		// No gate to lift on same-repo previews; report success
+		// idempotently.
+		return nil
+	}
+	mu := ps.previewLock(preview.ProjectID, preview.PRNumber)
+	mu.Lock()
+	defer mu.Unlock()
+
+	// Re-read under the lock — concurrent rebuild may have changed
+	// state. Approval flips a binary field; rebuilds preserve it.
+	if err := ps.db.First(&preview, id).Error; err != nil {
+		return fmt.Errorf("re-read preview: %w", err)
+	}
+	// v019-R1-3 fix: idempotency check must verify BOTH approved AND
+	// host_id non-zero. Otherwise a previous createApprovedHost
+	// failure would have persisted approved=true with host_id=0;
+	// admin clicking approve again would early-return without
+	// retrying the host create.
+	if preview.Approved && preview.HostID > 0 {
+		return nil // fully approved AND wired up — idempotent
+	}
+
+	// Persist approval (idempotent if already true).
+	if !preview.Approved {
+		now := time.Now()
+		res := ps.db.Model(&PreviewDeployment{}).
+			Where("id = ?", id).
+			Updates(map[string]interface{}{
+				"approved":            true,
+				"approved_at":         now,
+				"approved_by_user_id": approverUserID,
+				// v019-R4-H3: record the SHA admin actually approved.
+				// upsertPreviewRow's rebuild path resets approved if a
+				// future webhook brings a different head.sha — fork
+				// author can't approve-then-push-malicious-code.
+				"approved_head_sha": preview.HeadSHA,
+			})
+		if res.Error != nil {
+			return fmt.Errorf("mark approved: %w", res.Error)
+		}
+		preview.Approved = true
+		preview.ApprovedAt = &now
+		preview.ApprovedByUserID = approverUserID
+		preview.ApprovedHeadSHA = preview.HeadSHA
+	}
+
+	// v019-R4-H1 Option A: ApprovePreview now triggers the build
+	// itself when the row is in "awaiting_approval" (the new state
+	// CreatePreviewWithFork sets for unapproved fork PRs). The build
+	// goroutine clones, builds, runs, AND creates the host — so on
+	// successful approve+build, no separate createApprovedHost call
+	// is needed.
+	//
+	// Three branches:
+	//   awaiting_approval → spawn runPreview (clean build from scratch)
+	//   running + HostID==0 → createApprovedHost (legacy v0.19-pre-R4-H1
+	//     state — build done, host missing. Shouldn't happen with
+	//     R4-H1 but kept as defense in depth for any prior rows.)
+	//   else → nothing to do (host already up, or build still in
+	//     progress and will pick up Approved on re-read)
+	switch {
+	case preview.Status == "awaiting_approval":
+		ps.spawnPreviewBuild(&preview)
+		ps.logger.Info("preview approved; build kicked off",
+			"preview_id", id, "approver", approverUserID, "head_repo", preview.HeadRepo)
+	case preview.Status == "running" && preview.HostID == 0:
+		if err := ps.createApprovedHost(&preview); err != nil {
+			return fmt.Errorf("approval recorded but host create failed: %w", err)
+		}
+		if project, err := ps.svc.GetProject(preview.ProjectID); err == nil {
+			ps.postOrUpdatePRComment(&preview, project)
+		}
+		ps.logger.Info("preview approved (legacy build-already-done path)",
+			"preview_id", id, "approver", approverUserID, "head_repo", preview.HeadRepo)
+	default:
+		ps.logger.Info("preview approved (no build action needed)",
+			"preview_id", id, "approver", approverUserID, "status", preview.Status)
+	}
+	return nil
+}
+
+// spawnPreviewBuild registers a runPreview goroutine for a preview
+// whose build was deferred (fork PR awaiting approval). Caller must
+// hold the per-PR lock OR be confident no concurrent CreatePreview
+// is racing — typically called from ApprovePreview which holds the
+// lock. Mirrors the goroutine-spawn block at the end of
+// CreatePreviewWithFork.
+func (ps *PreviewService) spawnPreviewBuild(preview *PreviewDeployment) {
+	jobCtx, jobCancel := context.WithCancel(ps.rootCtx)
+	newJob := &previewJob{cancel: jobCancel, done: make(chan struct{})}
+	ps.jobsMu.Lock()
+	oldJob := ps.jobs[preview.ID]
+	ps.jobs[preview.ID] = newJob
+	ps.jobsMu.Unlock()
+	if oldJob != nil {
+		// Should be drained already (CreatePreviewWithFork drained it
+		// on the awaiting-approval path). Defensive: cancel + wait
+		// briefly.
+		oldJob.cancel()
+		select {
+		case <-oldJob.done:
+		case <-time.After(5 * time.Second):
+			ps.logger.Warn("approve: stale job did not drain in 5s; proceeding",
+				"preview_id", preview.ID)
+		}
+	}
+	// Reset status to pending so runPreview's setStatus("building")
+	// passes the gen guard.
+	ps.db.Model(&PreviewDeployment{}).
+		Where("id = ?", preview.ID).
+		Update("status", "pending")
+	previewID := preview.ID
+	projectID := preview.ProjectID
+	branch := preview.Branch
+	// v019-R11-H1: pin spawn-time gen + headSHA so runPreview uses
+	// the approved snapshot even if a force-push webhook lands
+	// before runPreview's first DB read.
+	spawnGen := preview.Generation
+	spawnSHA := preview.HeadSHA
+	ps.wg.Add(1)
+	go func() {
+		defer ps.wg.Done()
+		defer close(newJob.done)
+		defer ps.clearJob(previewID, newJob)
+		ps.runPreview(jobCtx, previewID, projectID, branch, spawnGen, spawnSHA)
+	}()
+}
+
+// RevokePreview (v0.19+) clears approval and tears down the Caddy
+// host. Container keeps running so admin can inspect it; rebuilding
+// stays gated until next approval.
+func (ps *PreviewService) RevokePreview(id uint) error {
+	var preview PreviewDeployment
+	if err := ps.db.First(&preview, id).Error; err != nil {
+		return fmt.Errorf("preview not found: %w", err)
+	}
+	if !preview.IsForkPR {
+		return fmt.Errorf("revoke is only meaningful for fork PR previews")
+	}
+	mu := ps.previewLock(preview.ProjectID, preview.PRNumber)
+	mu.Lock()
+	defer mu.Unlock()
+
+	if err := ps.db.First(&preview, id).Error; err != nil {
+		return fmt.Errorf("re-read preview: %w", err)
+	}
+	// v019-R4-H2 fix: idempotency check must allow retry when a
+	// previous revoke failed at DeleteHost (approved=false but
+	// host_id retained). Without this, the row is stuck — retry
+	// would early-return and the orphan host stays public.
+	if !preview.Approved && preview.HostID == 0 {
+		return nil // fully revoked — idempotent
+	}
+
+	// Tear down the host first so the URL stops resolving — then
+	// clear the approval flag. Container intentionally kept alive
+	// for inspection; admin can DeletePreview to fully reclaim.
+	//
+	// v019-R2-H3 fix: if DeleteHost fails, KEEP host_id on the row
+	// so an operator can retry (re-revoke) and we don't orphan a
+	// Caddy host that's still serving traffic but no longer tracked
+	// in DB. Approval flag still flips so the UI shows "not
+	// approved" — but host_id stays until DeleteHost succeeds.
+	hostCleared := true
+	if preview.HostID > 0 {
+		if err := ps.coreAPI.DeleteHost(preview.HostID); err != nil {
+			ps.logger.Warn("revoke: host delete failed; keeping host_id for retry",
+				"host_id", preview.HostID, "err", err)
+			hostCleared = false
+		}
+	}
+	updates := map[string]interface{}{
+		"approved":            false,
+		"approved_at":         nil,
+		"approved_by_user_id": 0,
+		"approved_head_sha":   "",
+	}
+	if hostCleared {
+		updates["host_id"] = 0
+	}
+	if err := ps.db.Model(&PreviewDeployment{}).
+		Where("id = ?", id).
+		Updates(updates).Error; err != nil {
+		return fmt.Errorf("mark revoked: %w", err)
+	}
+	if !hostCleared {
+		// Surface to caller so they know revoke is partial — UI shows
+		// "approval revoked but host still up; retry to clean up".
+		return fmt.Errorf("approval cleared but Caddy host delete failed (host_id=%d retained for retry)", preview.HostID)
+	}
+	ps.logger.Info("preview approval revoked", "preview_id", id, "head_repo", preview.HeadRepo)
+	return nil
+}
+
+// createApprovedHost creates the Caddy host for a freshly-approved
+// fork preview. Updates preview.HostID on success.
+//
+// v019-R7-H1: CAS-style write. Caller may or may not hold the per-PR
+// lock; either way the conditional UPDATE WHERE host_id=0 AND
+// approved=true ensures only one writer wins. Loser DeleteHosts the
+// orphan it just created. This eliminates the deadlock between
+// runPreview (which used to take the lock) and outer callers
+// (CreatePreview/Approve/Revoke draining runPreview).
+func (ps *PreviewService) createApprovedHost(preview *PreviewDeployment) error {
+	hostID, err := ps.coreAPI.CreateHost(pluginpkg.CreateHostRequest{
+		Domain:       preview.Domain,
+		HostType:     "proxy",
+		UpstreamAddr: fmt.Sprintf("localhost:%d", preview.Port),
+		TLSEnabled:   true,
+		HTTPRedirect: true,
+		WebSocket:    true,
+		Compression:  true,
+	})
+	if err != nil {
+		return fmt.Errorf("create host: %w", err)
+	}
+	res := ps.db.Model(&PreviewDeployment{}).
+		Where("id = ? AND host_id = 0 AND approved = ?", preview.ID, true).
+		Update("host_id", hostID)
+	if res.Error != nil {
+		_ = ps.coreAPI.DeleteHost(hostID)
+		return fmt.Errorf("write host_id: %w", res.Error)
+	}
+	if res.RowsAffected == 0 {
+		// Lost the race — another writer set host_id (runPreview's
+		// gate-region create, or another concurrent createApproved-
+		// Host call). DeleteHost the orphan and return success — the
+		// other writer's host is the canonical one.
+		_ = ps.coreAPI.DeleteHost(hostID)
+		// Re-read to surface the winner's host_id to caller.
+		var fresh PreviewDeployment
+		if rerr := ps.db.Select("host_id").First(&fresh, preview.ID).Error; rerr == nil {
+			preview.HostID = fresh.HostID
+		}
+		return nil
+	}
+	preview.HostID = hostID
+	return nil
 }
 
 // ListByProject returns all preview deployments for a project.

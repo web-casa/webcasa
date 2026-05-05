@@ -12,6 +12,7 @@ import (
 	"io"
 	"net/http"
 	"strconv"
+	"strings"
 
 	"github.com/gin-gonic/gin"
 	"github.com/web-casa/webcasa/plugins/deploy/builders"
@@ -61,25 +62,25 @@ func (h *Handler) GetProject(c *gin.Context) {
 // CreateProject POST /api/plugins/deploy/projects
 func (h *Handler) CreateProject(c *gin.Context) {
 	var req struct {
-		Name         string   `json:"name" binding:"required"`
-		Domain       string   `json:"domain"`
-		GitURL       string   `json:"git_url" binding:"required"`
-		GitBranch    string   `json:"git_branch"`
-		DeployKey    string   `json:"deploy_key"`
-		Framework    string   `json:"framework"`
-		BuildCommand string   `json:"build_command"`
-		StartCommand string   `json:"start_command"`
-		InstallCmd   string   `json:"install_command"`
-		Port         int      `json:"port"`
-		AutoDeploy   bool     `json:"auto_deploy"`
-		EnvVars      []EnvVar `json:"env_vars"`
-		DeployMode         string `json:"deploy_mode"` // bare | docker
-		HealthCheckPath    string `json:"health_check_path"`
-		HealthCheckTimeout int    `json:"health_check_timeout"`
-		HealthCheckRetries int    `json:"health_check_retries"`
-		MemoryLimit        int    `json:"memory_limit"`
-		CPULimit           int    `json:"cpu_limit"`
-		BuildTimeout       int    `json:"build_timeout"`
+		Name               string   `json:"name" binding:"required"`
+		Domain             string   `json:"domain"`
+		GitURL             string   `json:"git_url" binding:"required"`
+		GitBranch          string   `json:"git_branch"`
+		DeployKey          string   `json:"deploy_key"`
+		Framework          string   `json:"framework"`
+		BuildCommand       string   `json:"build_command"`
+		StartCommand       string   `json:"start_command"`
+		InstallCmd         string   `json:"install_command"`
+		Port               int      `json:"port"`
+		AutoDeploy         bool     `json:"auto_deploy"`
+		EnvVars            []EnvVar `json:"env_vars"`
+		DeployMode         string   `json:"deploy_mode"` // bare | docker
+		HealthCheckPath    string   `json:"health_check_path"`
+		HealthCheckTimeout int      `json:"health_check_timeout"`
+		HealthCheckRetries int      `json:"health_check_retries"`
+		MemoryLimit        int      `json:"memory_limit"`
+		CPULimit           int      `json:"cpu_limit"`
+		BuildTimeout       int      `json:"build_timeout"`
 		// GitHub App auth fields
 		AuthMethod           string `json:"auth_method"`
 		GitHubAppID          int64  `json:"github_app_id"`
@@ -162,7 +163,8 @@ func (h *Handler) UpdateProject(c *gin.Context) {
 		"github_private_key": true, "github_installation_id": true,
 		"github_oauth_install_id": true, "github_repo_full_name": true,
 		"preview_enabled": true, "preview_expiry": true, "github_token": true,
-		"git_poll_enabled": true, "git_poll_interval_sec": true,
+		"accept_fork_pr_previews": true, // v0.19: per-project fork PR opt-in
+		"git_poll_enabled":        true, "git_poll_interval_sec": true,
 	}
 	filtered := make(map[string]interface{})
 	for k, v := range req {
@@ -461,6 +463,7 @@ func (h *Handler) handlePullRequestWebhook(c *gin.Context, project *Project) {
 				SHA  string `json:"sha"`
 				Repo struct {
 					FullName string `json:"full_name"`
+					CloneURL string `json:"clone_url"` // v0.19: needed for fork PR clone
 				} `json:"repo"`
 			} `json:"head"`
 			Base struct {
@@ -504,22 +507,77 @@ func (h *Handler) handlePullRequestWebhook(c *gin.Context, project *Project) {
 			})
 			return
 		}
-		if head != base {
-			c.JSON(http.StatusOK, gin.H{
-				"ok":      true,
-				"message": "fork PR previews are not supported; only same-repo PRs trigger preview deploys",
-				"head":    head,
-				"base":    base,
-			})
-			return
-		}
 		if payload.PullRequest.Head.Ref == "" {
 			c.JSON(http.StatusBadRequest, gin.H{
 				"error": "pull_request payload missing head.ref",
 			})
 			return
 		}
-		preview, err := h.svc.preview.CreatePreview(project.ID, payload.Number, payload.PullRequest.Head.Ref)
+		// v019-R8-H1: head.sha is REQUIRED. The R4-H3 force-push
+		// approval reset ("if headSHA != preview.ApprovedHeadSHA")
+		// silently no-ops when headSHA is empty — an attacker-
+		// crafted (or malformed-bot) webhook without head.sha could
+		// then push new code under a previously-approved fork PR
+		// and bypass the re-approval fence. Reject empty head.sha
+		// at the boundary.
+		if payload.PullRequest.Head.SHA == "" {
+			c.JSON(http.StatusBadRequest, gin.H{
+				"error": "pull_request payload missing head.sha",
+			})
+			return
+		}
+		// v0.19: fork PR support gated by project setting. Default
+		// (AcceptForkPRPreviews=false) preserves v0.14-v0.18 reject
+		// behaviour. When opted in, the fork PR builds + runs but
+		// the public Caddy host stays gated until admin approves
+		// (Vercel-style — see preview.go runPreview).
+		isForkPR := head != base
+		if isForkPR && !project.AcceptForkPRPreviews {
+			c.JSON(http.StatusOK, gin.H{
+				"ok":      true,
+				"message": "fork PR previews are disabled for this project (enable via accept_fork_pr_previews)",
+				"head":    head,
+				"base":    base,
+			})
+			return
+		}
+		// v019-R1-2 + R4-M1 fix: head.repo.clone_url is webhook-supplied
+		// and will be auth'd against by the GitHub installation token
+		// when AuthMethod is github_app/github_oauth. Reject anything
+		// that isn't a github.com HTTPS URL (R4-M1: explicit https
+		// scheme check — extractHost accepts http too) AND verify the
+		// path matches head.repo.full_name (extra defense against
+		// path injection like /a@github.com/...).
+		if isForkPR {
+			cloneURL := payload.PullRequest.Head.Repo.CloneURL
+			if cloneURL == "" {
+				c.JSON(http.StatusBadRequest, gin.H{
+					"error": "fork PR webhook missing head.repo.clone_url",
+				})
+				return
+			}
+			if !strings.HasPrefix(cloneURL, "https://github.com/") {
+				c.JSON(http.StatusBadRequest, gin.H{
+					"error": "fork PR clone_url must be a github.com HTTPS URL; got " + cloneURL,
+				})
+				return
+			}
+			// Path must match head.repo.full_name (with optional .git
+			// suffix) so a malicious payload can't claim full_name=
+			// "owner/repo" but clone_url=https://github.com/other/repo.
+			expectedPath := "https://github.com/" + head
+			if cloneURL != expectedPath && cloneURL != expectedPath+".git" {
+				c.JSON(http.StatusBadRequest, gin.H{
+					"error": "fork PR clone_url path doesn't match head.repo.full_name",
+				})
+				return
+			}
+		}
+		preview, err := h.svc.preview.CreatePreviewWithFork(
+			project.ID, payload.Number, payload.PullRequest.Head.Ref,
+			payload.PullRequest.Head.SHA,
+			isForkPR, head, payload.PullRequest.Head.Repo.CloneURL,
+		)
 		if err != nil {
 			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 			return
@@ -622,6 +680,45 @@ func (h *Handler) ListPreviews(c *gin.Context) {
 		return
 	}
 	c.JSON(http.StatusOK, gin.H{"previews": previews})
+}
+
+// ApprovePreview POST /api/plugins/deploy/previews/:previewId/approve (admin)
+// v0.19: lifts the gate on a fork-PR preview so its Caddy host is
+// created and the public URL becomes reachable.
+func (h *Handler) ApprovePreview(c *gin.Context) {
+	id, err := parseUintParam(c, "previewId")
+	if err != nil {
+		return
+	}
+	// Admin user ID for audit. Pull from JWT-set context (admin
+	// middleware injected). Falls back to 0 if absent — still records
+	// the approval but without an audit trail user.
+	var userID uint
+	if v, ok := c.Get("user_id"); ok {
+		if u, ok := v.(uint); ok {
+			userID = u
+		}
+	}
+	if err := h.svc.preview.ApprovePreview(id, userID); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"message": "preview approved"})
+}
+
+// RevokePreview POST /api/plugins/deploy/previews/:previewId/revoke (admin)
+// v0.19: clears approval + tears down the Caddy host. Container is
+// kept running for inspection.
+func (h *Handler) RevokePreview(c *gin.Context) {
+	id, err := parseUintParam(c, "previewId")
+	if err != nil {
+		return
+	}
+	if err := h.svc.preview.RevokePreview(id); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"message": "preview approval revoked"})
 }
 
 // DeletePreview DELETE /api/plugins/deploy/previews/:previewId (admin)

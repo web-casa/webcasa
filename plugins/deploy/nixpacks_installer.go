@@ -99,15 +99,25 @@ func InstallNixpacks(ctx context.Context, writeSSE func(string), writeEvent func
 	}
 
 	// Stream stdout + stderr in parallel — installer writes progress
-	// to both. Use one goroutine per stream + a sync.WaitGroup so we
-	// don't lose late lines after Wait().
+	// to both. v019-R2-M1 fix: writeSSE writes directly to a Gin
+	// response writer (not goroutine-safe). Two reader goroutines
+	// would race and could interleave SSE frames mid-line. Funnel
+	// both through a single mutex; cheap (writes are tiny strings,
+	// no contention except at flush boundaries).
+	var writeMu sync.Mutex
+	safeWrite := func(line string) {
+		writeMu.Lock()
+		defer writeMu.Unlock()
+		writeSSE(line)
+	}
+
 	var wg sync.WaitGroup
 	streamReader := func(r io.Reader) {
 		defer wg.Done()
 		sc := bufio.NewScanner(r)
 		// Default 64 KiB buffer is fine for installer logs.
 		for sc.Scan() {
-			writeSSE(sc.Text())
+			safeWrite(sc.Text())
 		}
 	}
 	wg.Add(2)

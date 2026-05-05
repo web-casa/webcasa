@@ -38,17 +38,17 @@ const defaultMaxConcurrentBuilds = 3
 
 // Service is the main deploy service that coordinates Git, Builder, and ProcessManager.
 type Service struct {
-	db       *gorm.DB
-	git      *GitClient
-	builder  *Builder
-	proc     *ProcessManager
-	docker   *DockerRunner
-	health   *HealthChecker
-	ports    *PortAllocator
-	coreAPI  pluginpkg.CoreAPI
-	eventBus *pluginpkg.EventBus
-	logger   *slog.Logger
-	dataDir  string
+	db        *gorm.DB
+	git       *GitClient
+	builder   *Builder
+	proc      *ProcessManager
+	docker    *DockerRunner
+	health    *HealthChecker
+	ports     *PortAllocator
+	coreAPI   pluginpkg.CoreAPI
+	eventBus  *pluginpkg.EventBus
+	logger    *slog.Logger
+	dataDir   string
 	jwtSecret string // for encrypting deploy keys and GitHub App private keys
 
 	// Active log writers for in-progress builds (keyed by project ID)
@@ -116,25 +116,25 @@ func NewService(db *gorm.DB, coreAPI pluginpkg.CoreAPI, eventBus *pluginpkg.Even
 
 	git := NewGitClient(srcDir)
 	svc := &Service{
-		db:         db,
-		git:        git,
-		builder:    NewBuilder(git, dataDir),
-		proc:       NewProcessManager(logDir),
-		docker:     NewDockerRunner(),
-		health:     NewHealthChecker(),
-		ports:      NewPortAllocator(10000),
-		coreAPI:    coreAPI,
-		eventBus:   eventBus,
-		logger:     logger,
-		dataDir:    dataDir,
-		jwtSecret:  jwtSecret,
+		db:            db,
+		git:           git,
+		builder:       NewBuilder(git, dataDir),
+		proc:          NewProcessManager(logDir),
+		docker:        NewDockerRunner(),
+		health:        NewHealthChecker(),
+		ports:         NewPortAllocator(10000),
+		coreAPI:       coreAPI,
+		eventBus:      eventBus,
+		logger:        logger,
+		dataDir:       dataDir,
+		jwtSecret:     jwtSecret,
 		activeLogs:    make(map[uint]*LogWriter),
 		buildInflight: make(map[uint]bool),
 		buildPending:  make(map[uint]bool),
 		buildSem:      make(chan struct{}, parseMaxConcurrentBuilds(logger, coreAPI)),
-		ghApp:       &GitHubAppAuth{},
-		configStore: configStore,
-		cron:        NewCronScheduler(db, logger, dataDir),
+		ghApp:         &GitHubAppAuth{},
+		configStore:   configStore,
+		cron:          NewCronScheduler(db, logger, dataDir),
 	}
 
 	// Initialize GitHub OAuth service.
@@ -725,13 +725,13 @@ func (s *Service) runBuild(project *Project, deployment *Deployment, logWriter *
 				Type:   "deploy.build.failed",
 				Source: "deploy",
 				Payload: map[string]interface{}{
-					"project_id":   project.ID,
-					"project_name": project.Name,
-					"build_num":    deployment.BuildNum,
+					"project_id":    project.ID,
+					"project_name":  project.Name,
+					"build_num":     deployment.BuildNum,
 					"deployment_id": deployment.ID,
-					"framework":    project.Framework,
-					"error_msg":    result.ErrorMsg,
-					"log_tail":     logContent,
+					"framework":     project.Framework,
+					"error_msg":     result.ErrorMsg,
+					"log_tail":      logContent,
 				},
 			})
 		}

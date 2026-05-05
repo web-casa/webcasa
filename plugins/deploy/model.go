@@ -6,52 +6,52 @@ import (
 
 // Project represents a deployable project (Node.js, Go, PHP, etc.).
 type Project struct {
-	ID            uint      `gorm:"primaryKey" json:"id"`
-	Name          string    `gorm:"size:255;not null" json:"name"`
-	Domain        string    `gorm:"size:255" json:"domain"`
-	GitURL        string    `gorm:"size:512" json:"git_url"`
-	GitBranch     string    `gorm:"size:128;default:main" json:"git_branch"`
-	DeployKey     string    `gorm:"type:text" json:"-"` // SSH deploy key (private), encrypted, never exposed
-	Framework     string    `gorm:"size:64" json:"framework"`   // nextjs, nuxt, vite, go, laravel, custom
-	BuildCommand  string    `gorm:"size:512" json:"build_command"`
-	StartCommand  string    `gorm:"size:512" json:"start_command"`
-	InstallCmd    string    `gorm:"size:512" json:"install_command"`
-	Port          int       `gorm:"default:0" json:"port"`    // app listen port (auto-assigned if 0)
-	Status        string    `gorm:"size:32;default:pending" json:"status"` // pending, building, running, stopped, error
-	CurrentBuild  int       `gorm:"default:0" json:"current_build"`
-	AutoDeploy    bool      `gorm:"default:false" json:"auto_deploy"`
-	WebhookToken  string    `gorm:"size:64;uniqueIndex" json:"-"` // never exposed via API
-	HostID        uint      `gorm:"default:0" json:"host_id"` // associated reverse proxy host
-	EnvVars       string    `gorm:"type:text" json:"-"`        // JSON-encoded env vars (encrypted)
-	ErrorMsg      string    `gorm:"type:text" json:"error_msg"`
+	ID           uint   `gorm:"primaryKey" json:"id"`
+	Name         string `gorm:"size:255;not null" json:"name"`
+	Domain       string `gorm:"size:255" json:"domain"`
+	GitURL       string `gorm:"size:512" json:"git_url"`
+	GitBranch    string `gorm:"size:128;default:main" json:"git_branch"`
+	DeployKey    string `gorm:"type:text" json:"-"`       // SSH deploy key (private), encrypted, never exposed
+	Framework    string `gorm:"size:64" json:"framework"` // nextjs, nuxt, vite, go, laravel, custom
+	BuildCommand string `gorm:"size:512" json:"build_command"`
+	StartCommand string `gorm:"size:512" json:"start_command"`
+	InstallCmd   string `gorm:"size:512" json:"install_command"`
+	Port         int    `gorm:"default:0" json:"port"`                 // app listen port (auto-assigned if 0)
+	Status       string `gorm:"size:32;default:pending" json:"status"` // pending, building, running, stopped, error
+	CurrentBuild int    `gorm:"default:0" json:"current_build"`
+	AutoDeploy   bool   `gorm:"default:false" json:"auto_deploy"`
+	WebhookToken string `gorm:"size:64;uniqueIndex" json:"-"` // never exposed via API
+	HostID       uint   `gorm:"default:0" json:"host_id"`     // associated reverse proxy host
+	EnvVars      string `gorm:"type:text" json:"-"`           // JSON-encoded env vars (encrypted)
+	ErrorMsg     string `gorm:"type:text" json:"error_msg"`
 
 	// Build type: auto-detect or explicit builder selection
-	BuildType     string `gorm:"size:32;default:''" json:"build_type"` // dockerfile, nixpacks, paketo, railpack, static, auto, "" (legacy)
+	BuildType string `gorm:"size:32;default:''" json:"build_type"` // dockerfile, nixpacks, paketo, railpack, static, auto, "" (legacy)
 
 	// Deploy mode: bare (systemd) or docker (container)
 	DeployMode    string `gorm:"size:16;default:bare" json:"deploy_mode"` // bare | docker
-	DockerImage   string `gorm:"size:255" json:"docker_image,omitempty"` // e.g. webcasa-project-5:3
+	DockerImage   string `gorm:"size:255" json:"docker_image,omitempty"`  // e.g. webcasa-project-5:3
 	ContainerID   string `gorm:"size:128" json:"container_id,omitempty"`
 	ContainerName string `gorm:"size:128" json:"container_name,omitempty"`
 
 	// Health check settings
 	HealthCheckPath        string `gorm:"size:255;default:/" json:"health_check_path"`
-	HealthCheckTimeout     int    `gorm:"default:30" json:"health_check_timeout"`      // seconds
+	HealthCheckTimeout     int    `gorm:"default:30" json:"health_check_timeout"` // seconds
 	HealthCheckRetries     int    `gorm:"default:3" json:"health_check_retries"`
-	HealthCheckMethod      string `gorm:"size:8;default:GET" json:"health_check_method"`       // GET, HEAD, POST
-	HealthCheckExpectCode  int    `gorm:"default:0" json:"health_check_expect_code"`            // 0 = any 2xx
-	HealthCheckExpectBody  string `gorm:"size:512" json:"health_check_expect_body"`             // response must contain this text
-	HealthCheckStartPeriod int    `gorm:"default:0" json:"health_check_start_period"`           // seconds to wait before first check
+	HealthCheckMethod      string `gorm:"size:8;default:GET" json:"health_check_method"` // GET, HEAD, POST
+	HealthCheckExpectCode  int    `gorm:"default:0" json:"health_check_expect_code"`     // 0 = any 2xx
+	HealthCheckExpectBody  string `gorm:"size:512" json:"health_check_expect_body"`      // response must contain this text
+	HealthCheckStartPeriod int    `gorm:"default:0" json:"health_check_start_period"`    // seconds to wait before first check
 
 	// Resource limits
-	MemoryLimit  int `gorm:"default:0" json:"memory_limit"`  // MB, 0 = unlimited
-	CPULimit     int `gorm:"default:0" json:"cpu_limit"`     // percentage (100 = 1 core), 0 = unlimited
+	MemoryLimit  int `gorm:"default:0" json:"memory_limit"`   // MB, 0 = unlimited
+	CPULimit     int `gorm:"default:0" json:"cpu_limit"`      // percentage (100 = 1 core), 0 = unlimited
 	BuildTimeout int `gorm:"default:30" json:"build_timeout"` // minutes
 
 	// GitHub App authentication fields
 	AuthMethod           string `gorm:"size:32;default:ssh_key" json:"auth_method"` // ssh_key | github_app | github_oauth
 	GitHubAppID          int64  `gorm:"default:0" json:"github_app_id"`
-	GitHubPrivateKey     string `gorm:"type:text" json:"-"`     // encrypted PEM, never exposed
+	GitHubPrivateKey     string `gorm:"type:text" json:"-"` // encrypted PEM, never exposed
 	GitHubInstallationID int64  `gorm:"default:0" json:"github_installation_id"`
 
 	// GitHub OAuth fields (used when auth_method = "github_oauth")
@@ -66,6 +66,17 @@ type Project struct {
 	PreviewExpiry  int    `gorm:"default:7" json:"preview_expiry"` // days
 	GitHubToken    string `gorm:"size:512" json:"-"`               // encrypted, for PR comments
 
+	// Fork PR preview support (v0.19+). When AcceptForkPRPreviews is
+	// true, pull_request webhooks where head.repo != base.repo trigger
+	// a preview build, but the Caddy host (public URL) is NOT created
+	// until an admin explicitly approves the preview via the UI. This
+	// is Vercel-style — build verifies the fork's code is well-formed,
+	// admin gates whether the URL becomes reachable.
+	//
+	// Defaults to false: existing v0.14-v0.18 behaviour (fork PRs
+	// rejected at the webhook handler) preserved on upgrade.
+	AcceptForkPRPreviews bool `gorm:"default:false" json:"accept_fork_pr_previews"`
+
 	// Git polling — periodic `git ls-remote` to detect new commits without
 	// requiring a webhook. Complements (does not replace) AutoDeploy/webhooks;
 	// SingleFlight in Build() ensures concurrent webhook + poll triggers
@@ -75,15 +86,15 @@ type Project struct {
 	LastDeployedCommit string     `gorm:"size:64" json:"last_deployed_commit"`
 	LastPolledAt       *time.Time `json:"last_polled_at,omitempty"`
 
-	CreatedAt     time.Time `json:"created_at"`
-	UpdatedAt     time.Time `json:"updated_at"`
+	CreatedAt time.Time `json:"created_at"`
+	UpdatedAt time.Time `json:"updated_at"`
 
 	// Transient fields (not stored)
 	EnvVarList     []EnvVar `gorm:"-" json:"env_vars,omitempty"`
-	HasDeployKey   bool     `gorm:"-" json:"has_deploy_key"`          // indicates if deploy key is set
-	HasGitHubKey   bool     `gorm:"-" json:"has_github_private_key"`  // indicates if GitHub App key is set
-	HasGitHubToken bool     `gorm:"-" json:"has_github_token"`        // PB-R1-L1: indicates github_token is set (for PR-comment UI placeholder)
-	WebhookURL     string   `gorm:"-" json:"webhook_url,omitempty"`   // populated only for admin detail view
+	HasDeployKey   bool     `gorm:"-" json:"has_deploy_key"`         // indicates if deploy key is set
+	HasGitHubKey   bool     `gorm:"-" json:"has_github_private_key"` // indicates if GitHub App key is set
+	HasGitHubToken bool     `gorm:"-" json:"has_github_token"`       // PB-R1-L1: indicates github_token is set (for PR-comment UI placeholder)
+	WebhookURL     string   `gorm:"-" json:"webhook_url,omitempty"`  // populated only for admin detail view
 }
 
 func (Project) TableName() string {
@@ -91,9 +102,17 @@ func (Project) TableName() string {
 }
 
 // EnvVar is a key-value pair for project environment variables.
+//
+// Secret marks the var as sensitive — when set, the var is NEVER
+// passed to fork-PR preview builds even if the fork is approved.
+// Use for API keys / DB passwords / signing secrets that fork PR
+// authors must not be able to read by introducing logging code.
+// Non-secret env vars (default) flow to all build paths including
+// approved fork previews. v0.19+.
 type EnvVar struct {
-	Key   string `json:"key"`
-	Value string `json:"value"`
+	Key    string `json:"key"`
+	Value  string `json:"value"`
+	Secret bool   `json:"secret,omitempty"`
 }
 
 // Deployment records one build/deploy attempt.
@@ -104,9 +123,9 @@ type Deployment struct {
 	GitCommit       string    `gorm:"size:64" json:"git_commit"`
 	Status          string    `gorm:"size:32;default:building" json:"status"` // building, success, failed, rolled_back
 	LogFile         string    `gorm:"size:512" json:"log_file"`
-	Duration        int       `json:"duration"` // seconds
+	Duration        int       `json:"duration"`                                    // seconds
 	DiagnosisResult string    `gorm:"type:text" json:"diagnosis_result,omitempty"` // AI diagnosis of build failure
-	ImageTag        string    `gorm:"size:128" json:"image_tag,omitempty"`          // Docker image tag for rollback
+	ImageTag        string    `gorm:"size:128" json:"image_tag,omitempty"`         // Docker image tag for rollback
 	CreatedAt       time.Time `json:"created_at"`
 }
 
@@ -157,14 +176,37 @@ type PreviewDeployment struct {
 	// `WHERE generation = snapshot`. A stale runPreview whose drain
 	// timed out cannot clobber the row state because the row's
 	// generation has advanced. Codex R9-H1/H2 fix.
-	Generation    int       `gorm:"default:0" json:"generation"`
-	HostID uint `gorm:"default:0" json:"host_id"`
+	Generation int  `gorm:"default:0" json:"generation"`
+	HostID     uint `gorm:"default:0" json:"host_id"`
 	// PRCommentID: GitHub issue-comment ID for the bot's "preview ready"
 	// comment. 0 if never posted (no GitHub token, or post failed).
 	// First successful deploy POSTs and stores the ID; subsequent
 	// rebuilds PATCH the same comment so the PR thread doesn't fill
 	// with bot noise on every push (B6, v0.15+).
-	PRCommentID   int64     `gorm:"default:0" json:"pr_comment_id,omitempty"`
+	PRCommentID int64 `gorm:"default:0" json:"pr_comment_id,omitempty"`
+
+	// Fork PR support (v0.19+). IsForkPR is true when head.repo !=
+	// base.repo. HeadRepo + HeadCloneURL identify the fork's source
+	// (clone target). Approved gates Caddy host creation: until an
+	// admin sets it true via POST /previews/:id/approve, the build
+	// runs but the public URL isn't wired up. Revoking approval
+	// (admin POST .../revoke) tears down the host but keeps the
+	// container running for inspection.
+	IsForkPR         bool       `gorm:"default:false" json:"is_fork_pr"`
+	HeadRepo         string     `gorm:"size:255" json:"head_repo,omitempty"`      // e.g. "fork-user/repo"
+	HeadCloneURL     string     `gorm:"size:512" json:"head_clone_url,omitempty"` // e.g. "https://github.com/fork-user/repo"
+	HeadSHA          string     `gorm:"size:64" json:"head_sha,omitempty"`        // commit SHA the build was triggered for
+	Approved         bool       `gorm:"default:false" json:"approved"`
+	ApprovedAt       *time.Time `json:"approved_at,omitempty"`
+	ApprovedByUserID uint       `gorm:"default:0" json:"approved_by_user_id,omitempty"`
+	// ApprovedHeadSHA: the commit SHA that was approved. v019-R4-H3:
+	// approval doesn't auto-extend across force-pushes — when a new
+	// `synchronize` webhook brings a different head.sha, the row's
+	// HeadSHA changes and Approved is reset to false. Admin must
+	// re-approve the new code. Defends against approve-then-push-
+	// malicious-code attacks.
+	ApprovedHeadSHA string `gorm:"size:64" json:"approved_head_sha,omitempty"`
+
 	Status        string    `gorm:"size:16;default:pending" json:"status"` // pending | building | running | failed | cleanup_failed
 	FailureReason string    `gorm:"size:512" json:"failure_reason,omitempty"`
 	CreatedAt     time.Time `json:"created_at"`
@@ -271,8 +313,8 @@ func (ExtraProcess) TableName() string {
 type GitHubInstallation struct {
 	ID               uint      `gorm:"primaryKey" json:"id"`
 	InstallationID   int64     `gorm:"uniqueIndex;not null" json:"installation_id"`
-	AccountLogin     string    `gorm:"size:255" json:"account_login"`       // GitHub org/user name
-	AccountType      string    `gorm:"size:32" json:"account_type"`         // "User" or "Organization"
+	AccountLogin     string    `gorm:"size:255" json:"account_login"` // GitHub org/user name
+	AccountType      string    `gorm:"size:32" json:"account_type"`   // "User" or "Organization"
 	AccountAvatarURL string    `gorm:"size:512" json:"account_avatar_url"`
 	CreatedAt        time.Time `json:"created_at"`
 	UpdatedAt        time.Time `json:"updated_at"`

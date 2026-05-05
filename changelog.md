@@ -6,6 +6,103 @@
 
 ---
 
+## [0.19.0] - 2026-05-06
+
+### Fork PR preview support — Vercel-style approval gate
+
+Per-project opt-in (`accept_fork_pr_previews`, default off — preserves
+v0.14-v0.18 reject behavior). When enabled, `pull_request` webhooks
+where `head.repo != base.repo` are accepted; an admin must explicitly
+approve in the Previews tab before the fork's code is cloned, built,
+or run. Until approval, the panel records the row but does NOT touch
+the fork's code.
+
+#### What ships
+
+- **Schema**:
+  - `Project.AcceptForkPRPreviews` (bool, default false)
+  - `PreviewDeployment.IsForkPR` + `HeadRepo` + `HeadCloneURL` + `HeadSHA`
+  - `PreviewDeployment.Approved` + `ApprovedAt` + `ApprovedByUserID` + `ApprovedHeadSHA`
+  - `EnvVar.Secret` (bool) — secrets NEVER passed to fork PR builds
+- **Backend**:
+  - Webhook handler accepts fork PRs when `AcceptForkPRPreviews=true`;
+    requires `head.sha` non-empty + `clone_url` strictly
+    `https://github.com/<head.repo.full_name>[.git]` (path-equality
+    against the payload's own `full_name`).
+  - `CloneAtSHA` fetches the EXACT approved commit via `git fetch
+    --depth 1 <url> <sha>` + `git checkout FETCH_HEAD` + `git rev-parse
+    HEAD` verification. No `git clone --branch` for previews — the
+    clone is pinned to the approved SHA, not branch HEAD.
+  - `runPreview` filters `Secret` env vars for fork builds, gates
+    Caddy host creation behind approval, uses spawn-time gen + SHA
+    snapshot (not DB-read values) so a force-push between spawn and
+    DB-read can't substitute code.
+  - `POST /previews/:id/approve` — admin-only, kicks off the build
+    (Vercel Option A: no clone/build/run until approved).
+  - `POST /previews/:id/revoke` — admin-only, tears down Caddy host
+    (container kept for inspection).
+  - Force-push: head.sha != ApprovedHeadSHA resets approval AND tears
+    down the old host immediately under the per-PR lock, before the
+    drain — strict gate semantics ("URL down the moment status flips
+    to awaiting_approval").
+- **Frontend**:
+  - Project Webhook tab: per-project "Accept fork PR previews" toggle
+  - Project env vars tab: per-row "secret" Switch (value masked
+    when set)
+  - Previews tab: "fork" badge + "awaiting approval" status badge +
+    Approve / Revoke buttons
+
+#### Security
+
+**12 review rounds** (9 Codex + 1 Claude security-review + 2 Codex
+follow-up) found and fixed **23 findings** (10 H + 9 M + 2 L,
+plus gofmt). Notable highlights:
+
+- **R10-H1** (Claude security-review): `git clone --depth 1 --branch`
+  fetches HEAD-of-branch at clone-execution time — fork author could
+  force-push between admin approval and the build's clone, getting
+  unapproved code into the build with project's non-secret env vars.
+  The Caddy host CAS-gate kept the URL dark, but the container ran
+  the substituted code on the panel host's network. **Fix**: new
+  `CloneAtSHA` pins the clone to the approved SHA via
+  `git fetch <url> <sha>` + `git rev-parse HEAD` verification.
+- **R11-H1**: even after R10-H1, runPreview's first DB-read of
+  `HeadSHA` could see a force-push update committed AFTER goroutine
+  spawn but BEFORE the DB-read — the new (unapproved) SHA would then
+  be used. **Fix**: spawnPreviewBuild + CreatePreviewWithFork capture
+  spawn-time `gen + headSHA` and pass as parameters; runPreview uses
+  these snapshots over DB-read values for the clone target.
+- **R7-H1**: deadlock between runPreview holding the per-PR lock and
+  CreatePreviewWithFork holding the same lock waiting for runPreview
+  to drain. **Fix**: dropped per-PR lock from runPreview; replaced
+  with CAS-style conditional UPDATEs (`WHERE host_id=0 AND generation=
+  gen AND approved=true`) and DeleteHost-orphan rollback on race.
+- **R8-H1**: webhook handler validated `head.ref` non-empty but not
+  `head.sha`; force-push reset silently no-oped when SHA was empty.
+  **Fix**: reject 400 at boundary.
+- **R8-H2**: extractHost stripped `@` everywhere, allowing
+  `https://evil.test/a@github.com/repo` to pass the github.com guard.
+  **Fix**: `net/url.Parse` + `parsed.Hostname()`.
+- **R4-H3**: approval persisted across force-push, letting fork
+  authors approve-then-push-malicious-code. **Fix**:
+  `ApprovedHeadSHA` records the approved SHA; mismatch resets
+  approval AND tears down the host.
+
+#### Operator notes
+
+- Fork PR support is OFF by default per project. Existing deployments
+  see no behavior change.
+- Mark API keys / signing secrets as `secret=true` BEFORE enabling
+  fork PR previews for the project — fork code can read any non-secret
+  env var by adding `console.log(process.env)`.
+- Approval is **per-SHA**, not per-PR: a force-push to an approved
+  fork PR resets approval and tears down the URL until you re-review
+  and re-approve.
+- Revoke at any time → Caddy host removed immediately, container
+  kept for inspection. Delete to fully reclaim.
+
+---
+
 ## [0.18.0] - 2026-05-05
 
 ### Nixpacks installer (UI)
