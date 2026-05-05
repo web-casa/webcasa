@@ -816,21 +816,16 @@ func (ps *PreviewService) DeletePreview(id uint) error {
 
 	// 6. Destructive cleanup. Order: host (so subdomain stops pointing
 	// at a soon-to-die container) → containers (both slots) → image
-	// → on-disk dirs → PR comment (best-effort, doesn't fail teardown).
+	// → on-disk dirs. The PR comment delete intentionally runs LAST,
+	// AFTER the row delete succeeds (PB-R6-L2): if any cleanup step
+	// fails the row is retained as `cleanup_failed` so admin can
+	// retry, and the PR comment must stay intact for a future retry
+	// to be able to clean it up too. Deleting it eagerly would lose
+	// the comment ID forever on a partial-failure path.
 	ctx, cancel := context.WithTimeout(ps.rootCtx, 60*time.Second)
 	defer cancel()
 
 	var errs []string
-
-	// PB-R5-M1: best-effort delete the GitHub PR comment we posted on
-	// first deploy. The comment's wording promises auto-removal on PR
-	// close, so leaving it stale would mislead reviewers into thinking
-	// the preview URL still works. Failures are logged but don't
-	// block teardown — the comment is non-critical and a stale comment
-	// is far less bad than a hung delete.
-	if preview.PRCommentID > 0 {
-		ps.deletePRCommentBestEffort(&preview)
-	}
 
 	if preview.HostID > 0 {
 		if err := ps.coreAPI.DeleteHost(preview.HostID); err != nil {
@@ -889,6 +884,14 @@ func (ps *PreviewService) DeletePreview(id uint) error {
 		ps.logger.Warn("preview row delete skipped (gen advanced under lock — should be impossible)",
 			"id", id, "expected_gen", deleteGen)
 		return fmt.Errorf("preview %d: superseded between cleanup and row delete", id)
+	}
+	// PB-R6-L2: only NOW (after the row is gone) do we remove the PR
+	// comment. If any earlier cleanup step had failed and we'd
+	// returned cleanup_failed, the comment ID would still be on the
+	// row and a retry could pick it up. Deleting comments eagerly
+	// would have leaked them on partial-failure paths.
+	if preview.PRCommentID > 0 {
+		ps.deletePRCommentBestEffort(&preview)
 	}
 	ps.logger.Info("preview deployment deleted", "id", id, "domain", preview.Domain)
 	return nil

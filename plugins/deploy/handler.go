@@ -476,12 +476,28 @@ func (h *Handler) handlePullRequestWebhook(c *gin.Context, project *Project) {
 		// model). Tracked for v0.16+.
 		head := payload.PullRequest.Head.Repo.FullName
 		base := payload.PullRequest.Base.Repo.FullName
-		if head != "" && base != "" && head != base {
+		// PB-R6-L1 defensive: GitHub always populates these on real
+		// pull_request events; missing means the payload is malformed
+		// or a custom client is poking at us. Reject explicitly so the
+		// downstream clone doesn't fall back to head.ref alone.
+		if head == "" || base == "" {
+			c.JSON(http.StatusBadRequest, gin.H{
+				"error": "pull_request payload missing head.repo.full_name or base.repo.full_name",
+			})
+			return
+		}
+		if head != base {
 			c.JSON(http.StatusOK, gin.H{
 				"ok":      true,
 				"message": "fork PR previews are not supported; only same-repo PRs trigger preview deploys",
 				"head":    head,
 				"base":    base,
+			})
+			return
+		}
+		if payload.PullRequest.Head.Ref == "" {
+			c.JSON(http.StatusBadRequest, gin.H{
+				"error": "pull_request payload missing head.ref",
 			})
 			return
 		}
