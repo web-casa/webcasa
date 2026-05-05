@@ -27,10 +27,25 @@ import (
 )
 
 const (
-	runPodmanTestsEnv = "WEBCASA_RUN_PODMAN_TESTS"
-	podmanSocketPath  = "/run/podman/podman.sock"
-	dockerSocketPath  = "/var/run/docker.sock"
+	runPodmanTestsEnv     = "WEBCASA_RUN_PODMAN_TESTS"
+	podmanSocketPath      = "/run/podman/podman.sock"
+	defaultDockerSockPath = "/var/run/docker.sock"
+	// dockerSockOverrideEnv lets CI redirect the symlink-integrity
+	// check to a non-default path. CI containers have a host-mounted
+	// /var/run/docker.sock that can't be replaced (`Device or resource
+	// busy` from `ln -sf`), so the workflow falls back to /run/docker.sock
+	// and exports this env var.
+	dockerSockOverrideEnv = "WEBCASA_DOCKER_SOCKET_PATH"
 )
+
+// dockerSockPath returns the path the symlink-integrity test should
+// check, honoring an env-var override for CI.
+func dockerSockPath() string {
+	if p := os.Getenv(dockerSockOverrideEnv); p != "" {
+		return p
+	}
+	return defaultDockerSockPath
+}
 
 // requirePodmanIntegration skips the test unless the opt-in env var is set.
 // Also fails fast if Podman is expected (env set) but obviously unusable,
@@ -58,9 +73,10 @@ func requirePodmanIntegration(t *testing.T) {
 func TestPodmanSocketCompat(t *testing.T) {
 	requirePodmanIntegration(t)
 
-	client, err := NewClient(dockerSocketPath)
+	sockPath := dockerSockPath()
+	client, err := NewClient(sockPath)
 	if err != nil {
-		t.Fatalf("NewClient(%q): %v", dockerSocketPath, err)
+		t.Fatalf("NewClient(%q): %v", sockPath, err)
 	}
 	defer client.Close()
 
@@ -149,10 +165,11 @@ func TestDockerShimTransparency(t *testing.T) {
 func TestSocketSymlinkIntegrity(t *testing.T) {
 	requirePodmanIntegration(t)
 
-	fi, err := os.Lstat(dockerSocketPath)
+	sockPath := dockerSockPath()
+	fi, err := os.Lstat(sockPath)
 	if err != nil {
 		t.Fatalf("Lstat(%q): %v — install.sh should have created this symlink",
-			dockerSocketPath, err)
+			sockPath, err)
 	}
 
 	if fi.Mode()&os.ModeSymlink == 0 {
@@ -162,21 +179,21 @@ func TestSocketSymlinkIntegrity(t *testing.T) {
 		// apart here; just verify it's a usable socket.
 		if fi.Mode()&os.ModeSocket == 0 {
 			t.Fatalf("%s is neither a symlink nor a socket (mode=%v)",
-				dockerSocketPath, fi.Mode())
+				sockPath, fi.Mode())
 		}
 		t.Logf("note: %s is a real socket, not a symlink — skipping target resolution check",
-			dockerSocketPath)
+			sockPath)
 		return
 	}
 
-	target, err := os.Readlink(dockerSocketPath)
+	target, err := os.Readlink(sockPath)
 	if err != nil {
-		t.Fatalf("Readlink(%q): %v", dockerSocketPath, err)
+		t.Fatalf("Readlink(%q): %v", sockPath, err)
 	}
 	// Resolve relative targets against the symlink's directory.
 	resolved := target
 	if !filepath.IsAbs(target) {
-		resolved = filepath.Join(filepath.Dir(dockerSocketPath), target)
+		resolved = filepath.Join(filepath.Dir(sockPath), target)
 	}
 
 	absResolved, err := filepath.Abs(resolved)
@@ -190,7 +207,7 @@ func TestSocketSymlinkIntegrity(t *testing.T) {
 	expectedSuffix := "podman/podman.sock"
 	if !strings.HasSuffix(absResolved, expectedSuffix) {
 		t.Errorf("%s symlink points at %q, expected path ending in %q",
-			dockerSocketPath, absResolved, expectedSuffix)
+			sockPath, absResolved, expectedSuffix)
 	}
 
 	// And the resolved target must exist as a real socket.

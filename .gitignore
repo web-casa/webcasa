@@ -47,6 +47,7 @@ Thumbs.db
 
 # === AI Tools ===
 .claude/
+.codex/
 .kiro/
 .qwen/
 .cursor/

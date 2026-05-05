@@ -643,10 +643,19 @@ jobs:
       # doesn't have systemd pid 1. `podman system service --time=0`
       # runs the same API server as the socket unit would, bound to
       # the rootful /run/podman/podman.sock path install.sh expects.
+      #
+      # `--storage-driver vfs` is required when running inside a
+      # GitHub Actions container because the runner uses overlayfs as
+      # its rootfs and Podman's default `overlay` driver can't stack
+      # overlay-on-overlay. vfs is slower but the integration tests
+      # don't pull large images, so the cost is negligible. (On real
+      # AlmaLinux hosts that install.sh targets, the storage backend
+      # is xfs/ext4 and overlay works as expected — this override is
+      # CI-environment-only.)
       - name: Start Podman API server
         run: |
           mkdir -p /run/podman
-          podman system service --time=0 unix:///run/podman/podman.sock &
+          podman system service --storage-driver vfs --time=0 unix:///run/podman/podman.sock &
           for i in $(seq 1 20); do
             [ -S /run/podman/podman.sock ] && break
             sleep 0.5
@@ -655,11 +664,25 @@ jobs:
 
       # Mirror install.sh's symlink so TestSocketSymlinkIntegrity and
       # every docker.sock-mount app-store entry works.
-      - name: Symlink /var/run/docker.sock → Podman socket
+      #
+      # /var/run/docker.sock is bind-mounted from the GitHub Actions
+      # runner (the outer Docker that spawned this container), so
+      # `ln -sf` over it returns "Device or resource busy". Fall back
+      # to /run/docker.sock and tell the test to look there via the
+      # WEBCASA_DOCKER_SOCKET_PATH env var.
+      - name: Symlink docker.sock → Podman socket
         run: |
           mkdir -p /var/run
-          ln -sf /run/podman/podman.sock /var/run/docker.sock
-          ls -la /var/run/docker.sock
+          if ln -sf /run/podman/podman.sock /var/run/docker.sock 2>/dev/null; then
+            echo "WEBCASA_DOCKER_SOCKET_PATH=/var/run/docker.sock" >> "$GITHUB_ENV"
+            echo "✅ symlinked /var/run/docker.sock"
+          else
+            ln -sf /run/podman/podman.sock /run/docker.sock
+            echo "WEBCASA_DOCKER_SOCKET_PATH=/run/docker.sock" >> "$GITHUB_ENV"
+            echo "⚠️  /var/run/docker.sock is host-mounted, fell back to /run/docker.sock"
+          fi
+          ls -la "${WEBCASA_DOCKER_SOCKET_PATH:-/var/run/docker.sock}" 2>/dev/null || \
+            ls -la /run/docker.sock
 
       - name: Run Podman integration tests
         env:
