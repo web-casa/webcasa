@@ -468,6 +468,7 @@
         "ip_saved": "IP saved",
         "save_ip_failed": "Failed to save IP",
         "wildcard_saved": "Wildcard preview domain saved",
+        "wildcard_invalid": "Invalid domain. Must be a bare DNS suffix like preview.example.com (no scheme, path, or wildcards)",
         "export_success": "Configuration exported successfully",
         "export_failed": "Failed to export configuration",
         "import_invalid": "Invalid import file",

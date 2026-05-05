@@ -62,13 +62,22 @@ func (ps *PreviewService) postOrUpdatePRComment(preview *PreviewDeployment, proj
 		// PATCH existing comment.
 		url := fmt.Sprintf("https://api.github.com/repos/%s/%s/issues/comments/%d",
 			owner, repo, preview.PRCommentID)
-		if ok := ps.doGitHubRequest(ctx, http.MethodPatch, url, token, payload, nil); ok {
+		status, ok := ps.doGitHubRequestStatus(ctx, http.MethodPatch, url, token, payload, nil)
+		if ok {
 			return
 		}
-		// PATCH failed (likely 404 — comment was deleted manually).
-		// Fall through to POST a fresh one.
-		ps.logger.Info("preview PR comment PATCH failed; posting new one",
-			"preview_id", preview.ID, "old_comment_id", preview.PRCommentID)
+		// PB-R1-M3 fix: only fall through to POST when GitHub clearly
+		// says the comment is gone (404/410). 403/429/5xx mean the
+		// existing comment is fine but the API call failed for other
+		// reasons (rate limit, transient error) — POSTing would
+		// duplicate the comment on the PR.
+		if status != http.StatusNotFound && status != http.StatusGone {
+			ps.logger.Info("preview PR comment PATCH failed; will retry next deploy",
+				"preview_id", preview.ID, "comment_id", preview.PRCommentID, "status", status)
+			return
+		}
+		ps.logger.Info("preview PR comment was deleted; posting fresh one",
+			"preview_id", preview.ID, "old_comment_id", preview.PRCommentID, "status", status)
 	}
 
 	// POST new comment.
@@ -77,7 +86,7 @@ func (ps *PreviewService) postOrUpdatePRComment(preview *PreviewDeployment, proj
 	var resp struct {
 		ID int64 `json:"id"`
 	}
-	if !ps.doGitHubRequest(ctx, http.MethodPost, postURL, token, payload, &resp) {
+	if _, ok := ps.doGitHubRequestStatus(ctx, http.MethodPost, postURL, token, payload, &resp); !ok {
 		return
 	}
 	if resp.ID == 0 {
@@ -94,13 +103,14 @@ func (ps *PreviewService) postOrUpdatePRComment(preview *PreviewDeployment, proj
 	preview.PRCommentID = resp.ID
 }
 
-// doGitHubRequest issues a single API call and JSON-decodes the
-// response into `out` if non-nil. Returns true on 2xx.
-func (ps *PreviewService) doGitHubRequest(ctx context.Context, method, url, token string, payload []byte, out interface{}) bool {
+// doGitHubRequestStatus issues a single API call and JSON-decodes the
+// response into `out` if non-nil. Returns (statusCode, ok); status is
+// 0 when the request couldn't be sent (build / transport error).
+func (ps *PreviewService) doGitHubRequestStatus(ctx context.Context, method, url, token string, payload []byte, out interface{}) (int, bool) {
 	req, err := http.NewRequestWithContext(ctx, method, url, bytes.NewReader(payload))
 	if err != nil {
 		ps.logger.Warn("github request build failed", "method", method, "url", url, "err", err)
-		return false
+		return 0, false
 	}
 	req.Header.Set("Authorization", "Bearer "+token)
 	req.Header.Set("Accept", "application/vnd.github+json")
@@ -111,22 +121,22 @@ func (ps *PreviewService) doGitHubRequest(ctx context.Context, method, url, toke
 	resp, err := client.Do(req)
 	if err != nil {
 		ps.logger.Warn("github request failed", "method", method, "url", url, "err", err)
-		return false
+		return 0, false
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		body, _ := io.ReadAll(io.LimitReader(resp.Body, 512))
 		ps.logger.Warn("github request non-2xx",
 			"method", method, "url", url, "status", resp.StatusCode, "body", string(body))
-		return false
+		return resp.StatusCode, false
 	}
 	if out != nil {
 		if err := json.NewDecoder(resp.Body).Decode(out); err != nil {
 			ps.logger.Warn("github response decode failed", "err", err)
-			return false
+			return resp.StatusCode, false
 		}
 	}
-	return true
+	return resp.StatusCode, true
 }
 
 // parseGitHubOwnerRepo extracts (owner, repo) from common GitHub URL
@@ -135,9 +145,13 @@ func (ps *PreviewService) doGitHubRequest(ctx context.Context, method, url, toke
 // Handles:
 //
 //	https://github.com/owner/repo[.git]
-//	https://github.com/owner/repo[.git]/...
+//	https://github.com/owner/repo[.git]/extra/path  → repo cleaned to "repo"
 //	git@github.com:owner/repo[.git]
 //	ssh://git@github.com[:port]/owner/repo[.git]
+//
+// PB-R1-M4 fix: trim ".git" only from the repo segment, not from any
+// trailing path. Previously a URL like .../owner/repo.git/x would
+// produce repo="repo.git", which broke the subsequent GitHub API call.
 func parseGitHubOwnerRepo(gitURL string) (string, string, bool) {
 	const host = "github.com"
 	var rest string
@@ -164,10 +178,14 @@ func parseGitHubOwnerRepo(gitURL string) (string, string, bool) {
 	default:
 		return "", "", false
 	}
-	rest = strings.TrimSuffix(rest, ".git")
 	parts := strings.SplitN(rest, "/", 3)
 	if len(parts) < 2 || parts[0] == "" || parts[1] == "" {
 		return "", "", false
 	}
-	return parts[0], parts[1], true
+	owner := parts[0]
+	repo := strings.TrimSuffix(parts[1], ".git")
+	if repo == "" {
+		return "", "", false
+	}
+	return owner, repo, true
 }

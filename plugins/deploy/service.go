@@ -182,6 +182,7 @@ func (s *Service) GetProject(id uint) (*Project, error) {
 	// Populate transient fields
 	project.HasDeployKey = project.DeployKey != ""
 	project.HasGitHubKey = project.GitHubPrivateKey != ""
+	project.HasGitHubToken = project.GitHubToken != ""
 	return &project, nil
 }
 

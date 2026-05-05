@@ -468,6 +468,7 @@
         "ip_saved": "IP 已保存",
         "save_ip_failed": "保存 IP 失败",
         "wildcard_saved": "通配符预览域名已保存",
+        "wildcard_invalid": "域名格式无效。必须是裸 DNS 后缀，例如 preview.example.com（不含协议、路径、通配符）",
         "export_success": "配置导出成功",
         "export_failed": "导出配置失败",
         "import_invalid": "导入文件无效",

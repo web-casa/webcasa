@@ -3,6 +3,7 @@ package deploy
 import (
 	"context"
 	"fmt"
+	"io"
 	"log/slog"
 	"net"
 	"os"
@@ -909,19 +910,49 @@ func (ps *PreviewService) previewLogPath(previewID uint) string {
 	return filepath.Join(ps.svc.dataDir, "logs", fmt.Sprintf("preview_%d", previewID), "build.log")
 }
 
-// ReadBuildLog returns the current contents of the preview's build log.
-// Empty file (or missing — pending preview that hasn't started writing)
-// returns an empty slice, not an error.
+// previewLogMaxBytes caps how much of a preview's build log we'll read
+// in one request — both for the static fetch and for each SSE poll.
+// Prevents pathological multi-GB logs from OOMing the panel. PB-R1-H2.
+const previewLogMaxBytes = 2 * 1024 * 1024 // 2 MiB
+
+// ReadBuildLog returns the current contents of the preview's build log,
+// capped at previewLogMaxBytes (returns the TAIL of the file when over,
+// since the most recent output is what users want to see). Empty file
+// (or missing — pending preview that hasn't started writing) returns
+// an empty slice, not an error.
 func (ps *PreviewService) ReadBuildLog(previewID uint) ([]byte, error) {
 	path := ps.previewLogPath(previewID)
-	data, err := os.ReadFile(path)
+	f, err := os.Open(path)
 	if err != nil {
 		if os.IsNotExist(err) {
 			return []byte{}, nil
 		}
-		return nil, fmt.Errorf("read build log: %w", err)
+		return nil, fmt.Errorf("open build log: %w", err)
 	}
-	return data, nil
+	defer f.Close()
+	stat, err := f.Stat()
+	if err != nil {
+		return nil, fmt.Errorf("stat build log: %w", err)
+	}
+	size := stat.Size()
+	if size <= previewLogMaxBytes {
+		buf := make([]byte, size)
+		if _, err := f.Read(buf); err != nil && err != io.EOF {
+			return nil, fmt.Errorf("read build log: %w", err)
+		}
+		return buf, nil
+	}
+	// Tail the last previewLogMaxBytes bytes.
+	if _, err := f.Seek(size-previewLogMaxBytes, 0); err != nil {
+		return nil, fmt.Errorf("seek build log: %w", err)
+	}
+	buf := make([]byte, previewLogMaxBytes)
+	if _, err := f.Read(buf); err != nil && err != io.EOF {
+		return nil, fmt.Errorf("read build log tail: %w", err)
+	}
+	// Prepend a marker so callers know we truncated.
+	prefix := []byte(fmt.Sprintf("[…truncated to last %d bytes…]\n", previewLogMaxBytes))
+	return append(prefix, buf...), nil
 }
 
 // StreamBuildLog tails the preview's build.log over Server-Sent Events.
@@ -959,7 +990,11 @@ func (ps *PreviewService) StreamBuildLog(c *gin.Context, previewID uint) {
 	}
 
 	// Read+emit any new bytes since `offset`. Returns false on write
-	// failure (client gone).
+	// failure (client gone). Handles file-truncation (e.g. rebuild
+	// recreated build.log via NewLogWriter) by detecting size < offset
+	// and resetting to 0 + emitting a `reset` event so the UI can
+	// clear its buffer (PB-R1-H1). Caps each poll at previewLogMaxBytes
+	// so an exploding log can't allocate unbounded memory (PB-R1-H2).
 	emitNewBytes := func() bool {
 		f, err := os.Open(path)
 		if err != nil {
@@ -974,13 +1009,31 @@ func (ps *PreviewService) StreamBuildLog(c *gin.Context, previewID uint) {
 			return true
 		}
 		size := stat.Size()
+		if size < offset {
+			// File was truncated. Tell the client to discard its buffer
+			// and resume from byte 0.
+			if _, err := fmt.Fprintf(c.Writer, "event: reset\ndata: log truncated\n\n"); err != nil {
+				return false
+			}
+			offset = 0
+		}
 		if size <= offset {
 			return true
+		}
+		readN := size - offset
+		if readN > previewLogMaxBytes {
+			// Skip to the tail; UI will see a marker line.
+			offset = size - previewLogMaxBytes
+			if _, err := fmt.Fprintf(c.Writer,
+				"event: log\ndata: […truncated %d bytes…]\n\n", readN-previewLogMaxBytes); err != nil {
+				return false
+			}
+			readN = previewLogMaxBytes
 		}
 		if _, err := f.Seek(offset, 0); err != nil {
 			return true
 		}
-		buf := make([]byte, size-offset)
+		buf := make([]byte, readN)
 		n, _ := f.Read(buf)
 		if n <= 0 {
 			return true

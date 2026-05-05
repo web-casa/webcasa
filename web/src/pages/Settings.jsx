@@ -183,8 +183,20 @@ function GeneralTab({ showMessage }) {
     }
 
     const handleSaveWildcard = async () => {
+        // PB-R1-M5: normalize + validate. Empty is allowed (disables
+        // preview deploys). Otherwise must be a bare DNS suffix —
+        // reject schemes, paths, wildcards, whitespace, leading dots.
+        const v = wildcardDomain.trim().toLowerCase()
+        if (v !== '') {
+            const valid = /^[a-z0-9]([a-z0-9-]*[a-z0-9])?(\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)+$/.test(v)
+            if (!valid) {
+                showMessage('error', t('settings.wildcard_invalid'))
+                return
+            }
+        }
+        setWildcardDomain(v)
         try {
-            await settingAPI.update('wildcard_domain', wildcardDomain.trim())
+            await settingAPI.update('wildcard_domain', v)
             showMessage('success', t('settings.wildcard_saved'))
         } catch {
             showMessage('error', t('settings.save_failed'))

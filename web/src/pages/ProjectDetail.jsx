@@ -269,22 +269,31 @@ export default function ProjectDetail() {
         }
     }
 
+    // PB-R1-M2 cap: keep at most ~1 MiB of log in React state to
+    // prevent the page from getting OOMed by an exploding build.
+    // When over, drop the head and prepend a marker. Matches the
+    // backend's previewLogMaxBytes ceiling spirit.
+    const PREVIEW_LOG_MAX_CHARS = 1024 * 1024
+    const appendCappedLog = (prev, chunk) => {
+        const next = prev + chunk
+        if (next.length <= PREVIEW_LOG_MAX_CHARS) return next
+        const dropped = next.length - PREVIEW_LOG_MAX_CHARS
+        return `[…dropped ${dropped} chars from start…]\n` + next.slice(-PREVIEW_LOG_MAX_CHARS)
+    }
+
     const openPreviewLog = async (preview) => {
         closePreviewStream()
         setSelectedPreviewId(preview.id)
         setPreviewLog('')
         setPreviewLogStatus(preview.status)
-        // First, snapshot whatever's already in the file. Then wire up
-        // the SSE stream which will continue tailing if the build is
-        // still in progress.
-        try {
-            const res = await deployAPI.getPreviewLog(preview.id)
-            setPreviewLog(typeof res.data === 'string' ? res.data : '')
-        } catch { /* ignore — stream below will fetch */ }
-        // Stream live updates if the build hasn't finished yet.
-        if (preview.status === 'pending' || preview.status === 'building') {
+        const inProgress = preview.status === 'pending' || preview.status === 'building'
+        if (inProgress) {
+            // PB-R1-M1 fix: live builds get the SSE stream straight
+            // from offset 0 (it ships existing content as the first
+            // events). Don't ALSO call getPreviewLog — that would
+            // double-fetch the same bytes.
             previewStreamCtrl.current = streamSSE(deployAPI.previewLogStreamURL(preview.id), {
-                onLog: (line) => setPreviewLog((prev) => prev + line + '\n'),
+                onLog: (line) => setPreviewLog((prev) => appendCappedLog(prev, line + '\n')),
                 onStatus: (s) => setPreviewLogStatus(s),
                 onDone: (final) => {
                     setPreviewLogStatus(final)
@@ -292,6 +301,12 @@ export default function ProjectDetail() {
                 },
                 onError: (err) => console.warn('preview log stream error', err),
             })
+        } else {
+            // Terminal — one static fetch.
+            try {
+                const res = await deployAPI.getPreviewLog(preview.id)
+                setPreviewLog(typeof res.data === 'string' ? res.data : '')
+            } catch { /* ignore */ }
         }
     }
 
