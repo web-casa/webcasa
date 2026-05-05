@@ -309,12 +309,18 @@ func (ps *PreviewService) CreatePreviewWithFork(projectID uint, prNumber int, br
 		}
 	}
 
+	// v019-R11-H1: capture spawn-time gen + headSHA so runPreview
+	// uses these snapshots instead of re-reading from DB. A force-push
+	// webhook between spawn and the DB-read inside runPreview would
+	// otherwise let runPreview build the new (unapproved) SHA.
+	spawnGen := preview.Generation
+	spawnSHA := preview.HeadSHA
 	ps.wg.Add(1)
 	go func() {
 		defer ps.wg.Done()
 		defer close(newJob.done)
 		defer ps.clearJob(preview.ID, newJob)
-		ps.runPreview(jobCtx, preview.ID, project.ID, branch)
+		ps.runPreview(jobCtx, preview.ID, project.ID, branch, spawnGen, spawnSHA)
 	}()
 
 	return &preview, nil
@@ -574,7 +580,17 @@ func slotName(previewID uint, slot int) string {
 // (image / container / host) so a retry (PR `synchronize` event) can
 // start fresh. The preview DB row itself is NOT deleted on failure —
 // the UI uses it to surface the error to the admin.
-func (ps *PreviewService) runPreview(jobCtx context.Context, previewID, projectID uint, branch string) {
+// runPreview executes the preview build pipeline. expectedGen and
+// expectedSHA are SNAPSHOT values captured by the spawning caller —
+// runPreview uses them as the authoritative source of truth instead
+// of re-reading from DB, which would race with a concurrent webhook
+// that bumped generation/head_sha between spawn and DB-read
+// (security review v0.19 R11-H1).
+//
+// expectedGen=0 → spawn-time gen unknown (legacy callers); falls
+// back to reading gen from DB. expectedSHA="" → fall back to
+// branch-HEAD clone.
+func (ps *PreviewService) runPreview(jobCtx context.Context, previewID, projectID uint, branch string, expectedGen int, expectedSHA string) {
 	// Per-job deadline on top of the service-wide root context. 15 min is
 	// generous for most projects but bounded so a stuck build doesn't hold
 	// the job slot forever.
@@ -588,12 +604,30 @@ func (ps *PreviewService) runPreview(jobCtx context.Context, previewID, projectI
 		ps.logger.Info("runPreview: preview row gone, exiting", "id", previewID)
 		return
 	}
-	// R9-H1/H2: snapshot generation. Every DB write below is gated on
-	// `WHERE generation = gen`. A subsequent CreatePreview rebuild or
-	// DeletePreview will bump generation, causing all our writes to
-	// fail RowsAffected==0 — at which point we tear down any external
-	// resources we created and exit clean.
-	gen := preview.Generation
+	// R11-H1: trust the spawn-time snapshot over the DB read. If a
+	// concurrent webhook bumped generation between our spawn and our
+	// First() read, the DB shows the new gen — but we should still
+	// build the OLD (approved-as-of-spawn) commit. Use expectedGen
+	// for fence checks and expectedSHA for the clone target. Cancel
+	// signal will stop us promptly anyway; this guarantee is for
+	// the window between bump and cancel propagation.
+	gen := expectedGen
+	if gen == 0 {
+		// Legacy caller / paranoia fallback.
+		gen = preview.Generation
+	} else if preview.Generation != gen {
+		// DB already moved on (force-push delivered between spawn and
+		// our DB-read). Cancellation is in flight; exit before any
+		// external resources are created.
+		ps.logger.Info("runPreview: generation advanced before first DB read; aborting",
+			"id", previewID, "spawn_gen", gen, "db_gen", preview.Generation)
+		return
+	}
+	// Pin HeadSHA to the spawn-time value. preview.HeadSHA from DB
+	// could be a NEWER (force-pushed, unapproved) SHA.
+	if expectedSHA != "" {
+		preview.HeadSHA = expectedSHA
+	}
 
 	project, err := ps.svc.GetProject(projectID)
 	if err != nil {
@@ -1383,12 +1417,17 @@ func (ps *PreviewService) spawnPreviewBuild(preview *PreviewDeployment) {
 	previewID := preview.ID
 	projectID := preview.ProjectID
 	branch := preview.Branch
+	// v019-R11-H1: pin spawn-time gen + headSHA so runPreview uses
+	// the approved snapshot even if a force-push webhook lands
+	// before runPreview's first DB read.
+	spawnGen := preview.Generation
+	spawnSHA := preview.HeadSHA
 	ps.wg.Add(1)
 	go func() {
 		defer ps.wg.Done()
 		defer close(newJob.done)
 		defer ps.clearJob(previewID, newJob)
-		ps.runPreview(jobCtx, previewID, projectID, branch)
+		ps.runPreview(jobCtx, previewID, projectID, branch, spawnGen, spawnSHA)
 	}()
 }
 

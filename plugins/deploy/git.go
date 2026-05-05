@@ -122,6 +122,19 @@ func (g *GitClient) CloneAtSHA(ctx context.Context, url, sha, deployKey, httpsTo
 	if err := os.MkdirAll(dstDir, 0755); err != nil {
 		return fmt.Errorf("mkdir dst: %w", err)
 	}
+	// v019-R11-L1: clean up partial state on failure. Any of git
+	// init/fetch/checkout/verify can leave a half-populated dstDir
+	// (.git stub, partial tree). Caller's preview row would later
+	// reference srcDir as if it had the right content; subsequent
+	// runs would skip the clone (no, they re-RemoveAll above) — but
+	// admin manual retry might use stale partial content. Defer
+	// cleanup that only fires on error.
+	cleanupOnError := true
+	defer func() {
+		if cleanupOnError {
+			_ = os.RemoveAll(dstDir)
+		}
+	}()
 
 	// Helper to invoke git in dstDir with the same auth env CloneToDir uses.
 	runGit := func(args []string) error {
@@ -171,6 +184,7 @@ func (g *GitClient) CloneAtSHA(ctx context.Context, url, sha, deployKey, httpsTo
 	if got != sha {
 		return fmt.Errorf("checked-out SHA %q != requested %q (server returned a different commit)", got, sha)
 	}
+	cleanupOnError = false
 	return nil
 }
 
