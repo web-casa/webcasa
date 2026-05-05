@@ -41,6 +41,7 @@ type previewJob struct {
 //   - The (project_id, pr_number) unique index on PreviewDeployment
 //     prevents duplicate rows at the DB layer even if two webhooks
 //     race past the lookup-then-create path in application code.
+//
 // previewKey identifies a single PR's lock entry in previewLocks.
 // Same struct also defines the natural identity of a preview from
 // the webhook side (project + PR number).
@@ -144,7 +145,7 @@ func (ps *PreviewService) Stop(drainTimeout time.Duration) {
 // CreatePreviewWithFork. Preserves the v0.14 signature for callers
 // that don't care about fork-PR fields.
 func (ps *PreviewService) CreatePreview(projectID uint, prNumber int, branch string) (*PreviewDeployment, error) {
-	return ps.CreatePreviewWithFork(projectID, prNumber, branch, false, "", "")
+	return ps.CreatePreviewWithFork(projectID, prNumber, branch, "", false, "", "")
 }
 
 // CreatePreviewWithFork (v0.19+) — extended CreatePreview that records
@@ -153,7 +154,13 @@ func (ps *PreviewService) CreatePreview(projectID uint, prNumber int, branch str
 // preview's Caddy host is NOT created until an admin approves via
 // POST /previews/:id/approve. Same-repo PRs (isForkPR=false) behave
 // identically to v0.18 — no approval gate.
-func (ps *PreviewService) CreatePreviewWithFork(projectID uint, prNumber int, branch string, isForkPR bool, headRepo, headCloneURL string) (*PreviewDeployment, error) {
+//
+// headSHA: the commit SHA the build was triggered for (from
+// payload.pull_request.head.sha). Used to revoke approval on
+// force-push (v019-R4-H3): when a new synchronize webhook arrives
+// with a different SHA, upsertPreviewRow resets Approved to false
+// if it was approved for an older SHA.
+func (ps *PreviewService) CreatePreviewWithFork(projectID uint, prNumber int, branch, headSHA string, isForkPR bool, headRepo, headCloneURL string) (*PreviewDeployment, error) {
 	if prNumber <= 0 {
 		return nil, fmt.Errorf("pr_number must be positive (got %d)", prNumber)
 	}
@@ -189,7 +196,7 @@ func (ps *PreviewService) CreatePreviewWithFork(projectID uint, prNumber int, br
 	// aren't blocked.
 	mu := ps.previewLock(projectID, prNumber)
 	mu.Lock()
-	preview, created, err := ps.upsertPreviewRow(project, prNumber, branch, newExpiry, domain, isForkPR, headRepo, headCloneURL)
+	preview, created, err := ps.upsertPreviewRow(project, prNumber, branch, headSHA, newExpiry, domain, isForkPR, headRepo, headCloneURL)
 	if err != nil {
 		mu.Unlock()
 		return nil, err
@@ -246,7 +253,7 @@ func (ps *PreviewService) CreatePreviewWithFork(projectID uint, prNumber int, br
 // allocation is single-flight for this PR.
 //
 // Returns the resolved preview row + a `created` flag.
-func (ps *PreviewService) upsertPreviewRow(project *Project, prNumber int, branch string, expiry time.Time, wildcardDomain string, isForkPR bool, headRepo, headCloneURL string) (PreviewDeployment, bool, error) {
+func (ps *PreviewService) upsertPreviewRow(project *Project, prNumber int, branch, headSHA string, expiry time.Time, wildcardDomain string, isForkPR bool, headRepo, headCloneURL string) (PreviewDeployment, bool, error) {
 	var preview PreviewDeployment
 	err := ps.db.Where("project_id = ? AND pr_number = ?", project.ID, prNumber).First(&preview).Error
 	if err == nil {
@@ -254,20 +261,31 @@ func (ps *PreviewService) upsertPreviewRow(project *Project, prNumber int, branc
 		// keeps serving until runPreview swaps it out. Bump Generation
 		// (R9-H1) so any stale runPreview from the previous trigger
 		// fails its WHERE generation = snapshot writes.
-		if uerr := ps.db.Model(&preview).Updates(map[string]interface{}{
+		// v019-R4-H3: approval persists across rebuilds ONLY if the
+		// head SHA hasn't changed. A force-push (or any new commit)
+		// must require fresh admin review — fork author could have
+		// approved-then-pushed-malicious-code otherwise. Compare
+		// against ApprovedHeadSHA (the SHA admin actually saw).
+		updates := map[string]interface{}{
 			"branch":         branch,
 			"status":         "pending",
 			"expires_at":     expiry,
 			"failure_reason": "",
 			"generation":     gorm.Expr("generation + 1"),
-			// v0.19: refresh fork provenance in case head repo URL
-			// changed (rare but possible — fork user renames repo).
-			// Approved DELIBERATELY persists across rebuilds — admin
-			// approves a PR, not a single commit.
 			"is_fork_pr":     isForkPR,
 			"head_repo":      headRepo,
 			"head_clone_url": headCloneURL,
-		}).Error; uerr != nil {
+			"head_sha":       headSHA,
+		}
+		approvalReset := false
+		if isForkPR && preview.Approved && headSHA != "" && preview.ApprovedHeadSHA != "" && headSHA != preview.ApprovedHeadSHA {
+			updates["approved"] = false
+			updates["approved_at"] = nil
+			updates["approved_by_user_id"] = 0
+			updates["approved_head_sha"] = ""
+			approvalReset = true
+		}
+		if uerr := ps.db.Model(&preview).Updates(updates).Error; uerr != nil {
 			return preview, false, fmt.Errorf("update existing preview: %w", uerr)
 		}
 		preview.Branch = branch
@@ -276,6 +294,15 @@ func (ps *PreviewService) upsertPreviewRow(project *Project, prNumber int, branc
 		preview.IsForkPR = isForkPR
 		preview.HeadRepo = headRepo
 		preview.HeadCloneURL = headCloneURL
+		preview.HeadSHA = headSHA
+		if approvalReset {
+			preview.Approved = false
+			preview.ApprovedAt = nil
+			preview.ApprovedByUserID = 0
+			preview.ApprovedHeadSHA = ""
+			ps.logger.Info("fork PR approval reset on force-push",
+				"preview_id", preview.ID, "old_sha", preview.ApprovedHeadSHA, "new_sha", headSHA)
+		}
 		return preview, false, nil
 	}
 	if err != gorm.ErrRecordNotFound {
@@ -301,6 +328,7 @@ func (ps *PreviewService) upsertPreviewRow(project *Project, prNumber int, branc
 		IsForkPR:     isForkPR,
 		HeadRepo:     headRepo,
 		HeadCloneURL: headCloneURL,
+		HeadSHA:      headSHA,
 		// Approved stays false on create — admin must explicitly
 		// approve fork PRs. Same-repo PRs (isForkPR=false) skip the
 		// approval gate entirely in runPreview.
@@ -351,7 +379,9 @@ func (ps *PreviewService) upsertPreviewRow(project *Project, prNumber int, branc
 	if raceFallback != nil {
 		ps.logger.Info("preview row created by concurrent webhook; updating",
 			"project", project.Name, "pr", prNumber)
-		if uerr := ps.db.Model(raceFallback).Updates(map[string]interface{}{
+		// v019-R4-H3: same approval-reset-on-SHA-change logic as
+		// the rebuild path above.
+		updates := map[string]interface{}{
 			"branch":         branch,
 			"status":         "pending",
 			"expires_at":     expiry,
@@ -360,7 +390,17 @@ func (ps *PreviewService) upsertPreviewRow(project *Project, prNumber int, branc
 			"is_fork_pr":     isForkPR,
 			"head_repo":      headRepo,
 			"head_clone_url": headCloneURL,
-		}).Error; uerr != nil {
+			"head_sha":       headSHA,
+		}
+		approvalReset := false
+		if isForkPR && raceFallback.Approved && headSHA != "" && raceFallback.ApprovedHeadSHA != "" && headSHA != raceFallback.ApprovedHeadSHA {
+			updates["approved"] = false
+			updates["approved_at"] = nil
+			updates["approved_by_user_id"] = 0
+			updates["approved_head_sha"] = ""
+			approvalReset = true
+		}
+		if uerr := ps.db.Model(raceFallback).Updates(updates).Error; uerr != nil {
 			return *raceFallback, false, fmt.Errorf("update existing preview after race: %w", uerr)
 		}
 		raceFallback.Branch = branch
@@ -369,6 +409,13 @@ func (ps *PreviewService) upsertPreviewRow(project *Project, prNumber int, branc
 		raceFallback.IsForkPR = isForkPR
 		raceFallback.HeadRepo = headRepo
 		raceFallback.HeadCloneURL = headCloneURL
+		raceFallback.HeadSHA = headSHA
+		if approvalReset {
+			raceFallback.Approved = false
+			raceFallback.ApprovedAt = nil
+			raceFallback.ApprovedByUserID = 0
+			raceFallback.ApprovedHeadSHA = ""
+		}
 		return *raceFallback, false, nil
 	}
 
@@ -1145,6 +1192,11 @@ func (ps *PreviewService) ApprovePreview(id uint, approverUserID uint) error {
 				"approved":            true,
 				"approved_at":         now,
 				"approved_by_user_id": approverUserID,
+				// v019-R4-H3: record the SHA admin actually approved.
+				// upsertPreviewRow's rebuild path resets approved if a
+				// future webhook brings a different head.sha — fork
+				// author can't approve-then-push-malicious-code.
+				"approved_head_sha": preview.HeadSHA,
 			})
 		if res.Error != nil {
 			return fmt.Errorf("mark approved: %w", res.Error)
@@ -1152,6 +1204,7 @@ func (ps *PreviewService) ApprovePreview(id uint, approverUserID uint) error {
 		preview.Approved = true
 		preview.ApprovedAt = &now
 		preview.ApprovedByUserID = approverUserID
+		preview.ApprovedHeadSHA = preview.HeadSHA
 	}
 
 	// Create the Caddy host now if the build is done AND host is
@@ -1195,8 +1248,12 @@ func (ps *PreviewService) RevokePreview(id uint) error {
 	if err := ps.db.First(&preview, id).Error; err != nil {
 		return fmt.Errorf("re-read preview: %w", err)
 	}
-	if !preview.Approved {
-		return nil // already revoked — idempotent
+	// v019-R4-H2 fix: idempotency check must allow retry when a
+	// previous revoke failed at DeleteHost (approved=false but
+	// host_id retained). Without this, the row is stuck — retry
+	// would early-return and the orphan host stays public.
+	if !preview.Approved && preview.HostID == 0 {
+		return nil // fully revoked — idempotent
 	}
 
 	// Tear down the host first so the URL stops resolving — then
@@ -1220,6 +1277,7 @@ func (ps *PreviewService) RevokePreview(id uint) error {
 		"approved":            false,
 		"approved_at":         nil,
 		"approved_by_user_id": 0,
+		"approved_head_sha":   "",
 	}
 	if hostCleared {
 		updates["host_id"] = 0

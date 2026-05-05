@@ -12,6 +12,7 @@ import (
 	"io"
 	"net/http"
 	"strconv"
+	"strings"
 
 	"github.com/gin-gonic/gin"
 	"github.com/web-casa/webcasa/plugins/deploy/builders"
@@ -61,25 +62,25 @@ func (h *Handler) GetProject(c *gin.Context) {
 // CreateProject POST /api/plugins/deploy/projects
 func (h *Handler) CreateProject(c *gin.Context) {
 	var req struct {
-		Name         string   `json:"name" binding:"required"`
-		Domain       string   `json:"domain"`
-		GitURL       string   `json:"git_url" binding:"required"`
-		GitBranch    string   `json:"git_branch"`
-		DeployKey    string   `json:"deploy_key"`
-		Framework    string   `json:"framework"`
-		BuildCommand string   `json:"build_command"`
-		StartCommand string   `json:"start_command"`
-		InstallCmd   string   `json:"install_command"`
-		Port         int      `json:"port"`
-		AutoDeploy   bool     `json:"auto_deploy"`
-		EnvVars      []EnvVar `json:"env_vars"`
-		DeployMode         string `json:"deploy_mode"` // bare | docker
-		HealthCheckPath    string `json:"health_check_path"`
-		HealthCheckTimeout int    `json:"health_check_timeout"`
-		HealthCheckRetries int    `json:"health_check_retries"`
-		MemoryLimit        int    `json:"memory_limit"`
-		CPULimit           int    `json:"cpu_limit"`
-		BuildTimeout       int    `json:"build_timeout"`
+		Name               string   `json:"name" binding:"required"`
+		Domain             string   `json:"domain"`
+		GitURL             string   `json:"git_url" binding:"required"`
+		GitBranch          string   `json:"git_branch"`
+		DeployKey          string   `json:"deploy_key"`
+		Framework          string   `json:"framework"`
+		BuildCommand       string   `json:"build_command"`
+		StartCommand       string   `json:"start_command"`
+		InstallCmd         string   `json:"install_command"`
+		Port               int      `json:"port"`
+		AutoDeploy         bool     `json:"auto_deploy"`
+		EnvVars            []EnvVar `json:"env_vars"`
+		DeployMode         string   `json:"deploy_mode"` // bare | docker
+		HealthCheckPath    string   `json:"health_check_path"`
+		HealthCheckTimeout int      `json:"health_check_timeout"`
+		HealthCheckRetries int      `json:"health_check_retries"`
+		MemoryLimit        int      `json:"memory_limit"`
+		CPULimit           int      `json:"cpu_limit"`
+		BuildTimeout       int      `json:"build_timeout"`
 		// GitHub App auth fields
 		AuthMethod           string `json:"auth_method"`
 		GitHubAppID          int64  `json:"github_app_id"`
@@ -527,13 +528,13 @@ func (h *Handler) handlePullRequestWebhook(c *gin.Context, project *Project) {
 			})
 			return
 		}
-		// v019-R1-2 fix: head.repo.clone_url is webhook-supplied and
-		// will be auth'd against by the GitHub installation token
-		// when AuthMethod is github_app/github_oauth. A spoofed
-		// payload (or a future GitHub Enterprise federation) could
-		// point at a non-github.com host, causing us to send the
-		// token in an Authorization header to a foreign origin.
-		// Reject anything that isn't a github.com HTTPS URL.
+		// v019-R1-2 + R4-M1 fix: head.repo.clone_url is webhook-supplied
+		// and will be auth'd against by the GitHub installation token
+		// when AuthMethod is github_app/github_oauth. Reject anything
+		// that isn't a github.com HTTPS URL (R4-M1: explicit https
+		// scheme check — extractHost accepts http too) AND verify the
+		// path matches head.repo.full_name (extra defense against
+		// path injection like /a@github.com/...).
 		if isForkPR {
 			cloneURL := payload.PullRequest.Head.Repo.CloneURL
 			if cloneURL == "" {
@@ -542,15 +543,26 @@ func (h *Handler) handlePullRequestWebhook(c *gin.Context, project *Project) {
 				})
 				return
 			}
-			if extractHost(cloneURL) != "github.com" {
+			if !strings.HasPrefix(cloneURL, "https://github.com/") {
 				c.JSON(http.StatusBadRequest, gin.H{
-					"error": "fork PR clone_url must be a github.com URL; got " + cloneURL,
+					"error": "fork PR clone_url must be a github.com HTTPS URL; got " + cloneURL,
+				})
+				return
+			}
+			// Path must match head.repo.full_name (with optional .git
+			// suffix) so a malicious payload can't claim full_name=
+			// "owner/repo" but clone_url=https://github.com/other/repo.
+			expectedPath := "https://github.com/" + head
+			if cloneURL != expectedPath && cloneURL != expectedPath+".git" {
+				c.JSON(http.StatusBadRequest, gin.H{
+					"error": "fork PR clone_url path doesn't match head.repo.full_name",
 				})
 				return
 			}
 		}
 		preview, err := h.svc.preview.CreatePreviewWithFork(
 			project.ID, payload.Number, payload.PullRequest.Head.Ref,
+			payload.PullRequest.Head.SHA,
 			isForkPR, head, payload.PullRequest.Head.Repo.CloneURL,
 		)
 		if err != nil {

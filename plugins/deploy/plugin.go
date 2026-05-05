@@ -78,9 +78,9 @@ func (p *Plugin) Init(ctx *pluginpkg.Context) error {
 	p.handler = NewHandler(p.svc)
 
 	// Register API routes under /api/plugins/deploy/
-	r := ctx.Router          // read-only (any authenticated user)
-	o := ctx.OperatorRouter  // operator+ (operations: build/start/stop)
-	a := ctx.AdminRouter     // admin-only (config changes)
+	r := ctx.Router         // read-only (any authenticated user)
+	o := ctx.OperatorRouter // operator+ (operations: build/start/stop)
+	a := ctx.AdminRouter    // admin-only (config changes)
 
 	// Frameworks presets (read)
 	r.GET("/frameworks", p.handler.GetFrameworks)
