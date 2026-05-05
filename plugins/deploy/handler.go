@@ -439,9 +439,17 @@ func (h *Handler) handlePullRequestWebhook(c *gin.Context, project *Project) {
 		Number      int    `json:"number"`
 		PullRequest struct {
 			Head struct {
-				Ref string `json:"ref"`
-				SHA string `json:"sha"`
+				Ref  string `json:"ref"`
+				SHA  string `json:"sha"`
+				Repo struct {
+					FullName string `json:"full_name"`
+				} `json:"repo"`
 			} `json:"head"`
+			Base struct {
+				Repo struct {
+					FullName string `json:"full_name"`
+				} `json:"repo"`
+			} `json:"base"`
 		} `json:"pull_request"`
 	}
 	if err := c.ShouldBindJSON(&payload); err != nil {
@@ -451,6 +459,32 @@ func (h *Handler) handlePullRequestWebhook(c *gin.Context, project *Project) {
 
 	switch payload.Action {
 	case "opened", "reopened", "synchronize":
+		// PB-R5-H1: reject fork PRs explicitly. The clone path uses
+		// `project.GitURL` (the base repo) + `head.ref`, but a fork
+		// PR's head branch only exists in the fork repo. Cloning
+		// `project.GitURL` at the fork's branch name would either fail
+		// or pull stale base-repo content. Detecting and rejecting
+		// here gives the admin a clear error in their PR thread (via
+		// GitHub's "this delivery failed" UI) instead of a silent
+		// build failure with a confusing git error.
+		//
+		// Cross-repo preview support is intentionally out of v0.15
+		// scope — it requires (a) a separate clone URL per preview,
+		// (b) a security review of running untrusted fork code with
+		// the project's secrets, and (c) UI to gate fork builds
+		// behind admin approval (GitHub Actions / Vercel / Netlify
+		// model). Tracked for v0.16+.
+		head := payload.PullRequest.Head.Repo.FullName
+		base := payload.PullRequest.Base.Repo.FullName
+		if head != "" && base != "" && head != base {
+			c.JSON(http.StatusOK, gin.H{
+				"ok":      true,
+				"message": "fork PR previews are not supported; only same-repo PRs trigger preview deploys",
+				"head":    head,
+				"base":    base,
+			})
+			return
+		}
 		preview, err := h.svc.preview.CreatePreview(project.ID, payload.Number, payload.PullRequest.Head.Ref)
 		if err != nil {
 			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})

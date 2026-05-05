@@ -256,6 +256,13 @@ func (ps *PreviewService) upsertPreviewRow(project *Project, prNumber int, branc
 		}
 		slug := sanitizeForDomain(project.Name)
 		previewDomain := fmt.Sprintf("pr-%d-%s-%d.%s", prNumber, slug, preview.ID, wildcardDomain)
+		// PB-R5-H2: enforce DNS limits on the FULL preview domain, not
+		// just the wildcard suffix the admin configured. RFC 1035: ≤253
+		// chars total, each label ≤63. Also bounded by our column
+		// width (size:255) but DNS comes first.
+		if !validPreviewDomain(previewDomain) {
+			return fmt.Errorf("preview domain %q exceeds DNS limits (≤253 total, ≤63 per label); shorten the wildcard_domain or project name", previewDomain)
+		}
 		imageTag := fmt.Sprintf("webcasa-preview-%d", preview.ID)
 		if uerr := tx.Model(&preview).Updates(map[string]interface{}{
 			"domain":    previewDomain,
@@ -809,11 +816,21 @@ func (ps *PreviewService) DeletePreview(id uint) error {
 
 	// 6. Destructive cleanup. Order: host (so subdomain stops pointing
 	// at a soon-to-die container) → containers (both slots) → image
-	// → on-disk dirs.
+	// → on-disk dirs → PR comment (best-effort, doesn't fail teardown).
 	ctx, cancel := context.WithTimeout(ps.rootCtx, 60*time.Second)
 	defer cancel()
 
 	var errs []string
+
+	// PB-R5-M1: best-effort delete the GitHub PR comment we posted on
+	// first deploy. The comment's wording promises auto-removal on PR
+	// close, so leaving it stale would mislead reviewers into thinking
+	// the preview URL still works. Failures are logged but don't
+	// block teardown — the comment is non-critical and a stale comment
+	// is far less bad than a hung delete.
+	if preview.PRCommentID > 0 {
+		ps.deletePRCommentBestEffort(&preview)
+	}
 
 	if preview.HostID > 0 {
 		if err := ps.coreAPI.DeleteHost(preview.HostID); err != nil {
@@ -1138,6 +1155,23 @@ func (ps *PreviewService) StreamBuildLog(c *gin.Context, previewID uint) {
 			}
 		}
 	}
+}
+
+// validPreviewDomain checks that a generated preview FQDN fits within
+// DNS limits — ≤253 total chars, each label ≤63. Called at create
+// time (PB-R5-H2) so an over-long wildcard_domain or project name
+// fails fast with an admin-actionable error rather than producing
+// invalid Caddy host config later.
+func validPreviewDomain(fqdn string) bool {
+	if fqdn == "" || len(fqdn) > 253 {
+		return false
+	}
+	for _, label := range strings.Split(fqdn, ".") {
+		if label == "" || len(label) > 63 {
+			return false
+		}
+	}
+	return true
 }
 
 // sanitizeForDomain converts a string to a DNS-safe label.

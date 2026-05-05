@@ -103,6 +103,46 @@ func (ps *PreviewService) postOrUpdatePRComment(preview *PreviewDeployment, proj
 	preview.PRCommentID = resp.ID
 }
 
+// deletePRCommentBestEffort tries to remove the bot's PR comment when
+// the preview is being torn down. PB-R5-M1: the posted comment text
+// promises auto-removal on PR close, so a stale comment after manual
+// delete misleads reviewers. Failures are logged but never propagated
+// — the comment is incidental, the teardown must finish.
+//
+// Caller must have verified preview.PRCommentID > 0.
+func (ps *PreviewService) deletePRCommentBestEffort(preview *PreviewDeployment) {
+	project, err := ps.svc.GetProject(preview.ProjectID)
+	if err != nil {
+		ps.logger.Debug("preview PR comment delete skipped: project lookup failed",
+			"preview_id", preview.ID, "err", err)
+		return
+	}
+	if project.GitHubToken == "" {
+		return
+	}
+	owner, repo, ok := parseGitHubOwnerRepo(project.GitURL)
+	if !ok {
+		return
+	}
+	token, err := ps.svc.decryptField(project.GitHubToken)
+	if err != nil || token == "" {
+		ps.logger.Debug("preview PR comment delete skipped: token decrypt",
+			"preview_id", preview.ID, "err", err)
+		return
+	}
+	ctx, cancel := context.WithTimeout(ps.rootCtx, 10*time.Second)
+	defer cancel()
+	url := fmt.Sprintf("https://api.github.com/repos/%s/%s/issues/comments/%d",
+		owner, repo, preview.PRCommentID)
+	if status, ok := ps.doGitHubRequestStatus(ctx, http.MethodDelete, url, token, nil, nil); !ok {
+		// 404/410 is fine — the comment was already gone.
+		if status != http.StatusNotFound && status != http.StatusGone {
+			ps.logger.Info("preview PR comment delete failed (non-fatal)",
+				"preview_id", preview.ID, "comment_id", preview.PRCommentID, "status", status)
+		}
+	}
+}
+
 // doGitHubRequestStatus issues a single API call and JSON-decodes the
 // response into `out` if non-nil. Returns (statusCode, ok); status is
 // 0 when the request couldn't be sent (build / transport error).
