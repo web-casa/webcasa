@@ -513,6 +513,19 @@ func (h *Handler) handlePullRequestWebhook(c *gin.Context, project *Project) {
 			})
 			return
 		}
+		// v019-R8-H1: head.sha is REQUIRED. The R4-H3 force-push
+		// approval reset ("if headSHA != preview.ApprovedHeadSHA")
+		// silently no-ops when headSHA is empty — an attacker-
+		// crafted (or malformed-bot) webhook without head.sha could
+		// then push new code under a previously-approved fork PR
+		// and bypass the re-approval fence. Reject empty head.sha
+		// at the boundary.
+		if payload.PullRequest.Head.SHA == "" {
+			c.JSON(http.StatusBadRequest, gin.H{
+				"error": "pull_request payload missing head.sha",
+			})
+			return
+		}
 		// v0.19: fork PR support gated by project setting. Default
 		// (AcceptForkPRPreviews=false) preserves v0.14-v0.18 reject
 		// behaviour. When opted in, the fork PR builds + runs but

@@ -196,7 +196,7 @@ func (ps *PreviewService) CreatePreviewWithFork(projectID uint, prNumber int, br
 	// aren't blocked.
 	mu := ps.previewLock(projectID, prNumber)
 	mu.Lock()
-	preview, created, err := ps.upsertPreviewRow(project, prNumber, branch, headSHA, newExpiry, domain, isForkPR, headRepo, headCloneURL)
+	preview, created, revokedHostID, err := ps.upsertPreviewRow(project, prNumber, branch, headSHA, newExpiry, domain, isForkPR, headRepo, headCloneURL)
 	if err != nil {
 		mu.Unlock()
 		return nil, err
@@ -242,9 +242,31 @@ func (ps *PreviewService) CreatePreviewWithFork(projectID uint, prNumber int, br
 			}
 		}
 		mu.Unlock()
+		// v019-R8-M1: tear down the previously-approved host so the
+		// public URL stops resolving. The OLD container keeps
+		// running for inspection (DeletePreview can clean it up).
+		// Best-effort — DB host_id was already cleared; orphan host
+		// in Caddy is a recoverable problem, won't fail the webhook.
+		if revokedHostID > 0 {
+			if err := ps.coreAPI.DeleteHost(revokedHostID); err != nil {
+				ps.logger.Warn("force-push: failed to tear down old approved host (orphan in Caddy)",
+					"preview_id", preview.ID, "host_id", revokedHostID, "err", err)
+			} else {
+				ps.logger.Info("force-push: tore down old approved host",
+					"preview_id", preview.ID, "host_id", revokedHostID)
+			}
+		}
 		ps.logger.Info("fork PR preview awaiting approval (build deferred)",
 			"project", project.Name, "pr", prNumber, "head_repo", headRepo, "head_sha", headSHA)
 		return &preview, nil
+	}
+	// Non-awaiting path (same-repo OR already-approved fork no SHA change):
+	// also handle revokedHostID just in case (defensive — shouldn't fire
+	// since approval reset only happens for fork+SHA-change which routes
+	// to needsApproval=true above).
+	if revokedHostID > 0 {
+		ps.logger.Warn("revokedHostID set on non-awaiting path; should not happen",
+			"preview_id", preview.ID, "host_id", revokedHostID)
 	}
 
 	// Same-repo PR or already-approved fork (no SHA change): spawn the
@@ -300,8 +322,16 @@ func (ps *PreviewService) CreatePreviewWithFork(projectID uint, prNumber int, br
 // hold the per-PR lock from previewLock(projectID, prNumber) so port
 // allocation is single-flight for this PR.
 //
-// Returns the resolved preview row + a `created` flag.
-func (ps *PreviewService) upsertPreviewRow(project *Project, prNumber int, branch, headSHA string, expiry time.Time, wildcardDomain string, isForkPR bool, headRepo, headCloneURL string) (PreviewDeployment, bool, error) {
+// Returns:
+//   - resolved preview row
+//   - `created` flag
+//   - `revokedHostID`: when force-push triggered an approval reset on
+//     a previously-live preview, this is the old HostID. Caller is
+//     responsible for DeleteHosting it (R8-M1: gate semantics demand
+//     the URL stops resolving as soon as the new commit's approval
+//     is pending).
+//   - error
+func (ps *PreviewService) upsertPreviewRow(project *Project, prNumber int, branch, headSHA string, expiry time.Time, wildcardDomain string, isForkPR bool, headRepo, headCloneURL string) (PreviewDeployment, bool, uint, error) {
 	var preview PreviewDeployment
 	err := ps.db.Where("project_id = ? AND pr_number = ?", project.ID, prNumber).First(&preview).Error
 	if err == nil {
@@ -326,15 +356,24 @@ func (ps *PreviewService) upsertPreviewRow(project *Project, prNumber int, branc
 			"head_sha":       headSHA,
 		}
 		approvalReset := false
+		var revokedHostID uint // v019-R8-M1: caller DeleteHosts after lock release
 		if isForkPR && preview.Approved && headSHA != "" && preview.ApprovedHeadSHA != "" && headSHA != preview.ApprovedHeadSHA {
 			updates["approved"] = false
 			updates["approved_at"] = nil
 			updates["approved_by_user_id"] = 0
 			updates["approved_head_sha"] = ""
+			// R8-M1: also clear host_id so the URL stops resolving
+			// before the new code is built+approved. Old container
+			// keeps running for inspection (DeletePreview cleans it).
+			if preview.HostID > 0 {
+				updates["host_id"] = 0
+				revokedHostID = preview.HostID
+			}
 			approvalReset = true
 		}
+		oldSHA := preview.ApprovedHeadSHA // capture before zeroing for log
 		if uerr := ps.db.Model(&preview).Updates(updates).Error; uerr != nil {
-			return preview, false, fmt.Errorf("update existing preview: %w", uerr)
+			return preview, false, 0, fmt.Errorf("update existing preview: %w", uerr)
 		}
 		preview.Branch = branch
 		preview.Status = "pending"
@@ -348,13 +387,17 @@ func (ps *PreviewService) upsertPreviewRow(project *Project, prNumber int, branc
 			preview.ApprovedAt = nil
 			preview.ApprovedByUserID = 0
 			preview.ApprovedHeadSHA = ""
+			if revokedHostID > 0 {
+				preview.HostID = 0
+			}
 			ps.logger.Info("fork PR approval reset on force-push",
-				"preview_id", preview.ID, "old_sha", preview.ApprovedHeadSHA, "new_sha", headSHA)
+				"preview_id", preview.ID, "old_sha", oldSHA, "new_sha", headSHA,
+				"revoked_host_id", revokedHostID)
 		}
-		return preview, false, nil
+		return preview, false, revokedHostID, nil
 	}
 	if err != gorm.ErrRecordNotFound {
-		return preview, false, fmt.Errorf("lookup existing preview: %w", err)
+		return preview, false, 0, fmt.Errorf("lookup existing preview: %w", err)
 	}
 
 	// Fresh-create path. R8-M1 fix: wrap Create + allocate + backfill in
@@ -421,14 +464,15 @@ func (ps *PreviewService) upsertPreviewRow(project *Project, prNumber int, branc
 		return nil
 	})
 	if txErr != nil {
-		return preview, false, txErr
+		return preview, false, 0, txErr
 	}
 
 	if raceFallback != nil {
 		ps.logger.Info("preview row created by concurrent webhook; updating",
 			"project", project.Name, "pr", prNumber)
-		// v019-R4-H3: same approval-reset-on-SHA-change logic as
-		// the rebuild path above.
+		// v019-R4-H3 + R8-M1: same approval-reset-on-SHA-change
+		// logic as the rebuild path above. Also tear down the
+		// host on reset (return revokedHostID for caller to delete).
 		updates := map[string]interface{}{
 			"branch":         branch,
 			"status":         "pending",
@@ -441,15 +485,20 @@ func (ps *PreviewService) upsertPreviewRow(project *Project, prNumber int, branc
 			"head_sha":       headSHA,
 		}
 		approvalReset := false
+		var revokedHostID uint
 		if isForkPR && raceFallback.Approved && headSHA != "" && raceFallback.ApprovedHeadSHA != "" && headSHA != raceFallback.ApprovedHeadSHA {
 			updates["approved"] = false
 			updates["approved_at"] = nil
 			updates["approved_by_user_id"] = 0
 			updates["approved_head_sha"] = ""
+			if raceFallback.HostID > 0 {
+				updates["host_id"] = 0
+				revokedHostID = raceFallback.HostID
+			}
 			approvalReset = true
 		}
 		if uerr := ps.db.Model(raceFallback).Updates(updates).Error; uerr != nil {
-			return *raceFallback, false, fmt.Errorf("update existing preview after race: %w", uerr)
+			return *raceFallback, false, 0, fmt.Errorf("update existing preview after race: %w", uerr)
 		}
 		raceFallback.Branch = branch
 		raceFallback.Status = "pending"
@@ -463,11 +512,14 @@ func (ps *PreviewService) upsertPreviewRow(project *Project, prNumber int, branc
 			raceFallback.ApprovedAt = nil
 			raceFallback.ApprovedByUserID = 0
 			raceFallback.ApprovedHeadSHA = ""
+			if revokedHostID > 0 {
+				raceFallback.HostID = 0
+			}
 		}
-		return *raceFallback, false, nil
+		return *raceFallback, false, revokedHostID, nil
 	}
 
-	return preview, true, nil
+	return preview, true, 0, nil
 }
 
 // clearJob removes the job from the registry iff it still matches — so a
