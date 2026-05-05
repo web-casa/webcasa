@@ -710,6 +710,13 @@ jobs:
           # GOTOOLCHAIN=local which suppresses auto-download — undo
           # that so `go test` fetches the toolchain go.mod requires.
           GOTOOLCHAIN: auto
+          # Tell podman-docker shim where the Podman daemon lives.
+          # Without this `docker version` only shows Client info (no
+          # Server section) because the shim's default socket lookup
+          # path falls through. Podman honours both CONTAINER_HOST
+          # and DOCKER_HOST; set both for safety.
+          CONTAINER_HOST: unix:///run/podman/podman.sock
+          DOCKER_HOST: unix:///run/podman/podman.sock
         run: |
           go test ./plugins/docker/... \
             -run 'TestPodmanSocketCompat|TestDockerShimTransparency|TestSocketSymlinkIntegrity' \
