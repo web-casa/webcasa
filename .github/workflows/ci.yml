@@ -692,6 +692,11 @@ jobs:
       - name: Run Podman integration tests
         env:
           WEBCASA_RUN_PODMAN_TESTS: '1'
+          # AlmaLinux's go-toolset RPM ships older Go than go.mod needs
+          # (1.25.x vs required 1.26+). The RPM also pre-sets
+          # GOTOOLCHAIN=local which suppresses auto-download — undo
+          # that so `go test` fetches the toolchain go.mod requires.
+          GOTOOLCHAIN: auto
         run: |
           go test ./plugins/docker/... \
             -run 'TestPodmanSocketCompat|TestDockerShimTransparency|TestSocketSymlinkIntegrity' \
