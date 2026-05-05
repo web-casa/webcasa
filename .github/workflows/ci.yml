@@ -654,8 +654,21 @@ jobs:
       # CI-environment-only.)
       - name: Start Podman API server
         run: |
+          # Override the system storage.conf — the AlmaLinux RPM ships
+          # one with overlay.mountopt set, which vfs rejects. Write a
+          # minimal one that uses vfs cleanly. Default storage path
+          # (/var/lib/containers/storage) is fine; we don't need any
+          # overlay-specific opts.
+          mkdir -p /etc/containers
+          cat > /etc/containers/storage.conf <<'EOF'
+          [storage]
+          driver = "vfs"
+          runroot = "/run/containers/storage"
+          graphroot = "/var/lib/containers/storage"
+          EOF
+
           mkdir -p /run/podman
-          podman system service --storage-driver vfs --time=0 unix:///run/podman/podman.sock &
+          podman system service --time=0 unix:///run/podman/podman.sock &
           for i in $(seq 1 20); do
             [ -S /run/podman/podman.sock ] && break
             sleep 0.5
