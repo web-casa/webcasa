@@ -123,6 +123,7 @@ function GeneralTab({ showMessage }) {
     const [serverIpv4, setServerIpv4] = useState('')
     const [serverIpv6, setServerIpv6] = useState('')
     const [wildcardDomain, setWildcardDomain] = useState('')
+    const [maxConcurrentBuilds, setMaxConcurrentBuilds] = useState('')
     const [isMobile, setIsMobile] = useState(() =>
         typeof window !== 'undefined' && window.matchMedia('(max-width: 767px)').matches
     )
@@ -179,7 +180,27 @@ function GeneralTab({ showMessage }) {
             setServerIpv4(settings.server_ipv4 || '')
             setServerIpv6(settings.server_ipv6 || '')
             setWildcardDomain(settings.wildcard_domain || '')
+            setMaxConcurrentBuilds(settings.max_concurrent_builds || '')
         } catch { /* ignore */ }
+    }
+
+    const handleSaveMaxConcurrentBuilds = async () => {
+        // v0.17-A1: validate 1-64 (matches backend cap). Empty resets
+        // to default 3. Setting takes effect on panel restart.
+        const v = maxConcurrentBuilds.trim()
+        if (v !== '') {
+            const n = parseInt(v, 10)
+            if (!Number.isInteger(n) || n < 1 || n > 64) {
+                showMessage('error', t('settings.max_builds_invalid'))
+                return
+            }
+        }
+        try {
+            await settingAPI.update('max_concurrent_builds', v)
+            showMessage('success', t('settings.max_builds_saved'))
+        } catch {
+            showMessage('error', t('settings.save_failed'))
+        }
     }
 
     const handleSaveWildcard = async () => {
@@ -512,6 +533,33 @@ function GeneralTab({ showMessage }) {
                         <Flex justify="end">
                             <Button size="1" variant="soft" onClick={handleSaveWildcard}>{t('common.save')}</Button>
                         </Flex>
+                    </Flex>
+                </Card>
+
+                {/* Build queue concurrency cap — v0.17-A1 (env var override still wins) */}
+                <Card mt="4" style={{ background: 'var(--cp-card)', border: '1px solid var(--cp-border)' }}>
+                    <Heading size="3" mb="3">{t('settings.max_builds_label')}</Heading>
+                    <Text size="1" color="gray" mb="3" as="p">{t('settings.max_builds_hint')}</Text>
+                    <Flex direction="column" gap="2">
+                        <Flex align={isMobile ? 'stretch' : 'center'} gap="2" direction={isMobile ? 'column' : 'row'}>
+                            <TextField.Root
+                                placeholder="3"
+                                type="number"
+                                min="1"
+                                max="64"
+                                value={maxConcurrentBuilds}
+                                onChange={(e) => setMaxConcurrentBuilds(e.target.value)}
+                                size="2"
+                                style={{ maxWidth: 140 }}
+                            />
+                        </Flex>
+                        <Flex justify="end">
+                            <Button size="1" variant="soft" onClick={handleSaveMaxConcurrentBuilds}>{t('common.save')}</Button>
+                        </Flex>
+                        <Callout.Root color="orange" size="1">
+                            <Callout.Icon><AlertCircle size={14} /></Callout.Icon>
+                            <Callout.Text>{t('settings.max_builds_restart_warning')}</Callout.Text>
+                        </Callout.Root>
                     </Flex>
                 </Card>
 

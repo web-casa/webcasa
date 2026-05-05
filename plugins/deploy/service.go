@@ -131,7 +131,7 @@ func NewService(db *gorm.DB, coreAPI pluginpkg.CoreAPI, eventBus *pluginpkg.Even
 		activeLogs:    make(map[uint]*LogWriter),
 		buildInflight: make(map[uint]bool),
 		buildPending:  make(map[uint]bool),
-		buildSem:      make(chan struct{}, parseMaxConcurrentBuilds(logger)),
+		buildSem:      make(chan struct{}, parseMaxConcurrentBuilds(logger, coreAPI)),
 		ghApp:       &GitHubAppAuth{},
 		configStore: configStore,
 		cron:        NewCronScheduler(db, logger, dataDir),
@@ -533,25 +533,50 @@ func (s *Service) buildLoop(projectID uint) {
 	}
 }
 
-// parseMaxConcurrentBuilds reads WEBCASA_MAX_CONCURRENT_BUILDS, falling
-// back to defaultMaxConcurrentBuilds. Logs (not fatals) on bad input —
-// a typo in an env var shouldn't prevent the panel from starting.
-func parseMaxConcurrentBuilds(logger *slog.Logger) int {
-	v := os.Getenv("WEBCASA_MAX_CONCURRENT_BUILDS")
-	if v == "" {
-		return defaultMaxConcurrentBuilds
+// parseMaxConcurrentBuilds resolves the panel-wide concurrent-build cap
+// at startup. Precedence (highest first):
+//
+//  1. WEBCASA_MAX_CONCURRENT_BUILDS env var (operator override; survives
+//     across DB resets, useful for systemd unit pinning)
+//  2. `max_concurrent_builds` panel setting (v0.17-A1: configurable
+//     from Settings UI; persisted in DB, requires panel restart)
+//  3. defaultMaxConcurrentBuilds (3, conservative for 2 GiB hosts)
+//
+// Logs (never fatals) on bad input from either source — a typo in an
+// env var or a stale DB value shouldn't prevent the panel from starting.
+// Capped at 64 to prevent runaway misconfiguration regardless of source.
+func parseMaxConcurrentBuilds(logger *slog.Logger, coreAPI pluginpkg.CoreAPI) int {
+	clamp := func(n int) int {
+		if n > 64 {
+			logger.Warn("max_concurrent_builds very high; capping at 64", "got", n)
+			return 64
+		}
+		return n
 	}
-	n, err := strconv.Atoi(v)
-	if err != nil || n <= 0 {
-		logger.Warn("invalid WEBCASA_MAX_CONCURRENT_BUILDS, using default",
-			"got", v, "default", defaultMaxConcurrentBuilds, "err", err)
-		return defaultMaxConcurrentBuilds
+
+	if v := os.Getenv("WEBCASA_MAX_CONCURRENT_BUILDS"); v != "" {
+		n, err := strconv.Atoi(v)
+		if err != nil || n <= 0 {
+			logger.Warn("invalid WEBCASA_MAX_CONCURRENT_BUILDS, using default",
+				"got", v, "default", defaultMaxConcurrentBuilds, "err", err)
+			return defaultMaxConcurrentBuilds
+		}
+		return clamp(n)
 	}
-	if n > 64 {
-		logger.Warn("WEBCASA_MAX_CONCURRENT_BUILDS very high; capping at 64", "got", n)
-		return 64
+	// Fall back to DB setting (UI-configurable since v0.17). coreAPI
+	// can be nil in some test paths — guard so we don't panic in unit tests.
+	if coreAPI != nil {
+		if v, err := coreAPI.GetSetting("max_concurrent_builds"); err == nil && v != "" {
+			n, err := strconv.Atoi(v)
+			if err != nil || n <= 0 {
+				logger.Warn("invalid max_concurrent_builds setting, using default",
+					"got", v, "default", defaultMaxConcurrentBuilds, "err", err)
+				return defaultMaxConcurrentBuilds
+			}
+			return clamp(n)
+		}
 	}
-	return n
+	return defaultMaxConcurrentBuilds
 }
 
 // runBuildOnce performs a single end-to-end build for a project synchronously.

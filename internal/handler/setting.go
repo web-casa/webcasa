@@ -3,6 +3,7 @@ package handler
 import (
 	"net/http"
 	"regexp"
+	"strconv"
 	"strings"
 
 	"github.com/web-casa/webcasa/internal/model"
@@ -56,10 +57,11 @@ func (h *SettingHandler) Update(c *gin.Context) {
 
 	// Only allow known settings
 	allowed := map[string]bool{
-		"auto_reload":     true,
-		"server_ipv4":     true,
-		"server_ipv6":     true,
-		"wildcard_domain": true, // PB-R2-H2: required by Preview Deploy (v0.14+)
+		"auto_reload":            true,
+		"server_ipv4":            true,
+		"server_ipv6":            true,
+		"wildcard_domain":        true, // PB-R2-H2: required by Preview Deploy (v0.14+)
+		"max_concurrent_builds":  true, // v0.17-A1: panel-wide build concurrency cap
 	}
 	if !allowed[req.Key] {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "unknown setting: " + req.Key})
@@ -86,6 +88,18 @@ func (h *SettingHandler) Update(c *gin.Context) {
 		if value != "true" && value != "false" {
 			c.JSON(http.StatusBadRequest, gin.H{"error": "auto_reload must be 'true' or 'false'"})
 			return
+		}
+	case "max_concurrent_builds":
+		// v0.17-A1: positive integer, capped at 64 (mirrors the
+		// in-process cap in parseMaxConcurrentBuilds). Empty resets
+		// to default — handle in the read-side, not here.
+		if value != "" {
+			n, err := strconv.Atoi(strings.TrimSpace(value))
+			if err != nil || n <= 0 || n > 64 {
+				c.JSON(http.StatusBadRequest, gin.H{"error": "max_concurrent_builds must be an integer between 1 and 64"})
+				return
+			}
+			value = strconv.Itoa(n)
 		}
 	}
 

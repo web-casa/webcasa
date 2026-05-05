@@ -6,6 +6,30 @@
 
 ---
 
+## [0.17.0] - 2026-05-05
+
+### Build queue UI + Preview Deploy operator guide
+
+Two small follow-ups to v0.16:
+
+- **Build queue UI** (`max_concurrent_builds` setting): the v0.16
+  `WEBCASA_MAX_CONCURRENT_BUILDS` env-var cap is now also configurable
+  from **Settings → General → Max concurrent builds**. UI value is
+  persisted in the panel DB; env var still wins (operator override
+  for systemd unit pinning). Setting takes effect on next panel
+  restart with a clear warning callout in the UI. Backend validation
+  rejects non-1-64 input on both layers.
+- **`docs/preview-deploy-guide.md`** — operator-facing end-to-end
+  setup guide for Preview Deploy: DNS wildcard → panel setting →
+  per-project enable → GitHub webhook config → verifying first PR.
+  Plus a troubleshooting section and brief architectural notes
+  pointing back at the v0.14/v0.15/v0.16 audit trail.
+
+No new code paths in the deploy plugin runtime — UI just exposes the
+existing knob, doc just teaches what's already there.
+
+---
+
 ## [0.16.0] - 2026-05-05
 
 ### Defer-cleanup batch: build queue + per-PR lock + token-via-env
