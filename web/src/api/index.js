@@ -88,6 +88,7 @@ export function streamSSE(url, { onLog, onStatus, onReset, onDone, onError } = {
                         if (event === 'log') onLog?.(data)
                         else if (event === 'status') onStatus?.(data)
                         else if (event === 'reset') onReset?.(data)
+                        else if (event === 'error') onError?.(new Error(data))
                         else if (event === 'done') { onDone?.(data); return }
                     }
                 }

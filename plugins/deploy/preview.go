@@ -1036,11 +1036,20 @@ func (ps *PreviewService) StreamBuildLog(c *gin.Context, previewID uint) {
 			readN = previewLogMaxBytes
 		}
 		if _, err := f.Seek(offset, 0); err != nil {
+			ps.logger.Warn("stream seek log", "id", previewID, "err", err)
+			emit("error", "log seek failed; will retry")
 			return true
 		}
 		buf := make([]byte, readN)
 		n, err := io.ReadFull(f, buf)
 		if err != nil && err != io.ErrUnexpectedEOF && err != io.EOF {
+			// PB-R3-L1 fix: surface real IO errors instead of silently
+			// returning. Without this an unreadable log would leave
+			// the client polling forever, looking like the build was
+			// silently stuck. The `error` event is informational —
+			// stream stays open so transient errors recover.
+			ps.logger.Warn("stream read log", "id", previewID, "err", err)
+			emit("error", fmt.Sprintf("log read error: %v", err))
 			return true
 		}
 		if n <= 0 {

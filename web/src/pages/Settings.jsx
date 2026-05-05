@@ -183,13 +183,15 @@ function GeneralTab({ showMessage }) {
     }
 
     const handleSaveWildcard = async () => {
-        // PB-R1-M5: normalize + validate. Empty is allowed (disables
-        // preview deploys). Otherwise must be a bare DNS suffix —
-        // reject schemes, paths, wildcards, whitespace, leading dots.
+        // PB-R1-M5 + PB-R3-L2: normalize + validate. Empty is allowed
+        // (disables preview deploys). Otherwise must be a bare DNS
+        // suffix: 2+ labels, each ≤63 chars, total ≤253 (RFC 1035).
+        // Same rule the backend enforces.
         const v = wildcardDomain.trim().toLowerCase()
         if (v !== '') {
-            const valid = /^[a-z0-9]([a-z0-9-]*[a-z0-9])?(\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)+$/.test(v)
-            if (!valid) {
+            const re = /^[a-z0-9]([a-z0-9-]*[a-z0-9])?(\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)+$/
+            const labelsOk = v.split('.').every((label) => label.length <= 63)
+            if (v.length > 253 || !labelsOk || !re.test(v)) {
                 showMessage('error', t('settings.wildcard_invalid'))
                 return
             }
