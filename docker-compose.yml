@@ -9,17 +9,11 @@ services:
       - "80:80" # HTTP
       - "443:443" # HTTPS
     volumes:
+      # Caddy stores its certificates/config under <data-dir>/caddy_data and
+      # /caddy_config (internal/caddy.Manager sets XDG_* there), i.e. inside this
+      # single data volume — so certs persist across upgrades automatically and
+      # no separate Caddy volume is needed.
       - webcasa-data:/app/data
-      # Container runs as the unprivileged "webcasa" user; Caddy data/config
-      # live under /app/caddy (XDG_DATA_HOME / XDG_CONFIG_HOME), not /root.
-      # NOTE: the volume NAMES are kept from the original root-based layout so
-      # upgrades preserve existing certificates. Caddy reads its data dir at
-      # $XDG_DATA_HOME/caddy and config at $XDG_CONFIG_HOME/caddy, so the
-      # existing volumes are mounted at those nested paths:
-      #   caddy-config  was mounted at /root/.local/share/caddy (TLS certs)
-      #   caddy-data    was mounted at /root/.config/caddy       (Caddy config)
-      - caddy-config:/app/caddy/data/caddy # TLS certificates (existing volume)
-      - caddy-data:/app/caddy/config/caddy # Caddy config (existing volume)
     environment:
       - WEBCASA_PORT=39921
       # JWT secret auto-generated on first run and persisted in data/.jwt_secret
@@ -28,5 +22,3 @@ services:
 
 volumes:
   webcasa-data:
-  caddy-config:
-  caddy-data:

@@ -44,32 +44,31 @@ WORKDIR /app
 COPY --from=backend /app/webcasa .
 COPY --from=backend /app/web/dist ./web/dist
 
-# Create unprivileged runtime user and owned data/Caddy dirs.
-# Caddy stores certs/data under $XDG_DATA_HOME and $XDG_CONFIG_HOME; point both
-# at /app so nothing is written under /root and the volumes are user-owned.
+# Create unprivileged runtime user and owned data dir. Caddy's storage is NOT
+# under $XDG_*: internal/caddy.Manager overrides XDG_DATA_HOME/XDG_CONFIG_HOME at
+# spawn time to <dataDir>/caddy_data and <dataDir>/caddy_config — i.e. inside
+# WEBCASA_DATA_DIR (/app/data). So certificates live in the webcasa-data volume
+# and persist across upgrades; there is no separate Caddy volume to manage.
 RUN adduser -S -D -H -h /app webcasa \
-    && mkdir -p /app/data/logs /app/data/backups /app/caddy/data /app/caddy/config \
-    && chown -R webcasa /app/data /app/caddy
+    && mkdir -p /app/data/logs /app/data/backups \
+    && chown -R webcasa /app/data
 
 # Environment defaults
 ENV WEBCASA_PORT=8080
 ENV WEBCASA_DATA_DIR=/app/data
 ENV WEBCASA_CADDY_BIN=/usr/local/bin/caddy
-ENV XDG_DATA_HOME=/app/caddy/data
-ENV XDG_CONFIG_HOME=/app/caddy/config
 
 EXPOSE 8080 80 443
 
 VOLUME ["/app/data"]
 
-# Entrypoint runs as root only long enough to chown the data/Caddy volumes —
-# pre-existing volumes from the old root-based image (or named volumes upgraded
-# in place) are root-owned and otherwise unreadable by the unprivileged user —
-# then drops to `webcasa` via su-exec. The process itself never runs as root.
+# Entrypoint runs as root only long enough to make the data volume owned by the
+# unprivileged user (a pre-existing volume may be root-owned), then drops to
+# `webcasa` via su-exec. The process itself never runs as root.
 RUN printf '%s\n' \
     '#!/bin/sh' \
     'set -e' \
-    'chown -R webcasa /app/data /app/caddy 2>/dev/null || true' \
+    'chown -R webcasa /app/data 2>/dev/null || true' \
     'exec su-exec webcasa "$@"' \
     > /usr/local/bin/entrypoint.sh \
     && chmod +x /usr/local/bin/entrypoint.sh

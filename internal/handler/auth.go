@@ -279,6 +279,20 @@ func (h *AuthHandler) handleTempTokenLogin(c *gin.Context, ip string, req loginR
 		return
 	}
 
+	// Reject a revoked temp token BEFORE validating the 2FA code. ValidateLogin
+	// records the TOTP timestep / permanently consumes a recovery code, so
+	// checking the version afterward would burn a valid code on a session that
+	// was revoked (password/role change, logout-all) during the 2FA step.
+	var tv int
+	h.db.Model(&model.User{}).Select("token_version").Where("id = ?", claims.UserID).Scan(&tv)
+	if claims.TokenVersion != tv {
+		c.JSON(http.StatusUnauthorized, gin.H{
+			"error":     "Session expired, please log in again",
+			"error_key": "error.temp_token_expired",
+		})
+		return
+	}
+
 	// Validate the TOTP code or recovery code
 	valid, err := h.totpSvc.ValidateLogin(claims.UserID, req.TOTPCode)
 	if err != nil || !valid {
@@ -290,19 +304,8 @@ func (h *AuthHandler) handleTempTokenLogin(c *gin.Context, ip string, req loginR
 		return
 	}
 
-	// Issue full JWT. Embed the user's current TokenVersion so revocation
-	// (password/role change, logout-all) invalidates this session too.
-	var tv int
-	h.db.Model(&model.User{}).Select("token_version").Where("id = ?", claims.UserID).Scan(&tv)
-	// If the version changed between first factor and 2FA completion, the
-	// session was revoked in the interim — refuse to mint a full token.
-	if claims.TokenVersion != tv {
-		c.JSON(http.StatusUnauthorized, gin.H{
-			"error":     "Session expired, please log in again",
-			"error_key": "error.temp_token_expired",
-		})
-		return
-	}
+	// Issue full JWT with the (already-validated) TokenVersion so revocation
+	// continues to invalidate this session.
 	token, err := auth.GenerateToken(claims.UserID, claims.Username, h.cfg.JWTSecret, tv)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to generate token"})

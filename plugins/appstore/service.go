@@ -362,7 +362,13 @@ func (s *Service) InstallApp(req *InstallAppRequest) (*InstalledApp, error) {
 	// compose to pin it, and persist the resolved digests for drift detection.
 	pinned, digests, err := s.pinComposeImages(composeDir, stackName, rendered)
 	if err != nil {
-		s.setStatus(installed.ID, "error")
+		// Roll back fully: an unpinned compose file + a plugin_docker_stacks
+		// record already exist, and Docker Overview could later `up` them and
+		// run the floating image — defeating the fail-closed pin. Remove the
+		// stack record, the install record, and the on-disk compose.
+		s.deleteDockerStackRecord(stackName)
+		s.db.Delete(&InstalledApp{}, installed.ID)
+		os.RemoveAll(composeDir)
 		return nil, fmt.Errorf("pin images: %w", err)
 	}
 	if pinned != rendered {
@@ -696,8 +702,14 @@ func (s *Service) UpdateApp(id uint) error {
 	rendered := SanitizeCompose(RenderCompose(app.ComposeFile, formValues, builtins))
 	envContent := RenderEnvFile(formValues, builtins)
 
+	// Capture the current (already-pinned) compose so we can restore it if the
+	// new images can't be pinned — otherwise a failed update would leave an
+	// unpinned compose on disk that the existing stack would later start.
+	composePath := filepath.Join(installed.ComposeDir, "docker-compose.yml")
+	prevCompose, _ := os.ReadFile(composePath)
+
 	// Write updated files
-	if err := os.WriteFile(filepath.Join(installed.ComposeDir, "docker-compose.yml"), []byte(rendered), 0600); err != nil {
+	if err := os.WriteFile(composePath, []byte(rendered), 0600); err != nil {
 		return fmt.Errorf("write compose file: %w", err)
 	}
 	if err := os.WriteFile(filepath.Join(installed.ComposeDir, ".env"), []byte(envContent), 0600); err != nil {
@@ -709,6 +721,11 @@ func (s *Service) UpdateApp(id uint) error {
 	// the resolved digests for drift detection.
 	pinned, digests, err := s.pinComposeImages(installed.ComposeDir, installed.StackName, rendered)
 	if err != nil {
+		// Restore the previous pinned compose so the existing stack stays
+		// startable with its pinned image rather than the new floating one.
+		if len(prevCompose) > 0 {
+			os.WriteFile(composePath, prevCompose, 0600)
+		}
 		s.setStatus(id, "error")
 		return fmt.Errorf("pin images: %w", err)
 	}

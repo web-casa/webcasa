@@ -1279,7 +1279,6 @@
         "name": "文件名",
         "size": "大小",
         "permissions": "权限",
-        "permissions_hint": "选择此令牌可使用的权限范围,至少选择一项。系统写入 / 文件写入等写权限拥有较高权限,请按需勾选。",
         "owner": "所有者",
         "modified": "修改时间",
         "empty_dir": "此目录为空",
@@ -1593,6 +1592,8 @@
         "retry_install": "重试安装"
     },
     "mcp": {
+        "permissions": "权限",
+        "permissions_hint": "选择此令牌可使用的权限范围,至少选择一项。系统写入 / 文件写入等写权限拥有较高权限,请按需勾选。",
         "title": "API 令牌",
         "subtitle": "管理 MCP（模型上下文协议）和外部集成的 API 令牌",
         "create_token": "创建令牌",
