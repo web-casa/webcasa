@@ -168,6 +168,9 @@ func main() {
 
 	// User info
 	protected.GET("/auth/me", authH.Me)
+	// Invalidate all of the caller's outstanding JWTs by bumping their token
+	// version (see auth.Middleware token-version check).
+	protected.POST("/auth/logout-all", authH.LogoutAll)
 
 	// 2FA TOTP endpoints
 	protected.POST("/auth/2fa/setup", authH.Setup2FA)

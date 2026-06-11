@@ -341,12 +341,12 @@ func injectSocketLabelDisable(content string) string {
 	// header shape, or a line at <= services_indent that's not a comment.
 	servicesIndent := -1
 	type svc struct {
-		start, end, indent        int
-		mountsSock                bool
-		secOptIndex               int // line number of existing `security_opt:` (-1 if none)
-		secOptIndent              int // indent of that line
-		secOptListItemIndent      int // indent of the first `- …` item under it (-1 if none)
-		hasLabelDisable           bool
+		start, end, indent   int
+		mountsSock           bool
+		secOptIndex          int // line number of existing `security_opt:` (-1 if none)
+		secOptIndent         int // indent of that line
+		secOptListItemIndent int // indent of the first `- …` item under it (-1 if none)
+		hasLabelDisable      bool
 	}
 	var svcs []svc
 	var cur *svc

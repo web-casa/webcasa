@@ -61,8 +61,8 @@ func (p *Plugin) Init(ctx *pluginpkg.Context) error {
 	p.handler = NewHandler(p.svc, p.tplSvc)
 
 	// 4. Register routes
-	r := ctx.Router       // read-only for any logged-in user
-	a := ctx.AdminRouter  // admin-only for dangerous operations
+	r := ctx.Router         // read-only for any logged-in user
+	a := ctx.AdminRouter    // admin-only for dangerous operations
 	pub := ctx.PublicRouter // public (no JWT) for static assets
 
 	// App catalog (read)

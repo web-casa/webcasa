@@ -12,10 +12,10 @@ import (
 // suffixed mounts must be left alone.
 func TestSanitizeCompose_RelabelHostBindMounts(t *testing.T) {
 	cases := []struct {
-		name      string
-		in        string
-		mustHave  []string // substrings that must appear in output
-		mustMiss  []string // substrings that must NOT appear in output
+		name     string
+		in       string
+		mustHave []string // substrings that must appear in output
+		mustMiss []string // substrings that must NOT appear in output
 	}{
 		{
 			name: "host path with env var → :Z appended",

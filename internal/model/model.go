@@ -14,6 +14,7 @@ type User struct {
 	TOTPEnabled      *bool     `gorm:"default:false" json:"totp_enabled"`          // whether 2FA is enabled
 	LastTOTPTimestep int64     `gorm:"default:0" json:"-"`                         // last accepted TOTP timestep (replay protection)
 	RecoveryCodes    string    `gorm:"type:text" json:"-"`                         // JSON array of recovery code hashes
+	TokenVersion     int       `gorm:"default:0" json:"-"`                         // bumped on password/role change to revoke outstanding JWTs
 	CreatedAt        time.Time `json:"created_at"`
 	UpdatedAt        time.Time `json:"updated_at"`
 }

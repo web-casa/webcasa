@@ -133,6 +133,32 @@ func (s *Service) GetCategories() []string {
 }
 
 // ── Installation ──
+//
+// ── App Store supply-chain trust model ──
+//
+// Sources are UNSIGNED. App definitions (the docker-compose.yml and the
+// container images it references) are pulled from admin-added Git repos with
+// NO signature verification, NO commit pinning, and the upstream compose files
+// are NOT digest-pinned. We therefore treat every source as untrusted and
+// apply two backend-enforced controls at install time:
+//
+//  1. Explicit acknowledgement — installing from an unsigned source REQUIRES
+//     InstallAppRequest.AcknowledgeUnsigned == true. Otherwise InstallApp
+//     returns an *UnsignedSourceError listing exactly which images/compose
+//     would run, so the risk is an audited, opt-in choice rather than silent.
+//
+//  2. Image digest pinning — before `compose up`, every service image is
+//     pulled and resolved to an immutable name@sha256:<digest> reference, and
+//     the rendered compose is rewritten to pin to that digest (already-pinned
+//     refs are left as-is). If the registry is unreachable we FAIL the install
+//     rather than run an unpinned/floating image. The resolved digests are
+//     persisted on the InstalledApp so registry-side tag drift is detectable.
+//
+// A stronger model — signed app manifests (e.g. cosign/in-toto over the
+// compose + pinned digests, verified before install) — is the better long-term
+// design but is intentionally NOT implemented here. This is the minimal,
+// operator-chosen model: digest pinning + unsigned acknowledgement, no signing
+// system.
 
 // InstallAppRequest is the input for installing an app.
 type InstallAppRequest struct {
@@ -141,6 +167,27 @@ type InstallAppRequest struct {
 	FormValues map[string]string `json:"form_values"`
 	Domain     string            `json:"domain,omitempty"`
 	AutoUpdate bool              `json:"auto_update"`
+	// AcknowledgeUnsigned must be true to install from an unsigned (untrusted)
+	// source. When false/absent, InstallApp returns *UnsignedSourceError so the
+	// UI can surface the warning and require explicit confirmation.
+	AcknowledgeUnsigned bool `json:"acknowledge_unsigned"`
+}
+
+// UnsignedSourceError is returned by InstallApp when the target app comes from
+// an unsigned source and the caller has not acknowledged the risk. It carries
+// the concrete images that would run so the UI can show the user what they are
+// trusting before they confirm.
+type UnsignedSourceError struct {
+	AppID      string   `json:"app_id"`
+	SourceID   uint     `json:"source_id"`
+	SourceName string   `json:"source_name"`
+	Images     []string `json:"images"`
+}
+
+func (e *UnsignedSourceError) Error() string {
+	return fmt.Sprintf("app %q comes from an unsigned source %q (id %d) and was not acknowledged; "+
+		"set acknowledge_unsigned=true to install. Images that would run: %s",
+		e.AppID, e.SourceName, e.SourceID, strings.Join(e.Images, ", "))
 }
 
 // InstallApp renders compose, creates Docker Stack, optionally creates host.
@@ -149,6 +196,24 @@ func (s *Service) InstallApp(req *InstallAppRequest) (*InstalledApp, error) {
 	app, err := s.GetAppByAppID(req.AppID)
 	if err != nil {
 		return nil, fmt.Errorf("app %q not found", req.AppID)
+	}
+
+	// 1b. Unsigned-source gate. The source is untrusted (no signature/manifest
+	// verification); require an explicit, audited acknowledgement before
+	// running anything. Surfaced as a structured error listing the images so
+	// the UI can show the user exactly what they are about to trust.
+	if !req.AcknowledgeUnsigned && s.sourceIsUnsigned(app.SourceID) {
+		var srcName string
+		var src AppSource
+		if s.db.First(&src, app.SourceID).Error == nil {
+			srcName = src.Name
+		}
+		return nil, &UnsignedSourceError{
+			AppID:      req.AppID,
+			SourceID:   app.SourceID,
+			SourceName: srcName,
+			Images:     extractComposeImages(app.ComposeFile),
+		}
 	}
 
 	// 2. Validate force_expose: app requires a domain
@@ -291,7 +356,33 @@ func (s *Service) InstallApp(req *InstallAppRequest) (*InstalledApp, error) {
 		s.logger.Warn("failed to create docker stack record", "err", err)
 	}
 
-	// 10. docker compose up
+	// 10. Pin images to immutable digests, then up. We pull first (failing the
+	// install if the registry is unreachable rather than running an unpinned
+	// image), resolve each service image to name@sha256:<digest>, rewrite the
+	// compose to pin it, and persist the resolved digests for drift detection.
+	pinned, digests, err := s.pinComposeImages(composeDir, stackName, rendered)
+	if err != nil {
+		s.setStatus(installed.ID, "error")
+		return nil, fmt.Errorf("pin images: %w", err)
+	}
+	if pinned != rendered {
+		rendered = pinned
+		if err := os.WriteFile(filepath.Join(composeDir, "docker-compose.yml"), []byte(rendered), 0600); err != nil {
+			s.setStatus(installed.ID, "error")
+			return nil, fmt.Errorf("write pinned compose: %w", err)
+		}
+		// Keep the Docker Overview record in sync with the pinned compose.
+		s.db.Table("plugin_docker_stacks").Where("name = ?", stackName).
+			Update("compose_file", rendered)
+	}
+	if len(digests) > 0 {
+		if b, err := json.Marshal(digests); err == nil {
+			installed.ImageDigests = string(b)
+			s.db.Model(installed).Update("image_digests", installed.ImageDigests)
+		}
+	}
+
+	// docker compose up (images already pulled+pinned above)
 	if err := s.runCompose(composeDir, stackName, "up", "-d", "--remove-orphans"); err != nil {
 		s.setStatus(installed.ID, "error")
 		return nil, fmt.Errorf("compose up: %w", err)
@@ -613,8 +704,28 @@ func (s *Service) UpdateApp(id uint) error {
 		return fmt.Errorf("write env file: %w", err)
 	}
 
-	// Pull new images and recreate
-	_ = s.runCompose(installed.ComposeDir, installed.StackName, "pull")
+	// Pull new images, pin them to immutable digests, then recreate. Same
+	// trust model as install: never run a floating/unpinned image, and record
+	// the resolved digests for drift detection.
+	pinned, digests, err := s.pinComposeImages(installed.ComposeDir, installed.StackName, rendered)
+	if err != nil {
+		s.setStatus(id, "error")
+		return fmt.Errorf("pin images: %w", err)
+	}
+	if pinned != rendered {
+		rendered = pinned
+		if err := os.WriteFile(filepath.Join(installed.ComposeDir, "docker-compose.yml"), []byte(rendered), 0600); err != nil {
+			s.setStatus(id, "error")
+			return fmt.Errorf("write pinned compose file: %w", err)
+		}
+		s.db.Table("plugin_docker_stacks").Where("name = ?", installed.StackName).
+			Update("compose_file", rendered)
+	}
+	if len(digests) > 0 {
+		if b, err := json.Marshal(digests); err == nil {
+			s.db.Model(&installed).Update("image_digests", string(b))
+		}
+	}
 	if err := s.runCompose(installed.ComposeDir, installed.StackName, "up", "-d", "--remove-orphans"); err != nil {
 		s.setStatus(id, "error")
 		return fmt.Errorf("compose up: %w", err)
@@ -635,6 +746,137 @@ func (s *Service) UpdateApp(id uint) error {
 
 func (s *Service) setStatus(id uint, status string) {
 	s.db.Model(&InstalledApp{}).Where("id = ?", id).Update("status", status)
+}
+
+// sourceIsUnsigned reports whether the given source is untrusted. Today every
+// source is unsigned; the column makes this explicit and future-proofs a
+// signed-manifest model. A missing/unknown source is treated as unsigned
+// (fail-closed).
+func (s *Service) sourceIsUnsigned(sourceID uint) bool {
+	var src AppSource
+	if err := s.db.First(&src, sourceID).Error; err != nil {
+		return true
+	}
+	return src.Unsigned
+}
+
+// extractComposeImages returns the image references declared in a compose
+// document (in declaration order, deduplicated). It is a line-based scan that
+// mirrors the rest of this plugin's compose handling; it is best-effort and
+// used only to inform the user which images would run.
+func extractComposeImages(compose string) []string {
+	var images []string
+	seen := make(map[string]bool)
+	for _, line := range strings.Split(compose, "\n") {
+		trimmed := strings.TrimSpace(line)
+		if !strings.HasPrefix(trimmed, "image:") {
+			continue
+		}
+		ref := strings.TrimSpace(strings.TrimPrefix(trimmed, "image:"))
+		// Strip inline comment and surrounding quotes.
+		if i := strings.Index(ref, " #"); i >= 0 {
+			ref = strings.TrimSpace(ref[:i])
+		}
+		ref = strings.Trim(ref, "\"'")
+		if ref == "" || seen[ref] {
+			continue
+		}
+		seen[ref] = true
+		images = append(images, ref)
+	}
+	return images
+}
+
+// pinComposeImages pulls the compose's images and rewrites every `image:` line
+// to an immutable name@sha256:<digest> reference. Already-digest-pinned refs
+// and refs containing an unresolved ${VAR} are left untouched. It returns the
+// (possibly rewritten) compose and a list of the resolved name@digest refs.
+//
+// The pull happens via `docker compose pull` so registry auth / .env are
+// honored; if it fails (e.g. registry unreachable) we return an error and the
+// caller aborts the install rather than running an unpinned image.
+func (s *Service) pinComposeImages(dir, projectName, compose string) (string, []string, error) {
+	images := extractComposeImages(compose)
+	if len(images) == 0 {
+		return compose, nil, nil
+	}
+
+	// Pull first so the digest we resolve is the one that will actually run.
+	if err := s.runCompose(dir, projectName, "pull"); err != nil {
+		return "", nil, fmt.Errorf("pull images (registry unreachable?): %w", err)
+	}
+
+	// Resolve tag → digest once per distinct image ref.
+	resolved := make(map[string]string, len(images))
+	var digests []string
+	for _, ref := range images {
+		if strings.Contains(ref, "${") {
+			// Unresolved variable — can't safely pin; leave as-is. (Rare:
+			// builtins are already substituted by RenderCompose.)
+			continue
+		}
+		if strings.Contains(ref, "@sha256:") {
+			// Already immutable.
+			resolved[ref] = ref
+			digests = append(digests, ref)
+			continue
+		}
+		pinned, err := s.resolveImageDigest(ref)
+		if err != nil {
+			return "", nil, fmt.Errorf("resolve digest for %q: %w", ref, err)
+		}
+		resolved[ref] = pinned
+		digests = append(digests, pinned)
+	}
+
+	// Rewrite the `image:` lines, preserving indentation and quoting style.
+	var out []string
+	for _, line := range strings.Split(compose, "\n") {
+		trimmed := strings.TrimSpace(line)
+		if strings.HasPrefix(trimmed, "image:") {
+			ref := strings.Trim(strings.TrimSpace(strings.TrimPrefix(trimmed, "image:")), "\"'")
+			if pinned, ok := resolved[ref]; ok && pinned != ref {
+				indent := line[:len(line)-len(strings.TrimLeft(line, " \t"))]
+				out = append(out, indent+"image: "+pinned)
+				continue
+			}
+		}
+		out = append(out, line)
+	}
+	return strings.Join(out, "\n"), digests, nil
+}
+
+// resolveImageDigest returns the immutable name@sha256:<digest> form of a
+// freshly pulled image by reading its RepoDigests from the local image store.
+// The repo-digest entry already carries the registry path, so we use it
+// directly; if multiple are present we prefer the one matching ref's repo.
+func (s *Service) resolveImageDigest(ref string) (string, error) {
+	cmd := exec.Command("docker", "image", "inspect", "--format", "{{range .RepoDigests}}{{println .}}{{end}}", ref)
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		return "", fmt.Errorf("image inspect: %s", strings.TrimSpace(string(output)))
+	}
+	repo := ref
+	if i := strings.LastIndex(ref, ":"); i >= 0 && !strings.Contains(ref[i:], "/") {
+		repo = ref[:i] // strip tag, keep registry/repo
+	}
+	var fallback string
+	for _, line := range strings.Split(strings.TrimSpace(string(output)), "\n") {
+		rd := strings.TrimSpace(line)
+		if rd == "" || !strings.Contains(rd, "@sha256:") {
+			continue
+		}
+		if fallback == "" {
+			fallback = rd
+		}
+		if strings.HasPrefix(rd, repo+"@") {
+			return rd, nil
+		}
+	}
+	if fallback != "" {
+		return fallback, nil
+	}
+	return "", fmt.Errorf("no RepoDigest found for %q (image may be locally built or registry stripped digests)", ref)
 }
 
 // runCompose executes docker compose with the given args.

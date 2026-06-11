@@ -57,10 +57,14 @@ func (sm *SourceManager) AddSource(name, url, branch, kind string) (*AppSource, 
 	}
 
 	src := &AppSource{
-		Name:       name,
-		URL:        url,
-		Branch:     branch,
-		Kind:       kind,
+		Name:   name,
+		URL:    url,
+		Branch: branch,
+		Kind:   kind,
+		// Unsigned: there is no signature/manifest verification for source
+		// repos today, so every admin-added source is untrusted. Installing
+		// from it requires explicit acknowledgement (see Service.InstallApp).
+		Unsigned:   true,
 		SyncStatus: "pending",
 	}
 	if err := sm.db.Create(src).Error; err != nil {
@@ -282,7 +286,7 @@ func (sm *SourceManager) syncApps(sourceID uint, repoPath string) error {
 			FormFields:  string(formFieldsJSON),
 			LogoPath:    app.LogoPath,
 			Website:     app.Config.Website,
-			Source:       app.Config.Source,
+			Source:      app.Config.Source,
 			Available:   available,
 			UrlSuffix:   app.Config.UrlSuffix,
 			Deprecated:  app.Config.Deprecated,
@@ -426,11 +430,14 @@ func SeedOfficialSources(db *gorm.DB) {
 
 	// Official Web.Casa app source (Runtipi-compatible with Chinese translations)
 	db.Create(&AppSource{
-		Name:       "Web.Casa App Store",
-		URL:        "https://github.com/web-casa/appstore",
-		Branch:     "master",
-		Kind:       "app",
-		IsDefault:  true,
+		Name:      "Web.Casa App Store",
+		URL:       "https://github.com/web-casa/appstore",
+		Branch:    "master",
+		Kind:      "app",
+		IsDefault: true,
+		// Even the official source is unsigned today (no signed manifest);
+		// the trust model treats all sources identically.
+		Unsigned:   true,
 		SyncStatus: "seeded",
 	})
 }

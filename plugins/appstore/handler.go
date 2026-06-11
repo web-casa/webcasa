@@ -3,6 +3,7 @@ package appstore
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"os"
@@ -10,8 +11,8 @@ import (
 	"strconv"
 	"strings"
 
-	webhandler "github.com/web-casa/webcasa/internal/handler"
 	"github.com/gin-gonic/gin"
+	webhandler "github.com/web-casa/webcasa/internal/handler"
 )
 
 // Handler implements the REST API handlers for the App Store.
@@ -346,6 +347,21 @@ func (h *Handler) InstallApp(c *gin.Context) {
 
 	app, err := h.svc.InstallApp(&req)
 	if err != nil {
+		// Unsigned source not acknowledged: return a structured 412 so the UI
+		// can show the user which images/compose will run and require explicit
+		// confirmation (resubmit with acknowledge_unsigned=true).
+		var unsigned *UnsignedSourceError
+		if errors.As(err, &unsigned) {
+			c.JSON(http.StatusPreconditionFailed, gin.H{
+				"error":       err.Error(),
+				"unsigned":    true,
+				"app_id":      unsigned.AppID,
+				"source_id":   unsigned.SourceID,
+				"source_name": unsigned.SourceName,
+				"images":      unsigned.Images,
+			})
+			return
+		}
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
 	}

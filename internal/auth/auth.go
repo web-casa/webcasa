@@ -13,6 +13,7 @@ import (
 
 	"github.com/gin-gonic/gin"
 	"github.com/golang-jwt/jwt/v5"
+	"github.com/web-casa/webcasa/internal/model"
 	"golang.org/x/crypto/bcrypt"
 	"gorm.io/gorm"
 )
@@ -55,9 +56,10 @@ func WSUpgradeResponseHeader(c *gin.Context) http.Header {
 
 // Claims defines JWT token claims
 type Claims struct {
-	UserID     uint   `json:"user_id"`
-	Username   string `json:"username"`
-	Pending2FA bool   `json:"pending_2fa,omitempty"`
+	UserID       uint   `json:"user_id"`
+	Username     string `json:"username"`
+	Pending2FA   bool   `json:"pending_2fa,omitempty"`
+	TokenVersion int    `json:"tv,omitempty"`
 	jwt.RegisteredClaims
 }
 
@@ -73,11 +75,19 @@ func CheckPassword(hashedPassword, password string) bool {
 	return err == nil
 }
 
-// GenerateToken creates a JWT token for a given user
-func GenerateToken(userID uint, username, secret string) (string, error) {
+// GenerateToken creates a JWT token for a given user. The optional
+// tokenVersion embeds the user's current TokenVersion (claim "tv") so the
+// middleware can revoke outstanding tokens on password/role change; omitting
+// it yields tv=0 (legacy callers / tests).
+func GenerateToken(userID uint, username, secret string, tokenVersion ...int) (string, error) {
+	tv := 0
+	if len(tokenVersion) > 0 {
+		tv = tokenVersion[0]
+	}
 	claims := Claims{
-		UserID:   userID,
-		Username: username,
+		UserID:       userID,
+		Username:     username,
+		TokenVersion: tv,
 		RegisteredClaims: jwt.RegisteredClaims{
 			ExpiresAt: jwt.NewNumericDate(time.Now().Add(24 * time.Hour)),
 			IssuedAt:  jwt.NewNumericDate(time.Now()),
@@ -221,6 +231,24 @@ func Middleware(secret string, opts ...MiddlewareOption) gin.HandlerFunc {
 			c.JSON(http.StatusUnauthorized, gin.H{"error": "2FA verification required", "error_key": "error.2fa_required"})
 			c.Abort()
 			return
+		}
+
+		// Token-version revocation: a JWT is invalidated once the user's
+		// TokenVersion is bumped (password change, role change, logout-all).
+		// Missing claim (legacy token) = 0 and default user = 0, so existing
+		// tokens stay valid until the first bump. One indexed lookup by id.
+		if cfg.db != nil {
+			var tv int
+			if err := cfg.db.Model(&model.User{}).Select("token_version").Where("id = ?", claims.UserID).Scan(&tv).Error; err != nil {
+				c.JSON(http.StatusUnauthorized, gin.H{"error": "Invalid or expired token"})
+				c.Abort()
+				return
+			}
+			if claims.TokenVersion != tv {
+				c.JSON(http.StatusUnauthorized, gin.H{"error": "Session expired, please log in again", "error_key": "error.session_revoked"})
+				c.Abort()
+				return
+			}
 		}
 
 		c.Next()

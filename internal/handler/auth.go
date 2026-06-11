@@ -119,7 +119,7 @@ func (h *AuthHandler) Setup(c *gin.Context) {
 	}
 
 	h.limiters.Login.RecordSuccess(ip)
-	token, _ := auth.GenerateToken(user.ID, user.Username, h.cfg.JWTSecret)
+	token, _ := auth.GenerateToken(user.ID, user.Username, h.cfg.JWTSecret, user.TokenVersion)
 	c.JSON(http.StatusOK, gin.H{
 		"message": "Admin user created successfully",
 		"token":   token,
@@ -219,7 +219,7 @@ func (h *AuthHandler) Login(c *gin.Context) {
 		}
 	}
 
-	token, err := auth.GenerateToken(user.ID, user.Username, h.cfg.JWTSecret)
+	token, err := auth.GenerateToken(user.ID, user.Username, h.cfg.JWTSecret, user.TokenVersion)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to generate token"})
 		return
@@ -288,8 +288,11 @@ func (h *AuthHandler) handleTempTokenLogin(c *gin.Context, ip string, req loginR
 		return
 	}
 
-	// Issue full JWT
-	token, err := auth.GenerateToken(claims.UserID, claims.Username, h.cfg.JWTSecret)
+	// Issue full JWT. Embed the user's current TokenVersion so revocation
+	// (password/role change, logout-all) invalidates this session too.
+	var tv int
+	h.db.Model(&model.User{}).Select("token_version").Where("id = ?", claims.UserID).Scan(&tv)
+	token, err := auth.GenerateToken(claims.UserID, claims.Username, h.cfg.JWTSecret, tv)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to generate token"})
 		return
@@ -304,6 +307,25 @@ func (h *AuthHandler) handleTempTokenLogin(c *gin.Context, ip string, req loginR
 			"username": claims.Username,
 		},
 	})
+}
+
+// LogoutAll invalidates every outstanding JWT for the calling user by bumping
+// their TokenVersion. The caller's own current token is invalidated too, so the
+// client must log in again. Route (wire in main.go): POST /auth/logout-all,
+// behind the JWT auth middleware.
+func (h *AuthHandler) LogoutAll(c *gin.Context) {
+	userID, ok := c.Get("user_id")
+	if !ok {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "Authorization required"})
+		return
+	}
+	if err := h.db.Model(&model.User{}).Where("id = ?", userID).
+		UpdateColumn("token_version", gorm.Expr("token_version + 1")).Error; err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to revoke sessions"})
+		return
+	}
+	h.audit(c, "LOGOUT_ALL", "Revoked all sessions")
+	c.JSON(http.StatusOK, gin.H{"message": "All sessions revoked"})
 }
 
 // Me returns the current authenticated user info

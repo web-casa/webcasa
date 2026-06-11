@@ -1,17 +1,27 @@
 package versioncheck
 
 import (
+	"crypto/ed25519"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"io"
 	"log/slog"
 	"net/http"
+	"os"
 	"os/exec"
 	"strconv"
 	"strings"
 	"sync"
 	"time"
 )
+
+// pubKeyEnv is the env var holding a base64-encoded ed25519 public key used to
+// verify a detached signature over the fetched manifest bytes. When set,
+// fetchManifest requires a valid signature served alongside the manifest
+// (manifestURL + ".sig", a base64-encoded ed25519 signature). When unset,
+// manifest fetching keeps its prior behavior but is logged as unverified.
+const pubKeyEnv = "WEBCASA_VERSIONCHECK_PUBKEY"
 
 // RemoteVersions is the top-level structure of the remote versions.json manifest.
 type RemoteVersions struct {
@@ -179,12 +189,81 @@ func (c *Checker) fetchManifest() (*RemoteVersions, error) {
 		return nil, fmt.Errorf("read body: %w", err)
 	}
 
+	// Defense in depth: verify a detached ed25519 signature over the raw
+	// manifest bytes when a public key is configured. Reject on mismatch so a
+	// MITM'd or compromised manifest host cannot feed us a forged manifest.
+	// When unconfigured this is a no-op (current behavior) but is logged so
+	// operators know the manifest is unverified.
+	if err := c.verifyManifest(body); err != nil {
+		return nil, fmt.Errorf("verify manifest: %w", err)
+	}
+
 	var manifest RemoteVersions
 	if err := json.Unmarshal(body, &manifest); err != nil {
 		return nil, fmt.Errorf("parse JSON: %w", err)
 	}
 
 	return &manifest, nil
+}
+
+// verifyManifest validates a detached ed25519 signature over body when a public
+// key is configured via WEBCASA_VERSIONCHECK_PUBKEY (base64). The signature is
+// fetched from manifestURL + ".sig" (base64-encoded). Returns nil (allowing the
+// fetch) when no key is configured, logging that the manifest is unverified.
+func (c *Checker) verifyManifest(body []byte) error {
+	keyB64 := strings.TrimSpace(os.Getenv(pubKeyEnv))
+	if keyB64 == "" {
+		c.logger.Warn("manifest signature verification disabled (no public key configured); manifest is unverified", "env", pubKeyEnv)
+		return nil
+	}
+
+	pubKey, err := base64.StdEncoding.DecodeString(keyB64)
+	if err != nil {
+		return fmt.Errorf("decode public key: %w", err)
+	}
+	if len(pubKey) != ed25519.PublicKeySize {
+		return fmt.Errorf("invalid public key size %d (want %d)", len(pubKey), ed25519.PublicKeySize)
+	}
+
+	sig, err := c.fetchSignature()
+	if err != nil {
+		return fmt.Errorf("fetch signature: %w", err)
+	}
+
+	if !ed25519.Verify(ed25519.PublicKey(pubKey), body, sig) {
+		return fmt.Errorf("signature does not match manifest")
+	}
+	c.logger.Info("manifest signature verified")
+	return nil
+}
+
+// fetchSignature downloads the detached signature (base64-encoded ed25519) from
+// manifestURL + ".sig". The signature blob is capped to a small size.
+func (c *Checker) fetchSignature() ([]byte, error) {
+	client := &http.Client{Timeout: 30 * time.Second}
+	resp, err := client.Get(c.manifestURL + ".sig")
+	if err != nil {
+		return nil, fmt.Errorf("HTTP GET: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("unexpected status %d", resp.StatusCode)
+	}
+
+	raw, err := io.ReadAll(io.LimitReader(resp.Body, 4096)) // signatures are tiny
+	if err != nil {
+		return nil, fmt.Errorf("read body: %w", err)
+	}
+
+	sig, err := base64.StdEncoding.DecodeString(strings.TrimSpace(string(raw)))
+	if err != nil {
+		return nil, fmt.Errorf("decode signature: %w", err)
+	}
+	if len(sig) != ed25519.SignatureSize {
+		return nil, fmt.Errorf("invalid signature size %d (want %d)", len(sig), ed25519.SignatureSize)
+	}
+	return sig, nil
 }
 
 // checkLocal detects locally installed tools and compares with the manifest.

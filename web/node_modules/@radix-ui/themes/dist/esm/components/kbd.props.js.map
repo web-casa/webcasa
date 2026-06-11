@@ -1,7 +1,0 @@
-{
-  "version": 3,
-  "sources": ["../../../src/components/kbd.props.tsx"],
-  "sourcesContent": ["import { asChildPropDef } from '../props/as-child.prop.js';\n\nimport type { PropDef } from '../props/prop-def.js';\n\nconst sizes = ['1', '2', '3', '4', '5', '6', '7', '8', '9'] as const;\nconst variants = ['classic', 'soft'] as const;\n\nconst kbdPropDefs = {\n  ...asChildPropDef,\n  size: {\n    type: 'enum',\n    className: 'rt-r-size',\n    values: sizes,\n    responsive: true,\n  },\n  variant: {\n    type: 'enum',\n    className: 'rt-variant',\n    values: variants,\n    default: 'classic',\n  },\n} satisfies {\n  size: PropDef<(typeof sizes)[number]>;\n  variant: PropDef<(typeof variants)[number]>;\n};\n\nexport { kbdPropDefs };\n"],
-  "mappings": "AAAA,OAAS,kBAAAA,MAAsB,4BAI/B,MAAMC,EAAQ,CAAC,IAAK,IAAK,IAAK,IAAK,IAAK,IAAK,IAAK,IAAK,GAAG,EACpDC,EAAW,CAAC,UAAW,MAAM,EAE7BC,EAAc,CAClB,GAAGH,EACH,KAAM,CACJ,KAAM,OACN,UAAW,YACX,OAAQC,EACR,WAAY,EACd,EACA,QAAS,CACP,KAAM,OACN,UAAW,aACX,OAAQC,EACR,QAAS,SACX,CACF",
-  "names": ["asChildPropDef", "sizes", "variants", "kbdPropDefs"]
-}

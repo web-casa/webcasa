@@ -6,12 +6,17 @@ import "time"
 
 // AppSource represents a Git repository that contains app definitions.
 type AppSource struct {
-	ID         uint       `gorm:"primaryKey" json:"id"`
-	Name       string     `gorm:"size:128;not null" json:"name"`
-	URL        string     `gorm:"size:512;not null" json:"url"`
-	Branch     string     `gorm:"size:64;default:main" json:"branch"`
-	Kind       string     `gorm:"size:16;default:app" json:"kind"` // "app" or "template"
-	IsDefault  bool       `gorm:"default:false" json:"is_default"`
+	ID        uint   `gorm:"primaryKey" json:"id"`
+	Name      string `gorm:"size:128;not null" json:"name"`
+	URL       string `gorm:"size:512;not null" json:"url"`
+	Branch    string `gorm:"size:64;default:main" json:"branch"`
+	Kind      string `gorm:"size:16;default:app" json:"kind"` // "app" or "template"
+	IsDefault bool   `gorm:"default:false" json:"is_default"`
+	// Unsigned marks a source as untrusted: its app definitions (compose +
+	// images) are pulled from a Git repo with NO signature/manifest
+	// verification. All sources are unsigned today (see the trust-model note
+	// in service.go); installing from one requires explicit acknowledgement.
+	Unsigned   bool       `gorm:"default:true" json:"unsigned"`
 	LastSyncAt *time.Time `json:"last_sync_at"`
 	SyncStatus string     `gorm:"size:16;default:pending" json:"sync_status"` // pending, syncing, synced, error
 	SyncError  string     `gorm:"type:text" json:"sync_error,omitempty"`
@@ -33,22 +38,22 @@ type AppDefinition struct {
 	Description string    `gorm:"type:text" json:"description,omitempty"` // markdown from description.md
 	Version     string    `gorm:"size:64" json:"version"`
 	Author      string    `gorm:"size:128" json:"author"`
-	Categories  string    `gorm:"size:512" json:"categories"`  // JSON array: ["media","cloud"]
-	Port        int       `json:"port"`                        // default exposed port
+	Categories  string    `gorm:"size:512" json:"categories"` // JSON array: ["media","cloud"]
+	Port        int       `json:"port"`                       // default exposed port
 	Exposable   bool      `gorm:"default:true" json:"exposable"`
-	ComposeFile string    `gorm:"type:text" json:"-"`          // raw docker-compose.yml (hidden from list)
-	ConfigJSON  string    `gorm:"type:text" json:"-"`          // raw config.json (hidden from list)
+	ComposeFile string    `gorm:"type:text" json:"-"`           // raw docker-compose.yml (hidden from list)
+	ConfigJSON  string    `gorm:"type:text" json:"-"`           // raw config.json (hidden from list)
 	FormFields  string    `gorm:"type:text" json:"form_fields"` // JSON array of FormField
-	LogoPath    string    `gorm:"size:512" json:"logo_path"`   // relative path in source dir
+	LogoPath    string    `gorm:"size:512" json:"logo_path"`    // relative path in source dir
 	Website     string    `gorm:"size:512" json:"website"`
-	Source      string    `gorm:"size:512" json:"source_url"`  // upstream source code URL
+	Source      string    `gorm:"size:512" json:"source_url"` // upstream source code URL
 	Available   bool      `gorm:"default:true" json:"available"`
-	UrlSuffix   string    `gorm:"size:128" json:"url_suffix"`   // e.g. "/admin" for Pi-hole
+	UrlSuffix   string    `gorm:"size:128" json:"url_suffix"` // e.g. "/admin" for Pi-hole
 	Deprecated  bool      `gorm:"default:false" json:"deprecated"`
 	NoGUI       bool      `gorm:"default:false" json:"no_gui"`
 	ForceExpose bool      `gorm:"default:false" json:"force_expose"`
-	I18nJSON    string    `gorm:"type:text" json:"-"`           // JSON map of lang -> AppI18n
-	DescZh      string    `gorm:"type:text" json:"-"`           // Chinese description markdown
+	I18nJSON    string    `gorm:"type:text" json:"-"` // JSON map of lang -> AppI18n
+	DescZh      string    `gorm:"type:text" json:"-"` // Chinese description markdown
 	CreatedAt   time.Time `json:"created_at"`
 	UpdatedAt   time.Time `json:"updated_at"`
 }
@@ -59,22 +64,26 @@ func (AppDefinition) TableName() string { return "plugin_appstore_apps" }
 
 // InstalledApp represents an installed instance of an app.
 type InstalledApp struct {
-	ID         uint      `gorm:"primaryKey" json:"id"`
-	AppID      string    `gorm:"size:128;index" json:"app_id"`
-	AppName    string    `gorm:"size:255" json:"app_name"`    // display name from AppDefinition
-	Name       string    `gorm:"size:128;not null" json:"name"` // user-chosen instance name
-	StackName  string    `gorm:"size:128" json:"stack_name"`  // Docker compose project name
-	HostID     uint      `gorm:"default:0" json:"host_id"`    // reverse proxy host (0 = none)
-	Domain     string    `gorm:"size:255" json:"domain"`
-	Port       int       `json:"port"`
-	FormValues string    `gorm:"type:text" json:"-"`           // JSON map of user-entered values
-	Version    string    `gorm:"size:64" json:"version"`
-	Status     string    `gorm:"size:16;default:installing" json:"status"` // installing, running, stopped, error
-	ComposeDir string    `gorm:"size:512" json:"-"`            // path to rendered compose files
-	AutoUpdate bool      `gorm:"default:false" json:"auto_update"`
-	UrlSuffix  string    `gorm:"size:128" json:"url_suffix"`   // e.g. "/admin"
-	CreatedAt  time.Time `json:"created_at"`
-	UpdatedAt  time.Time `json:"updated_at"`
+	ID         uint   `gorm:"primaryKey" json:"id"`
+	AppID      string `gorm:"size:128;index" json:"app_id"`
+	AppName    string `gorm:"size:255" json:"app_name"`      // display name from AppDefinition
+	Name       string `gorm:"size:128;not null" json:"name"` // user-chosen instance name
+	StackName  string `gorm:"size:128" json:"stack_name"`    // Docker compose project name
+	HostID     uint   `gorm:"default:0" json:"host_id"`      // reverse proxy host (0 = none)
+	Domain     string `gorm:"size:255" json:"domain"`
+	Port       int    `json:"port"`
+	FormValues string `gorm:"type:text" json:"-"` // JSON map of user-entered values
+	Version    string `gorm:"size:64" json:"version"`
+	Status     string `gorm:"size:16;default:installing" json:"status"` // installing, running, stopped, error
+	ComposeDir string `gorm:"size:512" json:"-"`                        // path to rendered compose files
+	AutoUpdate bool   `gorm:"default:false" json:"auto_update"`
+	UrlSuffix  string `gorm:"size:128" json:"url_suffix"` // e.g. "/admin"
+	// ImageDigests records the immutable name@sha256:<digest> references that
+	// were actually pinned and run at install time. Persisted so registry-side
+	// tag drift (a tag being re-pushed to a different image) is detectable.
+	ImageDigests string    `gorm:"type:text" json:"image_digests,omitempty"` // JSON array of pinned refs
+	CreatedAt    time.Time `json:"created_at"`
+	UpdatedAt    time.Time `json:"updated_at"`
 }
 
 func (InstalledApp) TableName() string { return "plugin_appstore_installed" }

@@ -121,6 +121,10 @@ func (h *UserHandler) Update(c *gin.Context) {
 		return
 	}
 
+	// Bump TokenVersion when role or password changes so all outstanding JWTs
+	// for this user are revoked ("改密/改角色即失效").
+	revoke := false
+
 	if req.Role != "" {
 		if !auth.ValidRoles[req.Role] {
 			c.JSON(http.StatusBadRequest, gin.H{"error": "role must be 'owner', 'admin', 'operator', or 'viewer'"})
@@ -130,6 +134,9 @@ func (h *UserHandler) Update(c *gin.Context) {
 		if req.Role == auth.RoleOwner && callerRole != auth.RoleOwner {
 			c.JSON(http.StatusForbidden, gin.H{"error": "only owner can assign owner role"})
 			return
+		}
+		if user.Role != req.Role {
+			revoke = true
 		}
 		user.Role = req.Role
 	}
@@ -145,6 +152,11 @@ func (h *UserHandler) Update(c *gin.Context) {
 			return
 		}
 		user.Password = string(hash)
+		revoke = true
+	}
+
+	if revoke {
+		user.TokenVersion++
 	}
 
 	h.db.Save(&user)

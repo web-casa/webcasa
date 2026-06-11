@@ -34,7 +34,7 @@ type AppConfig struct {
 
 // FormField defines a user-configurable parameter in an app's install form.
 type FormField struct {
-	Type         string       `json:"type"`                    // text, password, email, number, fqdn, ip, fqdnip, random, boolean
+	Type         string       `json:"type"` // text, password, email, number, fqdn, ip, fqdnip, random, boolean
 	Label        string       `json:"label"`
 	Hint         string       `json:"hint,omitempty"`
 	Placeholder  string       `json:"placeholder,omitempty"`
@@ -46,7 +46,7 @@ type FormField struct {
 	Regex        string       `json:"regex,omitempty"`
 	PatternError string       `json:"pattern_error,omitempty"`
 	Options      []FormOption `json:"options,omitempty"`
-	Encoding     string       `json:"encoding,omitempty"`      // "base64" for base64-encoded random values
+	Encoding     string       `json:"encoding,omitempty"` // "base64" for base64-encoded random values
 }
 
 // FormOption is a selectable option for dropdown form fields.
@@ -57,9 +57,9 @@ type FormOption struct {
 
 // AppI18n holds localized strings for an app (from metadata/i18n/{lang}.json).
 type AppI18n struct {
-	Name      string                       `json:"name"`
-	ShortDesc string                       `json:"short_desc"`
-	Fields    map[string]FormFieldI18n     `json:"form_fields,omitempty"`
+	Name      string                   `json:"name"`
+	ShortDesc string                   `json:"short_desc"`
+	Fields    map[string]FormFieldI18n `json:"form_fields,omitempty"`
 }
 
 // FormFieldI18n holds localized label/hint for a form field.
@@ -71,10 +71,10 @@ type FormFieldI18n struct {
 // ParsedApp is the result of parsing one app directory.
 type ParsedApp struct {
 	Config      *AppConfig
-	ComposeFile string            // raw docker-compose.yml content
-	Description string            // markdown from metadata/description.md
-	DescZh      string            // markdown from metadata/description.zh.md
-	LogoPath    string            // relative path to logo (e.g. "nextcloud/metadata/logo.jpg")
+	ComposeFile string              // raw docker-compose.yml content
+	Description string              // markdown from metadata/description.md
+	DescZh      string              // markdown from metadata/description.zh.md
+	LogoPath    string              // relative path to logo (e.g. "nextcloud/metadata/logo.jpg")
 	I18n        map[string]*AppI18n // lang -> translations (e.g. "zh" -> {...})
 }
 
