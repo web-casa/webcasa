@@ -1279,6 +1279,7 @@
         "name": "Name",
         "size": "Size",
         "permissions": "Permissions",
+        "permissions_hint": "Select the scopes this token may use. At least one is required; write scopes like System Write / Files Write grant powerful access — only enable what you need.",
         "owner": "Owner",
         "modified": "Modified",
         "empty_dir": "This directory is empty",

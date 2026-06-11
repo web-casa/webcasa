@@ -194,7 +194,9 @@ func (h *AuthHandler) Login(c *gin.Context) {
 	if user.TOTPEnabled != nil && *user.TOTPEnabled {
 		if req.TOTPCode == "" {
 			// 2FA enabled but no code provided — return temp token
-			tempToken, err := auth.GenerateTempToken(user.ID, user.Username, h.cfg.JWTSecret)
+			// Pin the user's current TokenVersion so a password change or
+			// logout-all during the 2FA step invalidates this temp token too.
+			tempToken, err := auth.GenerateTempToken(user.ID, user.Username, h.cfg.JWTSecret, user.TokenVersion)
 			if err != nil {
 				c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to generate temp token"})
 				return
@@ -292,6 +294,15 @@ func (h *AuthHandler) handleTempTokenLogin(c *gin.Context, ip string, req loginR
 	// (password/role change, logout-all) invalidates this session too.
 	var tv int
 	h.db.Model(&model.User{}).Select("token_version").Where("id = ?", claims.UserID).Scan(&tv)
+	// If the version changed between first factor and 2FA completion, the
+	// session was revoked in the interim — refuse to mint a full token.
+	if claims.TokenVersion != tv {
+		c.JSON(http.StatusUnauthorized, gin.H{
+			"error":     "Session expired, please log in again",
+			"error_key": "error.temp_token_expired",
+		})
+		return
+	}
 	token, err := auth.GenerateToken(claims.UserID, claims.Username, h.cfg.JWTSecret, tv)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to generate token"})

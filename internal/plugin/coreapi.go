@@ -551,8 +551,12 @@ func (a *CoreAPIImpl) RunCommand(cmd string, timeoutSec int) (string, error) {
 // defense in depth only — a denylist is not a security boundary; the proper
 // fix is dropping privileges / sandboxing (out of scope here).
 var blockedCommandRes = []*regexp.Regexp{
-	// Recursive force-remove of the root filesystem (flags in any order).
-	regexp.MustCompile(`\brm\b(\s+-\S+)*\s+/(\s|$)`),
+	// Recursive/forced rm of an absolute path: `rm <flags...> /<anything>`.
+	// Requires at least one flag so a single-file `rm /path` isn't blocked,
+	// but catches `rm -rf /`, `rm -rf /*`, `rm -rf /etc`, and reordered flags
+	// like `rm -r -f /home` (the previous `/(\s|$)` form missed the glob and
+	// sub-path cases).
+	regexp.MustCompile(`\brm\b(\s+-\S+)+\s+/\S*`),
 	// Filesystem / block-device destruction.
 	regexp.MustCompile(`\bmkfs\b`),
 	regexp.MustCompile(`\bdd\b.*\bif=`),

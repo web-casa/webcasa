@@ -811,9 +811,11 @@ func (s *Service) pinComposeImages(dir, projectName, compose string) (string, []
 	var digests []string
 	for _, ref := range images {
 		if strings.Contains(ref, "${") {
-			// Unresolved variable — can't safely pin; leave as-is. (Rare:
-			// builtins are already substituted by RenderCompose.)
-			continue
+			// Unresolved variable in the image ref: `docker compose up` would
+			// still interpolate it from .env and run a floating tag, defeating
+			// the digest-pinning guarantee the trust model promises. Fail closed
+			// rather than run an unpinned image.
+			return "", nil, fmt.Errorf("image %q uses an unresolved variable and cannot be digest-pinned; this app is not supported under digest pinning", ref)
 		}
 		if strings.Contains(ref, "@sha256:") {
 			// Already immutable.

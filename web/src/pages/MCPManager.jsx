@@ -209,7 +209,7 @@ export default function MCPManager() {
                             </Flex>
                             <Flex direction="column" gap="1">
                                 <Text size="2" weight="medium">{t('mcp.permissions', 'Permissions')}</Text>
-                                <Text size="1" color="gray">{t('mcp.permissions_hint', 'Leave empty for full access')}</Text>
+                                <Text size="1" color="gray">{t('mcp.permissions_hint', 'Select the scopes this token may use. At least one is required; write scopes like System Write / Files Write grant powerful access — only enable what you need.')}</Text>
                                 <Flex wrap="wrap" gap="2" mt="1">
                                     {[
                                         { scope: 'hosts:read', label: 'Hosts Read' }, { scope: 'hosts:write', label: 'Hosts Write' },
@@ -239,7 +239,7 @@ export default function MCPManager() {
                             </Flex>
                             <Flex gap="3" mt="2" justify="end">
                                 <Dialog.Close><Button variant="soft" color="gray">{t('common.cancel')}</Button></Dialog.Close>
-                                <Button onClick={handleCreate} disabled={creating || !form.name.trim()}>
+                                <Button onClick={handleCreate} disabled={creating || !form.name.trim() || form.permissions.length === 0}>
                                     {creating ? t('common.creating') : t('common.create')}
                                 </Button>
                             </Flex>

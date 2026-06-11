@@ -100,11 +100,16 @@ func GenerateToken(userID uint, username, secret string, tokenVersion ...int) (s
 }
 
 // GenerateTempToken creates a short-lived JWT (5 min) with pending_2fa flag
-func GenerateTempToken(userID uint, username, secret string) (string, error) {
+func GenerateTempToken(userID uint, username, secret string, tokenVersion ...int) (string, error) {
+	tv := 0
+	if len(tokenVersion) > 0 {
+		tv = tokenVersion[0]
+	}
 	claims := Claims{
-		UserID:     userID,
-		Username:   username,
-		Pending2FA: true,
+		UserID:       userID,
+		Username:     username,
+		Pending2FA:   true,
+		TokenVersion: tv,
 		RegisteredClaims: jwt.RegisteredClaims{
 			ExpiresAt: jwt.NewNumericDate(time.Now().Add(5 * time.Minute)),
 			IssuedAt:  jwt.NewNumericDate(time.Now()),

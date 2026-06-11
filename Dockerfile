@@ -20,8 +20,9 @@ RUN CGO_ENABLED=1 go build -o webcasa .
 
 # Runtime stage
 FROM alpine:3.19
-# libcap provides setcap (used to grant Caddy privileged-port binding as non-root)
-RUN apk add --no-cache ca-certificates curl bash libcap
+# libcap provides setcap (privileged-port binding as non-root); su-exec drops
+# privileges from the entrypoint after fixing volume ownership.
+RUN apk add --no-cache ca-certificates curl bash libcap su-exec
 
 # Install Caddy — pinned version + mandatory SHA256 verification.
 # Keep CADDY_VERSION in sync with the VERSIONS file used by install.sh.
@@ -61,6 +62,17 @@ EXPOSE 8080 80 443
 
 VOLUME ["/app/data"]
 
-USER webcasa
+# Entrypoint runs as root only long enough to chown the data/Caddy volumes —
+# pre-existing volumes from the old root-based image (or named volumes upgraded
+# in place) are root-owned and otherwise unreadable by the unprivileged user —
+# then drops to `webcasa` via su-exec. The process itself never runs as root.
+RUN printf '%s\n' \
+    '#!/bin/sh' \
+    'set -e' \
+    'chown -R webcasa /app/data /app/caddy 2>/dev/null || true' \
+    'exec su-exec webcasa "$@"' \
+    > /usr/local/bin/entrypoint.sh \
+    && chmod +x /usr/local/bin/entrypoint.sh
 
+ENTRYPOINT ["/usr/local/bin/entrypoint.sh"]
 CMD ["./webcasa"]
