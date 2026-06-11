@@ -1,9 +1,21 @@
 import { useState, useEffect, useCallback, useRef } from 'react'
-import { Box, Flex, Heading, Text, Card, Button, TextField, Badge, Tabs, Dialog, Select, Separator, IconButton, Tooltip, Callout } from '@radix-ui/themes'
-import { Store, Search, RefreshCw, Settings2, Plus, Trash2, Play, Square, ArrowUpCircle, ExternalLink, Package, Copy, Check, Globe } from 'lucide-react'
+import { Box, Flex, Heading, Text, Card, Button, TextField, Badge, Tabs, Dialog, Select, Separator, IconButton, Tooltip, Callout, Popover, Code, ScrollArea } from '@radix-ui/themes'
+import { Store, Search, RefreshCw, Settings2, Plus, Trash2, Play, Square, ArrowUpCircle, ExternalLink, Package, Copy, Check, Globe, ShieldCheck } from 'lucide-react'
 import { useNavigate, useSearchParams } from 'react-router'
 import { appstoreAPI } from '../api/index.js'
 import { useTranslation } from 'react-i18next'
+
+// image_digests is stored as a JSON array string of the immutable
+// name@sha256:<digest> refs pinned at install time. Parse defensively.
+function parsePinnedImages(raw) {
+    if (!raw) return []
+    try {
+        const arr = JSON.parse(raw)
+        return Array.isArray(arr) ? arr.filter(Boolean) : []
+    } catch {
+        return []
+    }
+}
 
 export default function AppStore() {
     const { t, i18n } = useTranslation()
@@ -384,6 +396,30 @@ export default function AppStore() {
                                                             </IconButton>
                                                         </Tooltip>
                                                     </Flex>
+                                                    {(() => {
+                                                        const pinned = parsePinnedImages(app.image_digests)
+                                                        if (pinned.length === 0) return null
+                                                        return (
+                                                            <Popover.Root>
+                                                                <Popover.Trigger>
+                                                                    <Badge color="green" variant="soft" size="1" mt="1" style={{ cursor: 'pointer' }}>
+                                                                        <ShieldCheck size={11} /> {t('appstore.pinned_images', { count: pinned.length })}
+                                                                    </Badge>
+                                                                </Popover.Trigger>
+                                                                <Popover.Content size="1" maxWidth="480px">
+                                                                    <Text size="1" weight="bold" color="gray">{t('appstore.pinned_images_title')}</Text>
+                                                                    <Text size="1" color="gray" as="p" mb="2">{t('appstore.pinned_images_hint')}</Text>
+                                                                    <ScrollArea type="auto" scrollbars="vertical" style={{ maxHeight: 200 }}>
+                                                                        <Flex direction="column" gap="1">
+                                                                            {pinned.map((img) => (
+                                                                                <Code key={img} size="1" variant="soft" style={{ wordBreak: 'break-all' }}>{img}</Code>
+                                                                            ))}
+                                                                        </Flex>
+                                                                    </ScrollArea>
+                                                                </Popover.Content>
+                                                            </Popover.Root>
+                                                        )
+                                                    })()}
                                                 </Box>
                                             </Flex>
                                             <Flex gap="2">
