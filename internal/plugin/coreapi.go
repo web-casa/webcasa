@@ -503,13 +503,14 @@ func (a *CoreAPIImpl) RunCommand(cmd string, timeoutSec int) (string, error) {
 		timeoutSec = 120
 	}
 
-	// Security: best-effort denylist of clearly-destructive / remote-exec
-	// patterns. This is NOT a security boundary — the command still runs via
-	// bash, so a determined caller can obfuscate around any blocklist. The real
-	// fix is running this process as a non-root, sandboxed user (out of scope
-	// here). We normalise whitespace first so `rm -r -f /` is caught like
-	// `rm -rf /`, and use compiled regexes to catch piping remote content to a
-	// shell.
+	// Defense in depth: a best-effort denylist of clearly-destructive /
+	// remote-exec patterns. This is NOT the primary boundary — on a systemd
+	// host the command actually runs inside a locked-down DynamicUser sandbox
+	// (see execx.SandboxBashContext); the denylist just fails obviously-bad
+	// commands fast and covers the Docker fallback (where the process is
+	// already a non-root user). We normalise whitespace first so `rm -r -f /`
+	// is caught like `rm -rf /`, and use compiled regexes to catch piping
+	// remote content to a shell.
 	if err := checkBlockedCommand(cmd); err != nil {
 		return "", err
 	}
@@ -517,11 +518,13 @@ func (a *CoreAPIImpl) RunCommand(cmd string, timeoutSec int) (string, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), time.Duration(timeoutSec)*time.Second)
 	defer cancel()
 
-	// Kill the full pipeline tree on timeout/cancel. Without Setpgid the
-	// context's SIGKILL only lands on the outer bash, so a shelled-out
-	// `foo | bar` leaves bar parented to init and the timeout is
-	// effectively ignored. execx.BashContext wires the Cancel hook.
-	c := execx.BashContext(ctx, cmd)
+	// Run the arbitrary command inside a privilege-dropping systemd sandbox
+	// when available (root + systemd), otherwise fall back to a plain bash
+	// pipeline (Docker, where we already run unprivileged). Either way the
+	// process-group Cancel hook kills the whole tree on timeout/cancel — without
+	// Setpgid the SIGKILL only lands on the outer process and a shelled-out
+	// `foo | bar` leaves bar parented to init.
+	c := execx.SandboxBashContext(ctx, cmd, timeoutSec)
 	var buf bytes.Buffer
 	c.Stdout = &buf
 	c.Stderr = &buf

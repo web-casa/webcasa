@@ -48,9 +48,26 @@ func tokenFromContext(ctx context.Context) string {
 	return ""
 }
 
+// dangerousScopes are the root-equivalent tool scopes whose blast radius is
+// effectively the whole host: arbitrary command execution, arbitrary file
+// writes/deletes, arbitrary container runs, and arbitrary scheduled commands.
+// A convenience full-access ["*"] token does NOT grant these — they must be
+// listed explicitly (e.g. ["system:write"]) so that issuing a broad token for
+// read/ordinary-write automation can't silently hand an external MCP client
+// unattended root. This is the "non-interactive tokens are denied dangerous
+// tools unless explicitly opted in" control.
+var dangerousScopes = map[string]bool{
+	"system:write":  true,
+	"files:write":   true,
+	"docker:write":  true,
+	"cronjob:write": true,
+}
+
 // checkPermission verifies the current token has the required permission scope.
 // Scope format: "hosts:read", "hosts:write", "deploy:write", "docker:write", etc.
-// ["*"] grants full access; empty or "[]" grants NO access.
+// ["*"] grants full access to ordinary scopes; empty or "[]" grants NO access.
+// Root-equivalent scopes (see dangerousScopes) are excluded from the "*"
+// wildcard and must be granted explicitly.
 func checkPermission(ctx context.Context, scope string) error {
 	permsStr, _ := ctx.Value(permissionsContextKey).(string)
 	if permsStr == "" || permsStr == "[]" {
@@ -68,17 +85,28 @@ func checkPermission(ctx context.Context, scope string) error {
 	// Parse the requested scope: "hosts:write" → category="hosts", action="write"
 	parts := splitScope(scope)
 	category, action := parts[0], parts[1]
+	dangerous := dangerousScopes[scope]
 
 	for _, p := range perms {
 		pp := splitScope(p)
 		pCat, pAct := pp[0], pp[1]
-		if pCat == "*" || pCat == category {
-			if pAct == "*" || pAct == action {
-				return nil
+		// Dangerous scopes require the category to be named explicitly; a bare
+		// "*" (full-access) wildcard does not reach them.
+		if dangerous {
+			if pCat != category {
+				continue
 			}
+		} else if pCat != "*" && pCat != category {
+			continue
+		}
+		if pAct == "*" || pAct == action {
+			return nil
 		}
 	}
 
+	if dangerous {
+		return fmt.Errorf("permission denied: %q is a root-equivalent scope and must be granted explicitly on the token (a wildcard \"*\" does not grant it)", scope)
+	}
 	return fmt.Errorf("permission denied: token lacks %q scope", scope)
 }
 

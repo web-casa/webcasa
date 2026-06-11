@@ -158,9 +158,15 @@ gaps that were closed.
 
 ## Residual risks & accepted items (not changed in this round)
 
-- **Command execution still runs as root.** The `RunCommand` denylist is
-  best-effort; the proper boundary is a non-root, namespaced/jailed execution
-  user. Tracked for a future hardening pass.
+- ~~**Command execution still runs as root.**~~ **Addressed (v0.20, Release A).**
+  `coreapi.RunCommand` now runs arbitrary commands inside a privilege-dropping
+  systemd sandbox (`execx.SandboxBashContext`: `DynamicUser`, `NoNewPrivileges`,
+  `ProtectSystem=strict`, `ProtectHome`, `PrivateTmp/Devices`, memory/task caps,
+  `RuntimeMaxSec`). On hosts without systemd (Docker) the process already runs
+  as a non-root user, so the plain fallback is acceptable. The denylist is now
+  documented as a fast-fail speed bump, not the boundary. Trade-off: sandboxed
+  commands run read-only as a nobody-class user — privileged/mutating ops must
+  use dedicated audited tools, not the arbitrary-command path.
 - **App Store installs unsigned remote Compose.** Sources are SSRF-validated and
   admin-added, but there is no commit pinning / signature / image-digest
   verification; a compromised upstream repo ships a malicious compose on the
@@ -188,7 +194,11 @@ These are intended consequences of the fixes, not regressions:
    writes will receive HTTP 403. Per-route `category:action` gating can be wired
    later via the exported `RequireTokenScope(scope)` middleware.
 2. **New MCP tokens default to no permissions** — scopes must be specified
-   explicitly at creation.
+   explicitly at creation. As of v0.20 the root-equivalent scopes
+   (`system:write`, `files:write`, `docker:write`, `cronjob:write`) are **not**
+   granted by a wildcard `["*"]` token — they must be listed explicitly, so a
+   broad convenience token cannot hand an external MCP client unattended
+   privileged automation.
 3. **Encryption-at-rest** — existing data still decrypts (automatic fallback to
    the legacy key) and re-encrypts under HKDF on next save. No migration step.
 4. **Docker** — Caddy data moved from `/root/.local/share/caddy` to
