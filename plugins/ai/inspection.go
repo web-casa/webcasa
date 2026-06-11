@@ -42,8 +42,8 @@ type InspectionReport struct {
 
 // InspectionFinding is a single issue found during inspection.
 type InspectionFinding struct {
-	Severity    string `json:"severity"`    // info, warning, critical
-	Category    string `json:"category"`    // ssl, disk, container, config, memory
+	Severity    string `json:"severity"` // info, warning, critical
+	Category    string `json:"category"` // ssl, disk, container, config, memory
 	Title       string `json:"title"`
 	Description string `json:"description"`
 }

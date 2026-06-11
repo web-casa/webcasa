@@ -69,8 +69,8 @@ type openAIToolRequest struct {
 type openAIToolChunk struct {
 	Choices []struct {
 		Delta struct {
-			Content   string                 `json:"content"`
-			ToolCalls []openAIToolCallDelta  `json:"tool_calls"`
+			Content   string                `json:"content"`
+			ToolCalls []openAIToolCallDelta `json:"tool_calls"`
 		} `json:"delta"`
 		FinishReason *string `json:"finish_reason"`
 	} `json:"choices"`
@@ -277,10 +277,10 @@ type anthropicToolStreamEvent struct {
 	Type         string `json:"type"`
 	Index        int    `json:"index"`
 	ContentBlock *struct {
-		Type  string `json:"type"`
-		ID    string `json:"id,omitempty"`
-		Name  string `json:"name,omitempty"`
-		Text  string `json:"text,omitempty"`
+		Type string `json:"type"`
+		ID   string `json:"id,omitempty"`
+		Name string `json:"name,omitempty"`
+		Text string `json:"text,omitempty"`
 	} `json:"content_block,omitempty"`
 	Delta *struct {
 		Type        string `json:"type"`

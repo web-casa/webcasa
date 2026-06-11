@@ -37,6 +37,13 @@ func (p *Plugin) Metadata() pluginpkg.Metadata {
 func (p *Plugin) Init(ctx *pluginpkg.Context) error {
 	rootPath := ctx.ConfigStore.Get("root_path")
 	if rootPath == "" {
+		// SECURITY: default root_path="/" grants the file manager full-filesystem
+		// read/write access. This is intended only for trusted single-admin
+		// installs. Containment/symlink-escape checks in FileOps.safePath still
+		// run with root "/", but every real path is trivially contained, so the
+		// effective boundary is the whole filesystem. Set root_path to a narrower
+		// directory to restrict access. The default is left unchanged to avoid
+		// breaking existing installs that rely on it.
 		rootPath = "/"
 	}
 
@@ -44,8 +51,8 @@ func (p *Plugin) Init(ctx *pluginpkg.Context) error {
 	p.termMgr = NewTerminalManager(ctx.Logger)
 	p.handler = NewHandler(p.fileOps, p.termMgr)
 
-	_ = ctx.Router        // unused — all file ops require admin
-	a := ctx.AdminRouter  // admin-only
+	_ = ctx.Router       // unused — all file ops require admin
+	a := ctx.AdminRouter // admin-only
 
 	// File operations (read — admin only, viewers must not browse server files)
 	a.GET("/list", p.handler.List)

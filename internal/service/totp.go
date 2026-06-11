@@ -10,13 +10,20 @@ import (
 	"fmt"
 	"io"
 	"math/big"
+	"time"
 
+	"github.com/pquerna/otp/totp"
 	"github.com/web-casa/webcasa/internal/config"
 	"github.com/web-casa/webcasa/internal/model"
-	"github.com/pquerna/otp/totp"
 	"golang.org/x/crypto/bcrypt"
+	"golang.org/x/crypto/hkdf"
 	"gorm.io/gorm"
 )
+
+// totpInfo is the HKDF domain-separation label for TOTP-secret encryption. It is
+// distinct from the credentials label so TOTP secrets and credentials never share
+// an effective key, even though both derive from the JWT secret.
+const totpInfo = "webcasa-totp-v1"
 
 // RecoveryCodeEntry represents a single recovery code stored in the database
 type RecoveryCodeEntry struct {
@@ -35,10 +42,34 @@ func NewTOTPService(db *gorm.DB, cfg *config.Config) *TOTPService {
 	return &TOTPService{db: db, cfg: cfg}
 }
 
-// deriveAESKey derives a 32-byte AES key from the JWT secret using SHA-256
+// deriveAESKey derives a 32-byte AES key from the JWT secret using HKDF-SHA256
+// with the TOTP domain-separation label.
 func deriveAESKey(jwtSecret string) []byte {
+	key := make([]byte, 32)
+	r := hkdf.New(sha256.New, []byte(jwtSecret), nil, []byte(totpInfo))
+	if _, err := io.ReadFull(r, key); err != nil {
+		// HKDF over SHA-256 cannot fail for a 32-byte output; fall back to SHA-256.
+		return legacyDeriveAESKey(jwtSecret)
+	}
+	return key
+}
+
+// legacyDeriveAESKey reproduces the old bare-SHA256 key derivation. It exists only
+// so TOTP secrets encrypted before the HKDF migration can still be decrypted.
+func legacyDeriveAESKey(jwtSecret string) []byte {
 	hash := sha256.Sum256([]byte(jwtSecret))
 	return hash[:]
+}
+
+// decryptTOTPSecret decrypts a stored TOTP secret, trying the HKDF key first and
+// falling back to the legacy SHA-256 key for pre-migration data. Legacy values are
+// re-encrypted with the HKDF key the next time the secret is regenerated.
+func (s *TOTPService) decryptTOTPSecret(encrypted string) ([]byte, error) {
+	secretBytes, err := decryptAESGCM(encrypted, deriveAESKey(s.cfg.JWTSecret))
+	if err != nil {
+		secretBytes, err = decryptAESGCM(encrypted, legacyDeriveAESKey(s.cfg.JWTSecret))
+	}
+	return secretBytes, err
 }
 
 // encryptAESGCM encrypts plaintext using AES-GCM with the derived key
@@ -79,6 +110,27 @@ func decryptAESGCM(encoded string, key []byte) ([]byte, error) {
 	}
 	nonce, ciphertext := data[:nonceSize], data[nonceSize:]
 	return aesGCM.Open(nil, nonce, ciphertext, nil)
+}
+
+// totpPeriod is the TOTP step length in seconds, matching totp.Validate defaults.
+const totpPeriod = 30
+
+// matchedTimestep validates code against secret over the same ±1 window that
+// totp.Validate uses, and returns the timestep (Unix time / period) the code
+// matched. ok is false if the code is not valid for any step in the window.
+func matchedTimestep(code, secret string, now time.Time) (step int64, ok bool) {
+	current := now.Unix() / totpPeriod
+	// Check current step first, then ±1, so the latest matching step wins.
+	for _, s := range []int64{current, current + 1, current - 1} {
+		expected, err := totp.GenerateCode(secret, time.Unix(s*totpPeriod, 0))
+		if err != nil {
+			continue
+		}
+		if expected == code {
+			return s, true
+		}
+	}
+	return 0, false
 }
 
 // GenerateSecret generates a TOTP secret for a user, encrypts and stores it.
@@ -147,8 +199,7 @@ func (s *TOTPService) VerifyAndEnable(userID uint, code string) ([]string, error
 	}
 
 	// Decrypt the TOTP secret
-	aesKey := deriveAESKey(s.cfg.JWTSecret)
-	secretBytes, err := decryptAESGCM(user.TOTPSecret, aesKey)
+	secretBytes, err := s.decryptTOTPSecret(user.TOTPSecret)
 	if err != nil {
 		return nil, fmt.Errorf("failed to decrypt TOTP secret: %w", err)
 	}
@@ -175,10 +226,14 @@ func (s *TOTPService) VerifyAndEnable(userID uint, code string) ([]string, error
 		return nil, fmt.Errorf("failed to marshal recovery codes: %w", err)
 	}
 
-	// Enable 2FA
+	// Enable 2FA. Record the timestep used to enable so the same code cannot be
+	// replayed at login (TOTP replay protection).
 	enabled := true
 	user.TOTPEnabled = &enabled
 	user.RecoveryCodes = string(codesJSON)
+	if step, ok := matchedTimestep(code, string(secretBytes), time.Now()); ok {
+		user.LastTOTPTimestep = step
+	}
 	if err := s.db.Save(&user).Error; err != nil {
 		return nil, fmt.Errorf("failed to enable 2FA: %w", err)
 	}
@@ -198,8 +253,7 @@ func (s *TOTPService) Disable(userID uint, code string) error {
 	}
 
 	// Decrypt and validate TOTP code
-	aesKey := deriveAESKey(s.cfg.JWTSecret)
-	secretBytes, err := decryptAESGCM(user.TOTPSecret, aesKey)
+	secretBytes, err := s.decryptTOTPSecret(user.TOTPSecret)
 	if err != nil {
 		return fmt.Errorf("failed to decrypt TOTP secret: %w", err)
 	}
@@ -238,13 +292,22 @@ func (s *TOTPService) ValidateLogin(userID uint, code string) (bool, error) {
 	}
 
 	// Try TOTP code first
-	aesKey := deriveAESKey(s.cfg.JWTSecret)
-	secretBytes, err := decryptAESGCM(user.TOTPSecret, aesKey)
+	secretBytes, err := s.decryptTOTPSecret(user.TOTPSecret)
 	if err != nil {
 		return false, fmt.Errorf("failed to decrypt TOTP secret: %w", err)
 	}
 
-	if totp.Validate(code, string(secretBytes)) {
+	// Replay protection: find the timestep the code matches and reject any code
+	// from a timestep already consumed (<= the last accepted one). On success we
+	// persist the new timestep so the same code cannot be reused within its window.
+	if step, ok := matchedTimestep(code, string(secretBytes), time.Now()); ok {
+		if step <= user.LastTOTPTimestep {
+			return false, nil
+		}
+		if err := s.db.Model(&model.User{}).Where("id = ?", user.ID).
+			Update("last_totp_timestep", step).Error; err != nil {
+			return false, fmt.Errorf("failed to record TOTP timestep: %w", err)
+		}
 		return true, nil
 	}
 

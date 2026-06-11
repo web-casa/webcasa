@@ -15,9 +15,9 @@ type Tool struct {
 	Name              string                 `json:"name"`
 	Description       string                 `json:"description"`
 	Parameters        map[string]interface{} `json:"parameters"` // JSON Schema object
-	ReadOnly          bool                   `json:"-"`           // true = no side effects
-	NeedsConfirmation bool                   `json:"-"`           // true = requires user approval before execution
-	AdminOnly         bool                   `json:"-"`           // true = only admin users can execute this tool
+	ReadOnly          bool                   `json:"-"`          // true = no side effects
+	NeedsConfirmation bool                   `json:"-"`          // true = requires user approval before execution
+	AdminOnly         bool                   `json:"-"`          // true = only admin users can execute this tool
 	Handler           ToolHandler            `json:"-"`
 }
 
@@ -45,8 +45,8 @@ type ToolRegistry struct {
 	tools      map[string]*Tool
 	coreAPI    pluginpkg.CoreAPI
 	logger     *slog.Logger
-	svc        *Service            // back-reference for tools that need AI generation (e.g. generate_dockerfile)
-	inspection *InspectionService  // set after Init for the run_inspection tool
+	svc        *Service           // back-reference for tools that need AI generation (e.g. generate_dockerfile)
+	inspection *InspectionService // set after Init for the run_inspection tool
 }
 
 // NewToolRegistry creates a new tool registry.

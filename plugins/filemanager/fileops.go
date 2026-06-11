@@ -50,9 +50,19 @@ func (f *FileOps) safePath(reqPath string) (string, error) {
 		rootResolved = f.rootPath
 	}
 
-	// If root is "/" everything is inside it — skip traversal checks.
-	if rootResolved == "/" {
-		return abs, nil
+	// NOTE: running with root_path="/" grants full-filesystem access and is
+	// intended only for trusted single-admin installs. We do NOT special-case
+	// root "/" with an early return: the symlink-escape / containment checks
+	// below must run regardless of root. With root "/" every real path is
+	// trivially contained, so legitimate access is unchanged, but we never
+	// skip symlink resolution (which would otherwise allow undetected escapes).
+
+	// Build the containment prefix with a single trailing slash. When root is
+	// "/" the prefix is "/" so every absolute path is contained (avoiding a
+	// spurious "//" prefix that would reject all paths).
+	rootPrefix := rootResolved
+	if !strings.HasSuffix(rootPrefix, "/") {
+		rootPrefix += "/"
 	}
 
 	// For existing parent directories, resolve symlinks and check containment.
@@ -61,7 +71,7 @@ func (f *FileOps) safePath(reqPath string) (string, error) {
 	for {
 		resolved, err := filepath.EvalSymlinks(check)
 		if err == nil {
-			if resolved != rootResolved && !strings.HasPrefix(resolved+"/", rootResolved+"/") {
+			if resolved != rootResolved && !strings.HasPrefix(resolved+"/", rootPrefix) {
 				return "", fmt.Errorf("access denied: path outside root")
 			}
 			break

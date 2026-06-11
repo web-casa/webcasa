@@ -10,8 +10,10 @@ services:
       - "443:443" # HTTPS
     volumes:
       - webcasa-data:/app/data
-      - caddy-config:/root/.local/share/caddy # Caddy TLS certificates
-      - caddy-data:/root/.config/caddy # Caddy runtime data
+      # Container runs as the unprivileged "webcasa" user; Caddy data/config
+      # live under /app/caddy (XDG_DATA_HOME / XDG_CONFIG_HOME), not /root.
+      - caddy-data:/app/caddy/data # Caddy TLS certificates / runtime data
+      - caddy-config:/app/caddy/config # Caddy config storage
     environment:
       - WEBCASA_PORT=39921
       # JWT secret auto-generated on first run and persisted in data/.jwt_secret

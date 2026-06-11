@@ -177,7 +177,7 @@ func (ms *MemoryService) searchByVector(userID uint, queryVec []float32, topK in
 		out[i] = r.mem
 		out[i].Embedding = nil // don't return embedding bytes
 		ms.db.Model(&Memory{}).Where("id = ?", r.mem.ID).Updates(map[string]interface{}{
-			"access_count":    gorm.Expr("access_count + 1"),
+			"access_count":     gorm.Expr("access_count + 1"),
 			"last_accessed_at": now,
 		})
 	}
@@ -250,7 +250,7 @@ func (ms *MemoryService) SearchByKeyword(userID uint, query string, topK int) ([
 		out[i] = r.mem
 		out[i].Embedding = nil
 		ms.db.Model(&Memory{}).Where("id = ?", r.mem.ID).Updates(map[string]interface{}{
-			"access_count":    gorm.Expr("access_count + 1"),
+			"access_count":     gorm.Expr("access_count + 1"),
 			"last_accessed_at": now,
 		})
 	}

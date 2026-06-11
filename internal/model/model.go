@@ -6,24 +6,25 @@ import (
 
 // User represents a panel administrator
 type User struct {
-	ID             uint      `gorm:"primaryKey" json:"id"`
-	Username       string    `gorm:"uniqueIndex;not null;size:64" json:"username"`
-	Password       string    `gorm:"not null" json:"-"` // bcrypt hash, never exposed in JSON
-	Role           string    `gorm:"not null;size:16;default:admin" json:"role"` // owner, admin, operator, viewer
-	TOTPSecret     string    `gorm:"size:512" json:"-"`                          // AES-GCM encrypted TOTP secret
-	TOTPEnabled    *bool     `gorm:"default:false" json:"totp_enabled"`          // whether 2FA is enabled
-	RecoveryCodes  string    `gorm:"type:text" json:"-"`                         // JSON array of recovery code hashes
-	CreatedAt      time.Time `json:"created_at"`
-	UpdatedAt      time.Time `json:"updated_at"`
+	ID               uint      `gorm:"primaryKey" json:"id"`
+	Username         string    `gorm:"uniqueIndex;not null;size:64" json:"username"`
+	Password         string    `gorm:"not null" json:"-"`                          // bcrypt hash, never exposed in JSON
+	Role             string    `gorm:"not null;size:16;default:admin" json:"role"` // owner, admin, operator, viewer
+	TOTPSecret       string    `gorm:"size:512" json:"-"`                          // AES-GCM encrypted TOTP secret
+	TOTPEnabled      *bool     `gorm:"default:false" json:"totp_enabled"`          // whether 2FA is enabled
+	LastTOTPTimestep int64     `gorm:"default:0" json:"-"`                         // last accepted TOTP timestep (replay protection)
+	RecoveryCodes    string    `gorm:"type:text" json:"-"`                         // JSON array of recovery code hashes
+	CreatedAt        time.Time `json:"created_at"`
+	UpdatedAt        time.Time `json:"updated_at"`
 }
 
 // DnsProvider represents a DNS API provider for ACME DNS challenge
 type DnsProvider struct {
 	ID        uint      `gorm:"primaryKey" json:"id"`
-	Name      string    `gorm:"not null;size:64" json:"name"`              // display name
-	Provider  string    `gorm:"not null;size:32" json:"provider"`          // "cloudflare", "alidns", "tencentcloud", "route53"
-	Config    string    `gorm:"type:text;not null" json:"config"`          // JSON config (API tokens/keys)
-	IsDefault *bool     `gorm:"default:false" json:"is_default"`           // default provider
+	Name      string    `gorm:"not null;size:64" json:"name"`     // display name
+	Provider  string    `gorm:"not null;size:32" json:"provider"` // "cloudflare", "alidns", "tencentcloud", "route53"
+	Config    string    `gorm:"type:text;not null" json:"config"` // JSON config (API tokens/keys)
+	IsDefault *bool     `gorm:"default:false" json:"is_default"`  // default provider
 	CreatedAt time.Time `json:"created_at"`
 	UpdatedAt time.Time `json:"updated_at"`
 }
@@ -36,62 +37,62 @@ type Setting struct {
 
 // Certificate represents a managed SSL certificate
 type Certificate struct {
-	ID        uint      `gorm:"primaryKey" json:"id"`
-	Name      string    `gorm:"not null;size:128" json:"name"`    // display name (e.g. "example.com wildcard")
-	Domains   string    `gorm:"type:text" json:"domains"`         // comma-separated domains from cert
-	CertPath  string    `gorm:"type:text" json:"cert_path"`       // path to cert.pem
-	KeyPath   string    `gorm:"type:text" json:"key_path"`        // path to key.pem
-	ExpiresAt *time.Time `json:"expires_at"`                      // cert expiry (parsed from PEM)
+	ID        uint       `gorm:"primaryKey" json:"id"`
+	Name      string     `gorm:"not null;size:128" json:"name"` // display name (e.g. "example.com wildcard")
+	Domains   string     `gorm:"type:text" json:"domains"`      // comma-separated domains from cert
+	CertPath  string     `gorm:"type:text" json:"cert_path"`    // path to cert.pem
+	KeyPath   string     `gorm:"type:text" json:"key_path"`     // path to key.pem
+	ExpiresAt *time.Time `json:"expires_at"`                    // cert expiry (parsed from PEM)
 	CreatedAt time.Time  `json:"created_at"`
 	UpdatedAt time.Time  `json:"updated_at"`
 }
 
 // Host represents a reverse proxy or redirect host configuration
 type Host struct {
-	ID             uint           `gorm:"primaryKey" json:"id"`
-	Domain         string         `gorm:"not null;uniqueIndex;size:255" json:"domain"`
-	HostType       string         `gorm:"not null;size:16;default:proxy" json:"host_type"` // "proxy", "redirect", "static", "php"
-	Enabled        *bool          `gorm:"default:true" json:"enabled"`
-	TLSEnabled     *bool          `gorm:"default:true" json:"tls_enabled"`
-	HTTPRedirect   *bool          `gorm:"default:true" json:"http_redirect"`
-	WebSocket      *bool          `gorm:"default:false" json:"websocket"`
-	RedirectURL    string         `gorm:"size:1024" json:"redirect_url"`    // target URL for redirect hosts
-	RedirectCode   int            `gorm:"default:301" json:"redirect_code"` // 301 (permanent) or 302 (temporary)
-	CustomCertPath string         `gorm:"size:512" json:"custom_cert_path"` // path to custom TLS cert
-	CustomKeyPath  string         `gorm:"size:512" json:"custom_key_path"`  // path to custom TLS key
+	ID             uint   `gorm:"primaryKey" json:"id"`
+	Domain         string `gorm:"not null;uniqueIndex;size:255" json:"domain"`
+	HostType       string `gorm:"not null;size:16;default:proxy" json:"host_type"` // "proxy", "redirect", "static", "php"
+	Enabled        *bool  `gorm:"default:true" json:"enabled"`
+	TLSEnabled     *bool  `gorm:"default:true" json:"tls_enabled"`
+	HTTPRedirect   *bool  `gorm:"default:true" json:"http_redirect"`
+	WebSocket      *bool  `gorm:"default:false" json:"websocket"`
+	RedirectURL    string `gorm:"size:1024" json:"redirect_url"`    // target URL for redirect hosts
+	RedirectCode   int    `gorm:"default:301" json:"redirect_code"` // 301 (permanent) or 302 (temporary)
+	CustomCertPath string `gorm:"size:512" json:"custom_cert_path"` // path to custom TLS cert
+	CustomKeyPath  string `gorm:"size:512" json:"custom_key_path"`  // path to custom TLS key
 	// Phase 4 batch 1: TLS mode and DNS provider
-	TLSMode        string `gorm:"size:16;default:auto" json:"tls_mode"` // auto, dns, wildcard, custom, off
-	DnsProviderID  *uint  `json:"dns_provider_id"`                      // FK to DnsProvider
-	CertificateID  *uint  `json:"certificate_id"`                       // FK to Certificate
+	TLSMode       string `gorm:"size:16;default:auto" json:"tls_mode"` // auto, dns, wildcard, custom, off
+	DnsProviderID *uint  `json:"dns_provider_id"`                      // FK to DnsProvider
+	CertificateID *uint  `json:"certificate_id"`                       // FK to Certificate
 	// Phase 4 batch 2: per-host options
-	Compression     *bool  `gorm:"default:false" json:"compression"`       // encode gzip zstd
-	CacheEnabled    *bool  `gorm:"default:false" json:"cache_enabled"`     // response cache
-	CacheTTL        int    `gorm:"default:300" json:"cache_ttl"`           // cache TTL in seconds
-	CorsEnabled     *bool  `gorm:"default:false" json:"cors_enabled"`      // CORS
-	CorsOrigins     string `gorm:"size:1024" json:"cors_origins"`          // allowed origins, comma-separated
-	CorsMethods     string `gorm:"size:256" json:"cors_methods"`           // allowed methods
-	CorsHeaders     string `gorm:"size:512" json:"cors_headers"`           // allowed headers
-	SecurityHeaders *bool  `gorm:"default:false" json:"security_headers"`  // one-click security headers
-	ErrorPagePath   string `gorm:"size:512" json:"error_page_path"`        // custom error page directory
-	CustomDirectives string         `gorm:"type:text" json:"custom_directives"` // raw Caddy directives
+	Compression      *bool  `gorm:"default:false" json:"compression"`      // encode gzip zstd
+	CacheEnabled     *bool  `gorm:"default:false" json:"cache_enabled"`    // response cache
+	CacheTTL         int    `gorm:"default:300" json:"cache_ttl"`          // cache TTL in seconds
+	CorsEnabled      *bool  `gorm:"default:false" json:"cors_enabled"`     // CORS
+	CorsOrigins      string `gorm:"size:1024" json:"cors_origins"`         // allowed origins, comma-separated
+	CorsMethods      string `gorm:"size:256" json:"cors_methods"`          // allowed methods
+	CorsHeaders      string `gorm:"size:512" json:"cors_headers"`          // allowed headers
+	SecurityHeaders  *bool  `gorm:"default:false" json:"security_headers"` // one-click security headers
+	ErrorPagePath    string `gorm:"size:512" json:"error_page_path"`       // custom error page directory
+	CustomDirectives string `gorm:"type:text" json:"custom_directives"`    // raw Caddy directives
 	// Phase 4 batch 3: new host types
-	RootPath        string `gorm:"size:512" json:"root_path"`            // root directory for static/PHP hosts
+	RootPath        string `gorm:"size:512" json:"root_path"`             // root directory for static/PHP hosts
 	DirectoryBrowse *bool  `gorm:"default:false" json:"directory_browse"` // enable directory listing
-	PHPFastCGI      string `gorm:"size:255" json:"php_fastcgi"`        // PHP-FPM address e.g. "localhost:9000"
-	IndexFiles      string `gorm:"size:255" json:"index_files"`        // custom index files e.g. "index.html index.php"
+	PHPFastCGI      string `gorm:"size:255" json:"php_fastcgi"`           // PHP-FPM address e.g. "localhost:9000"
+	IndexFiles      string `gorm:"size:255" json:"index_files"`           // custom index files e.g. "index.html index.php"
 	// Phase 6: group and tag associations
 	// Per-host configuration overrides (JSON map, 3-tier: host → global → default)
-	ConfigOverrides string `gorm:"type:text" json:"config_overrides,omitempty"`
-	GroupID         *uint  `json:"group_id"`                              // FK to Group (optional)
-	Group           *Group `gorm:"foreignKey:GroupID" json:"group,omitempty"` // GORM association for Preload
-	Tags            []Tag  `gorm:"many2many:host_tags" json:"tags"`        // many-to-many via host_tags
-	Upstreams        []Upstream     `gorm:"foreignKey:HostID;constraint:OnDelete:CASCADE" json:"upstreams"`
-	CustomHeaders  []CustomHeader `gorm:"foreignKey:HostID;constraint:OnDelete:CASCADE" json:"custom_headers"`
-	AccessRules    []AccessRule   `gorm:"foreignKey:HostID;constraint:OnDelete:CASCADE" json:"access_rules"`
-	Routes         []Route        `gorm:"foreignKey:HostID;constraint:OnDelete:CASCADE" json:"routes"`
-	BasicAuths     []BasicAuth    `gorm:"foreignKey:HostID;constraint:OnDelete:CASCADE" json:"basic_auths"`
-	CreatedAt      time.Time      `json:"created_at"`
-	UpdatedAt      time.Time      `json:"updated_at"`
+	ConfigOverrides string         `gorm:"type:text" json:"config_overrides,omitempty"`
+	GroupID         *uint          `json:"group_id"`                                  // FK to Group (optional)
+	Group           *Group         `gorm:"foreignKey:GroupID" json:"group,omitempty"` // GORM association for Preload
+	Tags            []Tag          `gorm:"many2many:host_tags" json:"tags"`           // many-to-many via host_tags
+	Upstreams       []Upstream     `gorm:"foreignKey:HostID;constraint:OnDelete:CASCADE" json:"upstreams"`
+	CustomHeaders   []CustomHeader `gorm:"foreignKey:HostID;constraint:OnDelete:CASCADE" json:"custom_headers"`
+	AccessRules     []AccessRule   `gorm:"foreignKey:HostID;constraint:OnDelete:CASCADE" json:"access_rules"`
+	Routes          []Route        `gorm:"foreignKey:HostID;constraint:OnDelete:CASCADE" json:"routes"`
+	BasicAuths      []BasicAuth    `gorm:"foreignKey:HostID;constraint:OnDelete:CASCADE" json:"basic_auths"`
+	CreatedAt       time.Time      `json:"created_at"`
+	UpdatedAt       time.Time      `json:"updated_at"`
 }
 
 // Upstream represents a backend server for reverse proxying
@@ -142,14 +143,14 @@ type BasicAuth struct {
 
 // HostCreateRequest is the request body for creating/updating a host
 type HostCreateRequest struct {
-	Domain           string           `json:"domain" binding:"required"`
-	HostType         string           `json:"host_type"`
-	Enabled          *bool            `json:"enabled"`
-	TLSEnabled       *bool            `json:"tls_enabled"`
-	HTTPRedirect     *bool            `json:"http_redirect"`
-	WebSocket        *bool            `json:"websocket"`
-	RedirectURL      string           `json:"redirect_url"`
-	RedirectCode     int              `json:"redirect_code"`
+	Domain       string `json:"domain" binding:"required"`
+	HostType     string `json:"host_type"`
+	Enabled      *bool  `json:"enabled"`
+	TLSEnabled   *bool  `json:"tls_enabled"`
+	HTTPRedirect *bool  `json:"http_redirect"`
+	WebSocket    *bool  `json:"websocket"`
+	RedirectURL  string `json:"redirect_url"`
+	RedirectCode int    `json:"redirect_code"`
 	// Batch 2
 	Compression     *bool  `json:"compression"`
 	CacheEnabled    *bool  `json:"cache_enabled"`
@@ -161,20 +162,20 @@ type HostCreateRequest struct {
 	SecurityHeaders *bool  `json:"security_headers"`
 	ErrorPagePath   string `json:"error_page_path"`
 	// Batch 3
-	RootPath        string `json:"root_path"`
-	DirectoryBrowse *bool  `json:"directory_browse"`
-	PHPFastCGI      string `json:"php_fastcgi"`
-	IndexFiles      string `json:"index_files"`
-	TLSMode         string `json:"tls_mode"`
-	DnsProviderID   *uint  `json:"dns_provider_id"`
+	RootPath         string           `json:"root_path"`
+	DirectoryBrowse  *bool            `json:"directory_browse"`
+	PHPFastCGI       string           `json:"php_fastcgi"`
+	IndexFiles       string           `json:"index_files"`
+	TLSMode          string           `json:"tls_mode"`
+	DnsProviderID    *uint            `json:"dns_provider_id"`
 	CustomDirectives string           `json:"custom_directives"`
 	Upstreams        []UpstreamInput  `json:"upstreams"`
 	CustomHeaders    []HeaderInput    `json:"custom_headers"`
 	AccessRules      []AccessInput    `json:"access_rules"`
 	BasicAuths       []BasicAuthInput `json:"basic_auths"`
 	// Phase 6: group and tag associations
-	GroupID          *uint            `json:"group_id"`
-	TagIDs           []uint           `json:"tag_ids"`
+	GroupID *uint  `json:"group_id"`
+	TagIDs  []uint `json:"tag_ids"`
 }
 
 // UpstreamInput is input for creating an upstream

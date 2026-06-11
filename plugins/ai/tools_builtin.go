@@ -553,7 +553,7 @@ func RegisterBuiltinTools(r *ToolRegistry) {
 		ReadOnly:          false,
 		NeedsConfirmation: true,
 		AdminOnly:         true,
-		Handler:  updateHostHandler(r),
+		Handler:           updateHostHandler(r),
 	})
 }
 
@@ -583,12 +583,27 @@ func isPathSafe(path string) bool {
 		resolved = filepath.Join(resolvedDir, filepath.Base(abs))
 	}
 
-	// Block sensitive files
+	// Block sensitive files by absolute path.
 	blocked := []string{"/etc/shadow", "/etc/gshadow", "/etc/sudoers", "/etc/passwd"}
 	for _, b := range blocked {
 		if resolved == b {
 			return false
 		}
+	}
+
+	// Block common secret material by file name. read_file/list_dir are ReadOnly
+	// and available to non-admin operators, so deny anything that typically holds
+	// credentials/keys regardless of which allowed directory it lives in:
+	//   - .env / *.env        : application secrets / API keys
+	//   - id_rsa, *.pem, *.key: private keys / certs
+	//   - .jwt_secret         : WebCasa's JWT signing secret (under the data dir)
+	// Kept conservative (name-based) to avoid blocking legitimate diagnostics.
+	base := strings.ToLower(filepath.Base(resolved))
+	if base == ".env" || strings.HasSuffix(base, ".env") ||
+		base == ".jwt_secret" ||
+		base == "id_rsa" || base == "id_dsa" || base == "id_ecdsa" || base == "id_ed25519" ||
+		strings.HasSuffix(base, ".pem") || strings.HasSuffix(base, ".key") {
+		return false
 	}
 
 	// Allow common safe directories.
@@ -647,9 +662,9 @@ func readFileHandler() ToolHandler {
 		}
 
 		return map[string]interface{}{
-			"path":       p.Path,
-			"lines":      len(lines),
-			"content":    content,
+			"path":    p.Path,
+			"lines":   len(lines),
+			"content": content,
 		}, nil
 	}
 }

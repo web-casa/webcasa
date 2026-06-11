@@ -78,8 +78,9 @@ func (p *Plugin) Init(ctx *pluginpkg.Context) error {
 	p.selfHeal.Subscribe()
 
 	// Register API routes under /api/plugins/ai/
-	r := ctx.Router       // read-only
-	a := ctx.AdminRouter  // admin-only
+	r := ctx.Router         // any authenticated user (incl. viewer) — read-only
+	o := ctx.OperatorRouter // operator+ — state-changing / LLM-cost-bearing
+	a := ctx.AdminRouter    // admin-only
 
 	// Config (read + admin mutations)
 	a.GET("/config", p.handler.GetConfig) // admin only — contains API keys
@@ -88,21 +89,23 @@ func (p *Plugin) Init(ctx *pluginpkg.Context) error {
 	a.POST("/config/test", p.handler.TestConnection)
 	a.POST("/config/test-embedding", p.handler.TestEmbeddingConnection)
 
-	// Chat (SSE) — any logged-in user can chat
-	r.POST("/chat", p.handler.Chat)
+	// Chat (SSE) — operator+ only: drives the LLM (spends credits) and can reach
+	// mutating tools via the confirm flow, so it must not be available to viewers.
+	o.POST("/chat", p.handler.Chat)
 
-	// Conversations (read + user delete)
+	// Conversations (read + user delete) — read-only listing stays at viewer level.
 	r.GET("/conversations", p.handler.ListConversations)
 	r.GET("/conversations/:id", p.handler.GetConversation)
 	r.DELETE("/conversations/:id", p.handler.DeleteConversation)
 
-	// Tool confirmations — any logged-in user can confirm
-	r.POST("/confirm", p.handler.Confirm)
+	// Tool confirmations — operator+ only: confirming executes pending (possibly
+	// mutating) tool calls.
+	o.POST("/confirm", p.handler.Confirm)
 
-	// Tools (SSE) — any logged-in user can use
-	r.POST("/generate-compose", p.handler.GenerateCompose)
-	r.POST("/generate-dockerfile", p.handler.GenerateDockerfile)
-	r.POST("/diagnose", p.handler.Diagnose)
+	// Tools (SSE) — operator+ only: each call invokes the LLM (cost-bearing).
+	o.POST("/generate-compose", p.handler.GenerateCompose)
+	o.POST("/generate-dockerfile", p.handler.GenerateDockerfile)
+	o.POST("/diagnose", p.handler.Diagnose)
 
 	// Review-code reads project source files — admin only.
 	a.POST("/review-code", p.handler.ReviewCode)

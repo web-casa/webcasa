@@ -25,8 +25,10 @@ type Config struct {
 func Load() *Config {
 	dataDir := envOrDefault("WEBCASA_DATA_DIR", "./data")
 
-	// Ensure directories exist early so we can write the secret file
-	os.MkdirAll(dataDir, 0755)
+	// Ensure directories exist early so we can write the secret file.
+	// 0700: the data dir holds the SQLite DB, JWT secret and encrypted
+	// credentials, so it must not be world-readable or world-traversable.
+	os.MkdirAll(dataDir, 0700)
 
 	cfg := &Config{
 		Port:          envOrDefault("WEBCASA_PORT", "39921"),
@@ -39,9 +41,16 @@ func Load() *Config {
 		AdminAPI:      envOrDefault("WEBCASA_ADMIN_API", "http://localhost:2019"),
 	}
 
-	// Ensure directories exist
-	os.MkdirAll(cfg.LogDir, 0755)
-	os.MkdirAll(filepath.Join(dataDir, "backups"), 0755)
+	// Ensure directories exist (0700: not world-readable; backups may contain
+	// exported credentials).
+	os.MkdirAll(cfg.LogDir, 0700)
+	os.MkdirAll(filepath.Join(dataDir, "backups"), 0700)
+
+	// Best-effort tightening of the DB file permissions to owner-only. The DB is
+	// opened by the database package; if it already exists, ensure it is 0600.
+	if _, err := os.Stat(cfg.DBPath); err == nil {
+		os.Chmod(cfg.DBPath, 0600)
+	}
 
 	return cfg
 }
@@ -55,6 +64,7 @@ func resolveJWTSecret(dataDir string) string {
 	insecureDefaults := map[string]bool{
 		"webcasa-change-me-in-production": true,
 		"change-me-in-production":         true,
+		"CHANGE_ME_TO_RANDOM_STRING":      true, // placeholder shipped in scripts/webcasa.env
 	}
 
 	// 1. Explicit env var takes precedence (if not an insecure default)

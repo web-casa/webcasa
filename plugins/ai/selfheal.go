@@ -99,9 +99,9 @@ Response format:
 [specific steps]
 
 ## Auto-Heal Actions (JSON)
-` + "```json" + `
+`+"```json"+`
 {"actions": [{"type": "restart_caddy"} or {"type": "reload_caddy"} or {"type": "restart_container", "container_id": "xxx"}]}
-` + "```", ruleName, metric, value, threshold, diagCtx)
+`+"```", ruleName, metric, value, threshold, diagCtx)
 
 	diagnosis, err := sh.svc.DiagnoseSync(ctx, DiagnoseRequest{
 		Logs:    prompt,
@@ -197,6 +197,13 @@ var safeActions = map[string]bool{
 }
 
 // executeAutoHeal parses AI-recommended actions and executes safe ones.
+//
+// SECURITY: actions are parsed from the model's free-text output, which is
+// influenced by attacker-injectable context (container names, alert messages
+// embedded in collectDiagnosticContext). The action *type* is already bounded
+// by the safeActions whitelist, but a target like container_id must also be
+// constrained: we never restart an arbitrary model-named container, only one
+// that actually exists on this host (validated against the live DockerPS list).
 func (sh *SelfHealEngine) executeAutoHeal(diagnosis string, ruleID uint, ruleName string) {
 	// Extract JSON block from diagnosis
 	actions := sh.parseActions(diagnosis)
@@ -219,9 +226,15 @@ func (sh *SelfHealEngine) executeAutoHeal(diagnosis string, ruleID uint, ruleNam
 		case "reload_caddy":
 			err = sh.coreAPI.ReloadCaddy()
 		case "restart_container":
-			if action.ContainerID != "" {
-				err = sh.coreAPI.DockerManageContainer(action.ContainerID, "restart")
+			// Constrain the model-supplied target: only act on a container that
+			// actually exists on this host. This bounds the (DoS) impact of an
+			// injected/hallucinated container name to real local resources.
+			if action.ContainerID == "" || !sh.containerExists(action.ContainerID) {
+				sh.logger.Warn("self-heal: skipping restart_container for unknown target",
+					"container", action.ContainerID, "rule", ruleName)
+				continue
 			}
+			err = sh.coreAPI.DockerManageContainer(action.ContainerID, "restart")
 		}
 
 		if err != nil {
@@ -251,6 +264,45 @@ func (sh *SelfHealEngine) executeAutoHeal(diagnosis string, ruleID uint, ruleNam
 			Time: time.Now(),
 		})
 	}
+}
+
+// containerExists reports whether target matches the name or ID of a container
+// currently present on this host. Matching is case-insensitive and accepts both
+// the lowercase ("name"/"id") and Docker-native ("Names"/"ID") key shapes so a
+// model-supplied target can only ever reach a real local container.
+func (sh *SelfHealEngine) containerExists(target string) bool {
+	target = strings.ToLower(strings.TrimSpace(target))
+	if target == "" {
+		return false
+	}
+	containers, err := sh.coreAPI.DockerPS()
+	if err != nil {
+		// Fail closed: if we cannot verify the target, do not act on it.
+		sh.logger.Warn("self-heal: cannot verify container target", "err", err)
+		return false
+	}
+	for _, c := range containers {
+		// Names: require an exact (per-token) match. "Names" may be
+		// comma-separated and Docker prefixes a leading "/".
+		for _, key := range []string{"name", "names", "Names", "Name"} {
+			v, _ := c[key].(string)
+			for _, tok := range strings.Split(v, ",") {
+				tok = strings.ToLower(strings.TrimSpace(strings.TrimPrefix(tok, "/")))
+				if tok != "" && tok == target {
+					return true
+				}
+			}
+		}
+		// IDs: allow the usual short-ID prefix (target is a prefix of full ID).
+		for _, key := range []string{"id", "ID"} {
+			id, _ := c[key].(string)
+			id = strings.ToLower(strings.TrimSpace(id))
+			if id != "" && (id == target || strings.HasPrefix(id, target)) {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 // parseActions extracts auto-heal actions from AI diagnosis response.

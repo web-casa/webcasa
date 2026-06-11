@@ -59,13 +59,13 @@ func (r *richStubCoreAPI) GetMetrics() (map[string]interface{}, error) {
 		return r.metricsOverride, nil
 	}
 	return map[string]interface{}{
-		"disk_total":      "100000000000",
-		"disk_used":       "92000000000",
-		"disk_available":  "8000000000",
-		"mem_total_kb":    "8000000",
+		"disk_total":       "100000000000",
+		"disk_used":        "92000000000",
+		"disk_available":   "8000000000",
+		"mem_total_kb":     "8000000",
 		"mem_available_kb": "500000",
-		"load_1":          "6.5",
-		"num_cpu":         4,
+		"load_1":           "6.5",
+		"num_cpu":          4,
 	}, nil
 }
 
@@ -719,7 +719,7 @@ func TestInspection_GetHour(t *testing.T) {
 		val  string
 		want int
 	}{
-		{"", 8},    // default
+		{"", 8}, // default
 		{"3", 3},
 		{"25", 8},  // invalid
 		{"-1", 8},  // invalid
