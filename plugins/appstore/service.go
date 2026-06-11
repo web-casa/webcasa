@@ -702,17 +702,20 @@ func (s *Service) UpdateApp(id uint) error {
 	rendered := SanitizeCompose(RenderCompose(app.ComposeFile, formValues, builtins))
 	envContent := RenderEnvFile(formValues, builtins)
 
-	// Capture the current (already-pinned) compose so we can restore it if the
-	// new images can't be pinned — otherwise a failed update would leave an
-	// unpinned compose on disk that the existing stack would later start.
+	// Capture the current (already-pinned) compose AND .env so we can restore
+	// both if the new images can't be pinned — otherwise a failed update would
+	// leave an unpinned compose / changed env on disk that the existing stack
+	// would later start with.
 	composePath := filepath.Join(installed.ComposeDir, "docker-compose.yml")
+	envPath := filepath.Join(installed.ComposeDir, ".env")
 	prevCompose, _ := os.ReadFile(composePath)
+	prevEnv, _ := os.ReadFile(envPath)
 
 	// Write updated files
 	if err := os.WriteFile(composePath, []byte(rendered), 0600); err != nil {
 		return fmt.Errorf("write compose file: %w", err)
 	}
-	if err := os.WriteFile(filepath.Join(installed.ComposeDir, ".env"), []byte(envContent), 0600); err != nil {
+	if err := os.WriteFile(envPath, []byte(envContent), 0600); err != nil {
 		return fmt.Errorf("write env file: %w", err)
 	}
 
@@ -721,10 +724,14 @@ func (s *Service) UpdateApp(id uint) error {
 	// the resolved digests for drift detection.
 	pinned, digests, err := s.pinComposeImages(installed.ComposeDir, installed.StackName, rendered)
 	if err != nil {
-		// Restore the previous pinned compose so the existing stack stays
-		// startable with its pinned image rather than the new floating one.
+		// Restore the previous pinned compose AND .env so the existing stack
+		// stays startable with its pinned image and original environment rather
+		// than the new floating image / changed env.
 		if len(prevCompose) > 0 {
 			os.WriteFile(composePath, prevCompose, 0600)
+		}
+		if len(prevEnv) > 0 {
+			os.WriteFile(envPath, prevEnv, 0600)
 		}
 		s.setStatus(id, "error")
 		return fmt.Errorf("pin images: %w", err)

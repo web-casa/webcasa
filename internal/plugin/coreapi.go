@@ -552,11 +552,12 @@ func (a *CoreAPIImpl) RunCommand(cmd string, timeoutSec int) (string, error) {
 // fix is dropping privileges / sandboxing (out of scope here).
 var blockedCommandRes = []*regexp.Regexp{
 	// rm targeting the root or a single top-level dir: `/`, `/*`, `/etc`,
-	// `/home`, `/etc/` (optionally globbed/trailing-slashed). Catches the
-	// catastrophic wipes incl. reordered flags like `rm -r -f /home`, while
-	// allowing legitimate deeper cleanup such as `rm -rf /var/tmp/build` or
-	// `rm -f /tmp/app.sock` (a second path segment ⇒ no match).
-	regexp.MustCompile(`\brm\b\s+(-\S+\s+)*/[^/\s]*/?(\s|$)`),
+	// `/home`, `/etc/` (optionally globbed/trailing-slashed). Any rm-argument
+	// token (flag or path operand) may precede the dangerous target — so
+	// multi-operand wipes like `rm -rf /var/tmp/build /etc` are caught — but
+	// shell separators (; | &) stop the scan, and deeper paths such as
+	// `rm -rf /var/tmp/build` or `rm -f /tmp/app.sock` are allowed.
+	regexp.MustCompile(`\brm\b\s+([^\s;|&]+\s+)*/[^/\s]*/?(\s|$)`),
 	// Filesystem / block-device destruction.
 	regexp.MustCompile(`\bmkfs\b`),
 	regexp.MustCompile(`\bdd\b.*\bif=`),
