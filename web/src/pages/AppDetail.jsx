@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback } from 'react'
-import { Box, Flex, Heading, Text, Card, Button, TextField, Badge, Separator, Dialog, Switch, Code, ScrollArea, Callout } from '@radix-ui/themes'
+import { Box, Flex, Heading, Text, Card, Button, TextField, Badge, Separator, Dialog, AlertDialog, Switch, Code, ScrollArea, Callout } from '@radix-ui/themes'
 import { ArrowLeft, ExternalLink, RefreshCw, Download, Globe, AlertTriangle } from 'lucide-react'
 import { useParams, useNavigate } from 'react-router'
 import { appstoreAPI } from '../api/index.js'
@@ -19,6 +19,10 @@ export default function AppDetail() {
     const [instanceName, setInstanceName] = useState('')
     const [domain, setDomain] = useState('')
     const [autoUpdate, setAutoUpdate] = useState(false)
+    // Set when the backend rejects an install from an unsigned source (HTTP 412).
+    // Holds { source_name, images: [...] } so we can warn before re-submitting
+    // with acknowledge_unsigned.
+    const [unsignedWarning, setUnsignedWarning] = useState(null)
 
     const fetchApp = useCallback(async () => {
         try {
@@ -53,7 +57,7 @@ export default function AppDetail() {
         setFormValues(prev => ({ ...prev, [envVar]: value }))
     }
 
-    const handleInstall = async () => {
+    const handleInstall = async (acknowledge = false) => {
         setInstalling(true)
         try {
             await appstoreAPI.install({
@@ -62,11 +66,20 @@ export default function AppDetail() {
                 form_values: formValues,
                 domain: domain || undefined,
                 auto_update: autoUpdate,
+                acknowledge_unsigned: acknowledge || undefined,
             })
+            setUnsignedWarning(null)
             setInstallOpen(false)
             navigate('/store')
         } catch (err) {
-            alert(err.response?.data?.error || 'Installation failed')
+            // 412: the source is unsigned and the install needs explicit
+            // acknowledgement. Surface the images that would run, then let the
+            // user confirm (which re-submits with acknowledge_unsigned: true).
+            if (err.response?.status === 412 && err.response?.data?.unsigned) {
+                setUnsignedWarning(err.response.data)
+            } else {
+                alert(err.response?.data?.error || 'Installation failed')
+            }
         } finally {
             setInstalling(false)
         }
@@ -301,7 +314,7 @@ export default function AppDetail() {
                                 <Button
                                     disabled={!instanceName || installing || (app.force_expose && !domain)}
                                     loading={installing}
-                                    onClick={handleInstall}
+                                    onClick={() => handleInstall()}
                                 >
                                     <Download size={14} /> {installing ? t('appstore.installing') : t('appstore.install')}
                                 </Button>
@@ -310,6 +323,52 @@ export default function AppDetail() {
                     )}
                 </Dialog.Content>
             </Dialog.Root>
+
+            {/* Unsigned-source warning: shown when the backend returns 412 on
+                install. Lists the container images that would run; confirming
+                re-submits the install with acknowledge_unsigned. */}
+            <AlertDialog.Root open={!!unsignedWarning} onOpenChange={(o) => !o && setUnsignedWarning(null)}>
+                <AlertDialog.Content maxWidth="520px">
+                    <AlertDialog.Title>
+                        <Flex align="center" gap="2">
+                            <AlertTriangle size={18} color="var(--orange-9)" />
+                            {t('appstore.unsigned_title')}
+                        </Flex>
+                    </AlertDialog.Title>
+                    <AlertDialog.Description size="2">
+                        {t('appstore.unsigned_desc', { source: unsignedWarning?.source_name || t('appstore.unsigned_unknown_source') })}
+                    </AlertDialog.Description>
+
+                    {unsignedWarning?.images?.length > 0 && (
+                        <Box mt="3">
+                            <Text size="1" weight="bold" color="gray">{t('appstore.unsigned_images')}</Text>
+                            <ScrollArea type="auto" scrollbars="vertical" style={{ maxHeight: 160 }}>
+                                <Flex direction="column" gap="1" mt="1">
+                                    {unsignedWarning.images.map((img) => (
+                                        <Code key={img} size="1" variant="soft" style={{ wordBreak: 'break-all' }}>{img}</Code>
+                                    ))}
+                                </Flex>
+                            </ScrollArea>
+                        </Box>
+                    )}
+
+                    <Callout.Root color="orange" size="1" mt="3">
+                        <Callout.Icon><AlertTriangle size={14} /></Callout.Icon>
+                        <Callout.Text>{t('appstore.unsigned_hint')}</Callout.Text>
+                    </Callout.Root>
+
+                    <Flex gap="3" mt="4" justify="end">
+                        <AlertDialog.Cancel>
+                            <Button variant="soft" color="gray">{t('common.cancel')}</Button>
+                        </AlertDialog.Cancel>
+                        <AlertDialog.Action>
+                            <Button color="orange" loading={installing} onClick={() => handleInstall(true)}>
+                                {t('appstore.unsigned_confirm')}
+                            </Button>
+                        </AlertDialog.Action>
+                    </Flex>
+                </AlertDialog.Content>
+            </AlertDialog.Root>
         </Box>
     )
 }
