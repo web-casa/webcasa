@@ -693,6 +693,19 @@ func (ps *PreviewService) runPreview(jobCtx context.Context, previewID, projectI
 	//
 	// Falls back to branch-HEAD CloneToDir when HeadSHA is empty
 	// (legacy rows from before v0.19; no webhook-provided SHA).
+	// SECURITY (defense in depth): re-validate the attacker-controlled
+	// head.ref/head.sha here in case a value reaches git through this
+	// path independently of the webhook boundary (e.g. legacy rows or a
+	// future caller). validateForkRefSHA rejects option-like values such
+	// as `--upload-pack=<cmd>` that git would otherwise parse as flags.
+	// Only enforced for fork PRs — same-repo refs come from the trusted
+	// base repo and may use shapes our charset doesn't cover.
+	if preview.IsForkPR {
+		if verr := validateForkRefSHA(branch, preview.HeadSHA); verr != nil {
+			ps.markFailed(previewID, gen, fmt.Sprintf("invalid fork ref/sha: %v", verr))
+			return
+		}
+	}
 	if preview.HeadSHA != "" {
 		if err := ps.svc.git.CloneAtSHA(ctx, cloneURL, preview.HeadSHA, deployKey, httpsToken, srcDir, logWriter); err != nil {
 			ps.markFailed(previewID, gen, fmt.Sprintf("git clone @ %s: %v", preview.HeadSHA, err))

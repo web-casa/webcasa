@@ -43,7 +43,11 @@ func (g *GitClient) Clone(url, branch, deployKey, httpsToken string, projectID u
 		}
 	}
 
-	args := []string{"clone", "--depth", "1", "--branch", branch, url, dir}
+	// --end-of-options (git 2.19+) ensures the positional <url>/<dir> are
+	// never parsed as options even if an externally-influenced value
+	// starts with a dash (defense in depth; branch/sha are validated at
+	// the webhook boundary too).
+	args := []string{"clone", "--depth", "1", "--branch", branch, "--end-of-options", url, dir}
 	cmd := exec.Command("git", args...)
 
 	// Set up deploy key if provided
@@ -164,7 +168,11 @@ func (g *GitClient) CloneAtSHA(ctx context.Context, url, sha, deployKey, httpsTo
 	if err := runGit([]string{"init", "-q"}); err != nil {
 		return fmt.Errorf("git init failed: %w", err)
 	}
-	if err := runGit([]string{"fetch", "--depth", "1", url, sha}); err != nil {
+	// --end-of-options (git 2.19+) prevents the positional <url>/<sha>
+	// from being interpreted as options (e.g. attacker `sha` of
+	// `--upload-pack=<cmd>`). sha is also validated at the webhook
+	// boundary (validateForkRefSHA); this is defense in depth.
+	if err := runGit([]string{"fetch", "--depth", "1", "--end-of-options", url, sha}); err != nil {
 		return fmt.Errorf("git fetch %s failed: %w (the SHA may not exist on the fork — fork author may have force-pushed before our build started)", sha, err)
 	}
 	if err := runGit([]string{"checkout", "-q", "FETCH_HEAD"}); err != nil {
@@ -213,7 +221,12 @@ func (g *GitClient) CloneToDir(ctx context.Context, url, branch, deployKey, http
 		}
 	}
 
-	gitArgs := []string{"clone", "--depth", "1", "--branch", branch, url, dstDir}
+	// --end-of-options (git 2.19+) ensures the positional <url>/<dstDir>
+	// are never parsed as options even if an externally-influenced value
+	// starts with a dash. The --branch value is consumed as an
+	// option-argument (lower risk) but branch is validated at the webhook
+	// boundary too. Defense in depth.
+	gitArgs := []string{"clone", "--depth", "1", "--branch", branch, "--end-of-options", url, dstDir}
 	cmd := exec.CommandContext(ctx, "git", gitArgs...)
 
 	// Start from the base environment so setupDeployKey's GIT_SSH_COMMAND

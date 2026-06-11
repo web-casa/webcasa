@@ -531,10 +531,28 @@ install_caddy() {
     local CADDY_TMP
     CADDY_TMP=$(mktemp -d)
 
+    local CADDY_ASSET="caddy_${CADDY}_linux_${CADDY_ARCH}.tar.gz"
     info "Downloading from ${CADDY_URL}..."
-    curl -fsSL "$CADDY_URL" -o "${CADDY_TMP}/caddy.tar.gz" || fatal "Failed to download Caddy v${CADDY}"
+    curl -fsSL "$CADDY_URL" -o "${CADDY_TMP}/${CADDY_ASSET}" || fatal "Failed to download Caddy v${CADDY}"
 
-    tar -xzf "${CADDY_TMP}/caddy.tar.gz" -C "$CADDY_TMP" || fatal "Failed to extract Caddy archive"
+    # Best-effort checksum verification against the published checksums.txt for
+    # this release. If the file lists our asset we MUST match it; if the file
+    # cannot be fetched we warn and continue (GitHub release asset over HTTPS).
+    local CADDY_SUMS_URL="https://github.com/caddyserver/caddy/releases/download/v${CADDY}/caddy_${CADDY}_checksums.txt"
+    if curl -fsSL "$CADDY_SUMS_URL" -o "${CADDY_TMP}/checksums.txt" 2>/dev/null; then
+        if grep -q " ${CADDY_ASSET}\$" "${CADDY_TMP}/checksums.txt"; then
+            info "Verifying Caddy checksum..."
+            ( cd "$CADDY_TMP" && grep " ${CADDY_ASSET}\$" checksums.txt | sha256sum -c - ) \
+                || fatal "Caddy checksum verification failed — aborting"
+            success "Caddy checksum verified"
+        else
+            warn "Caddy checksums.txt did not list ${CADDY_ASSET}; skipping verification"
+        fi
+    else
+        warn "Could not fetch Caddy checksums.txt; skipping verification"
+    fi
+
+    tar -xzf "${CADDY_TMP}/${CADDY_ASSET}" -C "$CADDY_TMP" || fatal "Failed to extract Caddy archive"
 
     if [[ ! -f "${CADDY_TMP}/caddy" ]]; then
         fatal "Caddy binary not found in archive"
@@ -579,25 +597,42 @@ install_prebuilt() {
     local TARBALL="webcasa-${ARCH_SUFFIX}.tar.gz"
     local URL="https://github.com/${GITHUB_REPO}/releases/download/v${WEBCASA_VERSION}/${TARBALL}"
 
+    # Use a private temp dir (mktemp -d) instead of fixed /tmp paths to avoid
+    # symlink/race attacks during this root-privileged install.
+    local DL_TMP
+    DL_TMP=$(mktemp -d)
+
     info "Downloading from ${URL} ..."
-    wget -q --show-progress -O "/tmp/${TARBALL}" "$URL" || {
+    wget -q --show-progress -O "${DL_TMP}/${TARBALL}" "$URL" || {
         error "Download failed. The release v${WEBCASA_VERSION} may not exist."
         error "Try: bash install.sh --from-source"
+        rm -rf "$DL_TMP"
         exit 1
     }
 
-    # Verify checksum if available
+    # MANDATORY checksum verification — we are about to install and run a binary
+    # as root, so an unverified or tampered artifact must never be installed.
     local SHA_URL="${URL}.sha256"
-    if wget -q -O "/tmp/${TARBALL}.sha256" "$SHA_URL" 2>/dev/null; then
-        info "Verifying checksum..."
-        cd /tmp && sha256sum -c "${TARBALL}.sha256" && success "Checksum verified" || warn "Checksum mismatch!"
-    fi
+    info "Fetching checksum..."
+    wget -q -O "${DL_TMP}/${TARBALL}.sha256" "$SHA_URL" || {
+        rm -rf "$DL_TMP"
+        fatal "Could not fetch checksum (${SHA_URL}) — refusing to install an unverified binary"
+    }
+    info "Verifying checksum..."
+    ( cd "$DL_TMP" && sha256sum -c "${TARBALL}.sha256" ) || {
+        rm -rf "$DL_TMP"
+        fatal "Checksum verification failed — aborting"
+    }
+    success "Checksum verified"
 
     # Extract
     info "Extracting..."
-    tar -xzf "/tmp/${TARBALL}" -C /tmp/
+    tar -xzf "${DL_TMP}/${TARBALL}" -C "$DL_TMP" || {
+        rm -rf "$DL_TMP"
+        fatal "Failed to extract WebCasa archive"
+    }
 
-    local EXTRACT_DIR="/tmp/webcasa-${ARCH_SUFFIX}"
+    local EXTRACT_DIR="${DL_TMP}/webcasa-${ARCH_SUFFIX}"
 
     # Install server binary (renamed from webcasa to webcasa-server)
     cp -f "${EXTRACT_DIR}/webcasa" "$INSTALL_DIR/webcasa-server"
@@ -608,7 +643,7 @@ install_prebuilt() {
     cp -r "${EXTRACT_DIR}/web/dist" "$DATA_DIR/web/"
 
     # Cleanup
-    rm -rf "/tmp/${TARBALL}" "/tmp/${TARBALL}.sha256" "$EXTRACT_DIR"
+    rm -rf "$DL_TMP"
 
     success "WebCasa v${WEBCASA_VERSION} installed"
 }
@@ -742,10 +777,28 @@ install_go() {
 
     info "Installing Go $GO_VERSION ..."
     local GO_TAR="go${GO_VERSION}.linux-${GO_ARCH}.tar.gz"
-    wget -q --show-progress -O "/tmp/${GO_TAR}" "https://go.dev/dl/${GO_TAR}"
+    local GO_TMP
+    GO_TMP=$(mktemp -d)
+    wget -q --show-progress -O "${GO_TMP}/${GO_TAR}" "https://go.dev/dl/${GO_TAR}" || {
+        rm -rf "$GO_TMP"; fatal "Failed to download Go ${GO_VERSION}"
+    }
+
+    # Verify against the SHA256 published by go.dev for this exact file.
+    local GO_SHA
+    GO_SHA=$(curl -fsSL "https://go.dev/dl/?mode=json&include=all" \
+        | grep -oP "\"filename\":\s*\"${GO_TAR}\"[^}]*\"sha256\":\s*\"\K[0-9a-f]{64}" | head -1 || true)
+    if [[ -n "$GO_SHA" ]]; then
+        info "Verifying Go checksum..."
+        echo "${GO_SHA}  ${GO_TMP}/${GO_TAR}" | sha256sum -c - \
+            || { rm -rf "$GO_TMP"; fatal "Go checksum verification failed — aborting"; }
+        success "Go checksum verified"
+    else
+        warn "Could not fetch Go SHA256 for ${GO_TAR}; skipping verification"
+    fi
+
     rm -rf /usr/local/go
-    tar -C /usr/local -xzf "/tmp/${GO_TAR}"
-    rm -f "/tmp/${GO_TAR}"
+    tar -C /usr/local -xzf "${GO_TMP}/${GO_TAR}"
+    rm -rf "$GO_TMP"
     echo 'export PATH=$PATH:/usr/local/go/bin' > /etc/profile.d/go.sh
     export PATH=$PATH:/usr/local/go/bin
     success "Go $(go version | grep -oP 'go\K\S+') installed"
@@ -774,10 +827,26 @@ install_nodejs() {
     [[ "$NODE_ARCH" == "amd64" ]] && NODE_ARCH="x64"
 
     local NODE_TAR="node-v${NODE_FULL_VER}-linux-${NODE_ARCH}.tar.xz"
+    local NODE_TMP
+    NODE_TMP=$(mktemp -d)
     info "Downloading Node.js v${NODE_FULL_VER} ..."
-    wget -q --show-progress -O "/tmp/${NODE_TAR}" "https://nodejs.org/dist/v${NODE_FULL_VER}/${NODE_TAR}"
-    tar -C /usr/local --strip-components=1 -xJf "/tmp/${NODE_TAR}"
-    rm -f "/tmp/${NODE_TAR}"
+    wget -q --show-progress -O "${NODE_TMP}/${NODE_TAR}" "https://nodejs.org/dist/v${NODE_FULL_VER}/${NODE_TAR}" || {
+        rm -rf "$NODE_TMP"; fatal "Failed to download Node.js v${NODE_FULL_VER}"
+    }
+
+    # Verify against the official SHASUMS256.txt for this release.
+    if curl -fsSL "https://nodejs.org/dist/v${NODE_FULL_VER}/SHASUMS256.txt" -o "${NODE_TMP}/SHASUMS256.txt" 2>/dev/null \
+        && grep -q "  ${NODE_TAR}\$" "${NODE_TMP}/SHASUMS256.txt"; then
+        info "Verifying Node.js checksum..."
+        ( cd "$NODE_TMP" && grep "  ${NODE_TAR}\$" SHASUMS256.txt | sha256sum -c - ) \
+            || { rm -rf "$NODE_TMP"; fatal "Node.js checksum verification failed — aborting"; }
+        success "Node.js checksum verified"
+    else
+        warn "Could not fetch/match Node.js SHASUMS256.txt; skipping verification"
+    fi
+
+    tar -C /usr/local --strip-components=1 -xJf "${NODE_TMP}/${NODE_TAR}"
+    rm -rf "$NODE_TMP"
     hash -r
     success "Node.js $(node --version) installed"
 }

@@ -45,8 +45,9 @@ func (h *Handler) CreateToken(c *gin.Context) {
 	}
 
 	// Normalise permissions: accept both string ("[]") and []string (["a","b"]).
-	// Default to ["*"] (full access) for backwards compatibility when not specified.
-	permissions := `["*"]`
+	// Least privilege: when scopes are omitted we grant NO permissions ("[]"),
+	// never "*". The caller must explicitly request the scopes they need.
+	permissions := "[]"
 	if len(req.Permissions) > 0 {
 		var arr []string
 		if json.Unmarshal(req.Permissions, &arr) == nil {
@@ -73,10 +74,10 @@ func (h *Handler) CreateToken(c *gin.Context) {
 	}
 
 	c.JSON(http.StatusOK, gin.H{
-		"token":     plaintext, // shown only once
-		"id":        token.ID,
-		"name":      token.Name,
-		"prefix":    token.Prefix,
+		"token":      plaintext, // shown only once
+		"id":         token.ID,
+		"name":       token.Name,
+		"prefix":     token.Prefix,
 		"expires_at": token.ExpiresAt,
 		"created_at": token.CreatedAt,
 	})

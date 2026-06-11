@@ -4,7 +4,9 @@ import (
 	"crypto/sha256"
 	"crypto/subtle"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"strings"
 	"time"
@@ -107,8 +109,13 @@ func GenerateTempToken(userID uint, username, secret string) (string, error) {
 // ParseToken validates and parses a JWT token
 func ParseToken(tokenString, secret string) (*Claims, error) {
 	token, err := jwt.ParseWithClaims(tokenString, &Claims{}, func(token *jwt.Token) (interface{}, error) {
+		// Pin the signing method: reject any token not using HMAC, so a forged
+		// "alg: none" or asymmetric token can never be validated with our secret.
+		if _, ok := token.Method.(*jwt.SigningMethodHMAC); !ok {
+			return nil, fmt.Errorf("unexpected signing method: %v", token.Header["alg"])
+		}
 		return []byte(secret), nil
-	})
+	}, jwt.WithValidMethods([]string{"HS256"}))
 	if err != nil {
 		return nil, err
 	}
@@ -245,10 +252,11 @@ func validateAPIToken(c *gin.Context, db *gorm.DB, plaintext string) error {
 
 	// Lookup candidates by prefix for fast filtering
 	type tokenRow struct {
-		ID         uint       `gorm:"primaryKey"`
-		UserID     uint       `gorm:"column:user_id"`
-		TokenHash  string     `gorm:"column:token_hash"`
-		ExpiresAt  *time.Time `gorm:"column:expires_at"`
+		ID          uint       `gorm:"primaryKey"`
+		UserID      uint       `gorm:"column:user_id"`
+		TokenHash   string     `gorm:"column:token_hash"`
+		Permissions string     `gorm:"column:permissions"` // JSON array, e.g. ["hosts:write","*"]
+		ExpiresAt   *time.Time `gorm:"column:expires_at"`
 	}
 
 	var candidates []tokenRow
@@ -269,11 +277,119 @@ func validateAPIToken(c *gin.Context, db *gorm.DB, plaintext string) error {
 			c.Set("username", "api-token")
 			c.Set("api_token", true)
 			c.Set("api_token_id", t.ID)
+			// Store the token's scopes so RequireTokenScope can enforce them.
+			// Permissions is a JSON array of scope strings (e.g. ["hosts:write"]
+			// or ["*"]); empty/missing means NO access (fail closed).
+			c.Set("api_token_permissions", parseTokenScopes(t.Permissions))
 			return nil
 		}
 	}
 
 	return errors.New("invalid API token")
+}
+
+// parseTokenScopes parses the JSON-encoded permissions array stored on an API
+// token into a slice of scope strings. A malformed or empty value yields nil,
+// which the scope checks treat as NO access (fail closed).
+func parseTokenScopes(permissions string) []string {
+	if permissions == "" || permissions == "[]" {
+		return nil
+	}
+	var scopes []string
+	if err := json.Unmarshal([]byte(permissions), &scopes); err != nil {
+		return nil
+	}
+	return scopes
+}
+
+// scopeMatches reports whether the granted scope slice satisfies the required
+// scope. A granted "*" (or "<category>:*"/"*:<action>") wildcard matches using
+// the same category:action vocabulary as the MCP layer
+// (plugins/mcpserver/tools.go checkPermission). An empty granted slice never
+// matches — tokens with no permissions get NO access.
+func scopeMatches(granted []string, required string) bool {
+	rCat, rAct := splitScope(required)
+	for _, g := range granted {
+		if g == "*" {
+			return true
+		}
+		gCat, gAct := splitScope(g)
+		if (gCat == "*" || gCat == rCat) && (gAct == "*" || gAct == rAct) {
+			return true
+		}
+	}
+	return false
+}
+
+// splitScope splits a "category:action" scope. A bare scope (no colon) is
+// treated as "<scope>:*".
+func splitScope(s string) (category, action string) {
+	if i := strings.IndexByte(s, ':'); i >= 0 {
+		return s[:i], s[i+1:]
+	}
+	return s, "*"
+}
+
+// RequireTokenScope gates API-token-authenticated requests by scope. It is a
+// no-op for normal JWT/session auth (those are governed by RBAC role checks).
+//
+// For requests authenticated via a "wc_" API token (api_token == true) it
+// requires the token's permissions to grant the given scope, "<category>:*",
+// "*:<action>", or "*". Tokens with empty/missing permissions are rejected:
+// access fails closed, never open. On insufficient scope it aborts 403.
+//
+// Scope strings use the same "category:action" vocabulary as the MCP layer
+// (e.g. "hosts:write", "system:write"); see plugins/mcpserver/tools.go.
+func RequireTokenScope(scope string) gin.HandlerFunc {
+	return func(c *gin.Context) {
+		if isAPIToken, _ := c.Get("api_token"); isAPIToken == true {
+			granted, _ := c.Get("api_token_permissions")
+			scopes, _ := granted.([]string)
+			if !scopeMatches(scopes, scope) {
+				c.JSON(http.StatusForbidden, gin.H{"error": "API token lacks required scope: " + scope})
+				c.Abort()
+				return
+			}
+		}
+		c.Next()
+	}
+}
+
+// RequireTokenScopeForMutations gates API-token requests on any state-changing
+// method (POST/PUT/PATCH/DELETE). It is a no-op for safe methods (GET/HEAD) and
+// for normal JWT/session auth.
+//
+// This is a SAFE-DEFAULT gate: a scoped API token may only perform mutations it
+// has been explicitly granted via the given scope (or a "*" wildcard). A token
+// with no/empty permissions can read (subject to RBAC) but can never mutate —
+// the previous behavior, where any "wc_" token inherited the owner's full role
+// on REST routes, is closed. Read access still flows through normal RBAC.
+func RequireTokenScopeForMutations(scope string) gin.HandlerFunc {
+	gate := RequireTokenScope(scope)
+	return func(c *gin.Context) {
+		switch c.Request.Method {
+		case http.MethodPost, http.MethodPut, http.MethodPatch, http.MethodDelete:
+			gate(c)
+		default:
+			c.Next()
+		}
+	}
+}
+
+// RequireFullScopeForMutations is the SAFE-DEFAULT gate wired onto the REST
+// route groups. On any state-changing method (POST/PUT/PATCH/DELETE) it permits
+// an API-token request only when the token's permissions include "*" (full
+// access). Scoped tokens (anything other than ["*"]) are rejected on mutations
+// because the REST router does not (yet) carry per-route category:action scope
+// metadata; granting fine-grained scopes there would require per-route wiring.
+// Read (GET/HEAD) requests are unaffected and remain governed by RBAC.
+//
+// This closes the prior bypass where any "wc_" token inherited the owner's full
+// role on mutating REST routes. Fine-grained scopes remain enforced on the MCP
+// surface via plugins/mcpserver/tools.go checkPermission. It is a no-op for
+// normal JWT/session auth.
+func RequireFullScopeForMutations() gin.HandlerFunc {
+	return RequireTokenScopeForMutations("*")
 }
 
 // isWebSocketUpgrade checks if the request is a WebSocket upgrade handshake.

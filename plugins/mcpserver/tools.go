@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/url"
+	"path/filepath"
 	"strconv"
 	"strings"
 
@@ -421,11 +422,11 @@ func (ts *ToolService) handleListHosts(ctx context.Context, req *mcp.CallToolReq
 	}
 
 	type hostSummary struct {
-		ID        uint   `json:"id"`
-		Domain    string `json:"domain"`
-		HostType  string `json:"host_type"`
-		Enabled   bool   `json:"enabled"`
-		TLS       bool   `json:"tls_enabled"`
+		ID        uint     `json:"id"`
+		Domain    string   `json:"domain"`
+		HostType  string   `json:"host_type"`
+		Enabled   bool     `json:"enabled"`
+		TLS       bool     `json:"tls_enabled"`
 		Upstreams []string `json:"upstreams"`
 	}
 	summaries := make([]hostSummary, 0, len(hosts))
@@ -1104,10 +1105,10 @@ func (ts *ToolService) handleFirewallStatus(ctx context.Context, req *mcp.CallTo
 }
 
 type manageFirewallRuleInput struct {
-	Action   string `json:"action" jsonschema:"required"`   // add, remove
-	Type     string `json:"type" jsonschema:"required"`     // port, service
-	Value    string `json:"value" jsonschema:"required"`    // e.g. "8080" or "8080/tcp" or "http"
-	Zone     string `json:"zone,omitempty"`
+	Action string `json:"action" jsonschema:"required"` // add, remove
+	Type   string `json:"type" jsonschema:"required"`   // port, service
+	Value  string `json:"value" jsonschema:"required"`  // e.g. "8080" or "8080/tcp" or "http"
+	Zone   string `json:"zone,omitempty"`
 }
 
 func (ts *ToolService) handleManageFirewallRule(ctx context.Context, req *mcp.CallToolRequest, input manageFirewallRuleInput) (*mcp.CallToolResult, any, error) {
@@ -1203,6 +1204,16 @@ func (ts *ToolService) handleDockerRun(ctx context.Context, req *mcp.CallToolReq
 	if r, denied := requirePerm(ctx, "docker:write"); denied {
 		return r, nil, nil
 	}
+	// Guardrail: reject bind mounts of the host root or sensitive host paths.
+	// docker_run executes with no human confirmation gate (unlike the in-panel
+	// AI path), so mounting "/" or the docker socket would be a trivial host
+	// escape. TODO: add a real NeedsConfirmation flow shared with plugins/ai.
+	for _, v := range input.Volumes {
+		if err := validateDockerVolume(v); err != nil {
+			r, _ := errorResult(err.Error())
+			return r, nil, nil
+		}
+	}
 	containerID, err := ts.coreAPI.DockerRunContainer(plugin.DockerRunContainerRequest{
 		Image:         input.Image,
 		Name:          input.Name,
@@ -1277,6 +1288,30 @@ func (ts *ToolService) handleAutoDeploy(ctx context.Context, req *mcp.CallToolRe
 		"message":    "Project created and build started",
 	})
 	return r, nil, e
+}
+
+// validateDockerVolume rejects bind mounts whose host side is the root
+// filesystem or a sensitive host path (docker socket, /etc, /root, ...).
+// Docker -v syntax is "host:container[:opts]"; a host side starting with "/"
+// is a bind mount, anything else (no slash) is a named volume and is allowed.
+func validateDockerVolume(v string) error {
+	parts := strings.SplitN(v, ":", 2)
+	host := parts[0]
+	// Named volumes (e.g. "mydata:/var/lib") have no leading slash — allow.
+	if !strings.HasPrefix(host, "/") {
+		return nil
+	}
+	clean := filepath.Clean(host)
+	denied := []string{"/", "/etc", "/root", "/var/run/docker.sock", "/run/docker.sock", "/proc", "/sys", "/boot", "/dev"}
+	for _, d := range denied {
+		if clean == d || (d != "/" && strings.HasPrefix(clean, d+"/")) {
+			return fmt.Errorf("volume mount of sensitive host path %q is not allowed", host)
+		}
+	}
+	if clean == "/" {
+		return fmt.Errorf("volume mount of host root %q is not allowed", host)
+	}
+	return nil
 }
 
 // splitRepoURL extracts the repo name from a git URL.

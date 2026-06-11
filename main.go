@@ -11,6 +11,8 @@ import (
 	"path/filepath"
 	"strings"
 
+	"github.com/gin-contrib/cors"
+	"github.com/gin-gonic/gin"
 	"github.com/web-casa/webcasa/internal/auth"
 	"github.com/web-casa/webcasa/internal/caddy"
 	"github.com/web-casa/webcasa/internal/config"
@@ -22,19 +24,17 @@ import (
 	"github.com/web-casa/webcasa/internal/service"
 	"github.com/web-casa/webcasa/internal/versioncheck"
 	aiplugin "github.com/web-casa/webcasa/plugins/ai"
+	appstoreplugin "github.com/web-casa/webcasa/plugins/appstore"
+	backupplugin "github.com/web-casa/webcasa/plugins/backup"
+	cronjobplugin "github.com/web-casa/webcasa/plugins/cronjob"
+	dbplugin "github.com/web-casa/webcasa/plugins/database"
 	deployplugin "github.com/web-casa/webcasa/plugins/deploy"
 	dockerplugin "github.com/web-casa/webcasa/plugins/docker"
-	dbplugin "github.com/web-casa/webcasa/plugins/database"
 	fmplugin "github.com/web-casa/webcasa/plugins/filemanager"
-	appstoreplugin "github.com/web-casa/webcasa/plugins/appstore"
-	mcpplugin "github.com/web-casa/webcasa/plugins/mcpserver"
-	backupplugin "github.com/web-casa/webcasa/plugins/backup"
-	monitoringplugin "github.com/web-casa/webcasa/plugins/monitoring"
 	firewallplugin "github.com/web-casa/webcasa/plugins/firewall"
+	mcpplugin "github.com/web-casa/webcasa/plugins/mcpserver"
+	monitoringplugin "github.com/web-casa/webcasa/plugins/monitoring"
 	phpplugin "github.com/web-casa/webcasa/plugins/php"
-	cronjobplugin "github.com/web-casa/webcasa/plugins/cronjob"
-	"github.com/gin-contrib/cors"
-	"github.com/gin-gonic/gin"
 	"golang.org/x/crypto/bcrypt"
 	"gorm.io/gorm"
 )
@@ -144,19 +144,27 @@ func main() {
 	api.GET("/auth/need-setup", authH.NeedSetup)
 	api.GET("/auth/altcha-challenge", authH.AltchaChallenge)
 
+	// API-token scope gate: fail-closed for scoped "wc_" tokens on mutating
+	// REST routes (only ["*"] tokens may mutate). No-op for JWT/session auth.
+	// See auth.RequireFullScopeForMutations for rationale.
+	tokenScopeGate := auth.RequireFullScopeForMutations()
+
 	// Protected routes (JWT required)
 	protected := api.Group("")
 	protected.Use(auth.Middleware(cfg.JWTSecret, auth.WithDB(db)))
+	protected.Use(tokenScopeGate)
 
 	// Operator routes (JWT + operator/admin/owner role required)
 	operatorOnly := api.Group("")
 	operatorOnly.Use(auth.Middleware(cfg.JWTSecret, auth.WithDB(db)))
 	operatorOnly.Use(auth.RequireOperator(db))
+	operatorOnly.Use(tokenScopeGate)
 
 	// Admin-only routes (JWT + admin/owner role required)
 	adminOnly := api.Group("")
 	adminOnly.Use(auth.Middleware(cfg.JWTSecret, auth.WithDB(db)))
 	adminOnly.Use(auth.RequireAdmin(db))
+	adminOnly.Use(tokenScopeGate)
 
 	// User info
 	protected.GET("/auth/me", authH.Me)

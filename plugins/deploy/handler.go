@@ -11,12 +11,46 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"regexp"
 	"strconv"
 	"strings"
 
 	"github.com/gin-gonic/gin"
 	"github.com/web-casa/webcasa/plugins/deploy/builders"
 )
+
+// Fork-PR webhook fields head.sha and head.ref are attacker-controlled
+// (any GitHub user can open a PR from a fork). They flow into git as
+// POSITIONAL command arguments, where a value like `--upload-pack=<cmd>`
+// would be parsed by git as an option → arbitrary command execution.
+// These regexes reject such values at the webhook boundary before any
+// git operation runs (primary control; git.go adds --end-of-options as
+// defense in depth).
+var (
+	// validHeadSHA matches a 7–40 char hex commit SHA. Rejects leading
+	// dashes, option-like values, and anything non-hex.
+	validHeadSHA = regexp.MustCompile(`^[0-9a-fA-F]{7,40}$`)
+	// validHeadRef matches a safe git branch/ref name charset. Leading
+	// '-', '..', and a leading '/' are rejected separately below.
+	validHeadRef = regexp.MustCompile(`^[A-Za-z0-9._/-]+$`)
+)
+
+// validateForkRefSHA enforces the head.ref / head.sha charset + shape
+// rules. Returns a non-nil error describing the first violation. Applied
+// at the webhook boundary AND in preview.go runPreview (defense in depth)
+// so attacker-controlled values can never reach git as options.
+func validateForkRefSHA(ref, sha string) error {
+	if !validHeadSHA.MatchString(sha) {
+		return fmt.Errorf("invalid head.sha: must be a 7-40 char hex commit SHA")
+	}
+	if !validHeadRef.MatchString(ref) ||
+		strings.HasPrefix(ref, "-") ||
+		strings.HasPrefix(ref, "/") ||
+		strings.Contains(ref, "..") {
+		return fmt.Errorf("invalid head.ref: must match [A-Za-z0-9._/-]+, not start with '-' or '/', and not contain '..'")
+	}
+	return nil
+}
 
 // Handler provides HTTP handlers for the deploy plugin API.
 type Handler struct {
@@ -526,6 +560,14 @@ func (h *Handler) handlePullRequestWebhook(c *gin.Context, project *Project) {
 			})
 			return
 		}
+		// SECURITY: head.ref and head.sha are attacker-controlled (fork
+		// PR author) and flow into git as positional args. Validate the
+		// charset/shape BEFORE any git operation so a value like
+		// `--upload-pack=<cmd>` can't be parsed by git as an option.
+		if verr := validateForkRefSHA(payload.PullRequest.Head.Ref, payload.PullRequest.Head.SHA); verr != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": verr.Error()})
+			return
+		}
 		// v0.19: fork PR support gated by project setting. Default
 		// (AcceptForkPRPreviews=false) preserves v0.14-v0.18 reject
 		// behaviour. When opted in, the fork PR builds + runs but
@@ -549,6 +591,19 @@ func (h *Handler) handlePullRequestWebhook(c *gin.Context, project *Project) {
 		// path matches head.repo.full_name (extra defense against
 		// path injection like /a@github.com/...).
 		if isForkPR {
+			// SECURITY: fork PRs run untrusted code from an arbitrary
+			// GitHub user. Without a webhook secret, HMAC verification is
+			// skipped (see the project.WebhookSecret != "" gate above) and
+			// anyone who learns the webhook URL could trigger a fork-PR
+			// build with attacker-chosen head.ref/head.sha. Require a
+			// configured secret for the fork-PR path specifically; normal
+			// same-repo pushes are unaffected.
+			if project.WebhookSecret == "" {
+				c.JSON(http.StatusBadRequest, gin.H{
+					"error": "fork PR previews require a configured webhook secret so the payload's authenticity can be verified",
+				})
+				return
+			}
 			cloneURL := payload.PullRequest.Head.Repo.CloneURL
 			if cloneURL == "" {
 				c.JSON(http.StatusBadRequest, gin.H{

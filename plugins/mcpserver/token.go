@@ -43,8 +43,11 @@ func (s *TokenService) CreateToken(userID uint, name string, permissions string,
 	// Prefix for fast lookup: "wc_" + first 8 hex chars of the random part
 	prefix := plaintext[:11] // "wc_" + 8 chars
 
-	if permissions == "" || permissions == "[]" {
-		permissions = `["*"]`
+	// Least privilege: an unspecified scope set means NO permissions, not "*".
+	// We never implicitly grant full access. Normalise empty/missing to "[]"
+	// so checkPermission denies every scope until the caller grants one.
+	if permissions == "" {
+		permissions = "[]"
 	}
 
 	token := &APIToken{

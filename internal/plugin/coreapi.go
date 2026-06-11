@@ -47,7 +47,7 @@ func NewCoreAPI(db *gorm.DB, hostSvc *service.HostService, caddyMgr *caddy.Manag
 		hostSvc:   hostSvc,
 		caddyMgr:  caddyMgr,
 		jwtSecret: secret,
-		dataDir:  dataDir,
+		dataDir:   dataDir,
 	}
 }
 
@@ -290,21 +290,21 @@ func (a *CoreAPIImpl) CreateProject(req CreateProjectRequest) (uint, error) {
 
 	now := time.Now()
 	project := map[string]interface{}{
-		"name":              req.Name,
-		"git_url":           req.GitURL,
-		"git_branch":        branch,
-		"domain":            req.Domain,
-		"framework":         req.Framework,
-		"deploy_mode":       deployMode,
-		"auto_deploy":       req.AutoDeploy,
-		"auth_method":       "ssh_key",
-		"install_cmd":       req.InstallCommand,
-		"build_command":     req.BuildCommand,
-		"start_command":     req.StartCommand,
-		"status":            "pending",
-		"webhook_token":     webhookToken,
-		"created_at":        now,
-		"updated_at":        now,
+		"name":          req.Name,
+		"git_url":       req.GitURL,
+		"git_branch":    branch,
+		"domain":        req.Domain,
+		"framework":     req.Framework,
+		"deploy_mode":   deployMode,
+		"auto_deploy":   req.AutoDeploy,
+		"auth_method":   "ssh_key",
+		"install_cmd":   req.InstallCommand,
+		"build_command": req.BuildCommand,
+		"start_command": req.StartCommand,
+		"status":        "pending",
+		"webhook_token": webhookToken,
+		"created_at":    now,
+		"updated_at":    now,
 	}
 
 	result := a.db.Table("plugin_deploy_projects").Create(&project)
@@ -503,17 +503,15 @@ func (a *CoreAPIImpl) RunCommand(cmd string, timeoutSec int) (string, error) {
 		timeoutSec = 120
 	}
 
-	// Security: block dangerous commands
-	lower := strings.ToLower(cmd)
-	blocked := []string{
-		"rm -rf /", "mkfs", "dd if=", "> /dev/sd",
-		"chmod -r 777 /", ":(){ :|:", "shutdown", "reboot",
-		"init 0", "init 6", "halt",
-	}
-	for _, b := range blocked {
-		if strings.Contains(lower, b) {
-			return "", fmt.Errorf("command blocked for safety: contains %q", b)
-		}
+	// Security: best-effort denylist of clearly-destructive / remote-exec
+	// patterns. This is NOT a security boundary — the command still runs via
+	// bash, so a determined caller can obfuscate around any blocklist. The real
+	// fix is running this process as a non-root, sandboxed user (out of scope
+	// here). We normalise whitespace first so `rm -r -f /` is caught like
+	// `rm -rf /`, and use compiled regexes to catch piping remote content to a
+	// shell.
+	if err := checkBlockedCommand(cmd); err != nil {
+		return "", err
 	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), time.Duration(timeoutSec)*time.Second)
@@ -541,6 +539,47 @@ func (a *CoreAPIImpl) RunCommand(cmd string, timeoutSec int) (string, error) {
 		output = output[:8192] + "\n... (truncated)"
 	}
 	return output, nil
+}
+
+// blockedCommandRes is a small set of compiled regexes matching
+// clearly-destructive or remote-execution command patterns. Matching is done
+// against a whitespace-normalised, lower-cased copy of the command so trivial
+// reorderings (`rm -r -f /`) and extra spaces don't slip through. This is
+// defense in depth only — a denylist is not a security boundary; the proper
+// fix is dropping privileges / sandboxing (out of scope here).
+var blockedCommandRes = []*regexp.Regexp{
+	// Recursive force-remove of the root filesystem (flags in any order).
+	regexp.MustCompile(`\brm\b(\s+-\S+)*\s+/(\s|$)`),
+	// Filesystem / block-device destruction.
+	regexp.MustCompile(`\bmkfs\b`),
+	regexp.MustCompile(`\bdd\b.*\bif=`),
+	regexp.MustCompile(`>\s*/dev/(sd|nvme|hd|vd|xvd)`),
+	regexp.MustCompile(`\bchmod\b(\s+-\S+)*\s+777\s+/(\s|$)`),
+	// Fork bomb.
+	regexp.MustCompile(`:\(\)\s*\{\s*:\s*\|\s*:`),
+	// Host power state.
+	regexp.MustCompile(`\b(shutdown|reboot|halt|poweroff)\b`),
+	regexp.MustCompile(`\binit\s+[06]\b`),
+	// Pipe remote content straight into a shell, e.g.
+	//   curl http://x | sh   /   wget -qO- x | bash   /   echo b64 | base64 -d | bash
+	regexp.MustCompile(`\b(curl|wget|fetch)\b[^|]*\|\s*(sudo\s+)?(sh|bash|zsh|dash|python\d?|perl|ruby)\b`),
+	regexp.MustCompile(`\bbase64\b(\s+-\S+)*\s*\|\s*(sudo\s+)?(sh|bash|zsh|dash)\b`),
+	regexp.MustCompile(`\|\s*(sudo\s+)?(sh|bash|zsh|dash)\s+-c\b`),
+}
+
+// checkBlockedCommand returns a "blocked for safety" error if cmd matches any
+// best-effort destructive/remote-exec pattern. It is conservative: it targets
+// clearly-dangerous shapes and leaves ordinary diagnostic commands alone.
+func checkBlockedCommand(cmd string) error {
+	// Normalise: lower-case and collapse runs of whitespace to a single space
+	// so `rm   -r  -f  /` matches the same pattern as `rm -rf /`.
+	norm := strings.ToLower(strings.Join(strings.Fields(cmd), " "))
+	for _, re := range blockedCommandRes {
+		if re.MatchString(norm) {
+			return fmt.Errorf("command blocked for safety: matches a destructive or remote-execution pattern")
+		}
+	}
+	return nil
 }
 
 // ──────────────────────────────────────────────────
@@ -1632,14 +1671,14 @@ func (a *CoreAPIImpl) CreateAlertRule(name, metric, operator string, threshold f
 	}
 
 	type alertRuleRow struct {
-		ID          uint      `gorm:"primaryKey"`
-		Name        string    `gorm:"size:128"`
-		Metric      string    `gorm:"size:64"`
-		Operator    string    `gorm:"size:4"`
+		ID          uint   `gorm:"primaryKey"`
+		Name        string `gorm:"size:128"`
+		Metric      string `gorm:"size:64"`
+		Operator    string `gorm:"size:4"`
 		Threshold   float64
 		Duration    int
 		Enabled     bool
-		CooldownMin int       `gorm:"column:cooldown_min"`
+		CooldownMin int `gorm:"column:cooldown_min"`
 		CreatedAt   time.Time
 		UpdatedAt   time.Time
 	}
@@ -1750,13 +1789,13 @@ func (a *CoreAPIImpl) CronJobCreate(name, expression, command, workingDir string
 		tagsJSON = string(b)
 	}
 	type cronTaskRow struct {
-		ID         uint      `gorm:"primaryKey"`
-		Name       string    `gorm:"size:128"`
-		Expression string    `gorm:"size:128"`
-		Command    string    `gorm:"type:text"`
-		WorkingDir string    `gorm:"size:512"`
+		ID         uint   `gorm:"primaryKey"`
+		Name       string `gorm:"size:128"`
+		Expression string `gorm:"size:128"`
+		Command    string `gorm:"type:text"`
+		WorkingDir string `gorm:"size:512"`
 		Enabled    bool
-		Tags       string    `gorm:"type:text"`
+		Tags       string `gorm:"type:text"`
 		TimeoutSec int
 		CreatedAt  time.Time
 		UpdatedAt  time.Time

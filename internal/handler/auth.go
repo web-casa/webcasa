@@ -4,11 +4,11 @@ import (
 	"fmt"
 	"net/http"
 
+	"github.com/gin-gonic/gin"
 	"github.com/web-casa/webcasa/internal/auth"
 	"github.com/web-casa/webcasa/internal/config"
 	"github.com/web-casa/webcasa/internal/model"
 	"github.com/web-casa/webcasa/internal/service"
-	"github.com/gin-gonic/gin"
 	"gorm.io/gorm"
 )
 
@@ -28,6 +28,12 @@ type AuthHandler struct {
 func NewAuthHandler(db *gorm.DB, cfg *config.Config, limiters *auth.Limiters, totpSvc *service.TOTPService) *AuthHandler {
 	return &AuthHandler{db: db, cfg: cfg, limiters: limiters, totpSvc: totpSvc}
 }
+
+// dummyBcryptHash is a valid bcrypt hash of a random password. When the
+// supplied username does not exist we still run a bcrypt comparison against it
+// so the response time matches the user-exists path, preventing username
+// enumeration via timing analysis.
+const dummyBcryptHash = "$2a$10$N9qo8uLOickgx2ZMRZoMyeIjZAgcfl7p92ldGxad68LJZdL17lhWy"
 
 type loginRequest struct {
 	Username  string `json:"username" binding:"required"`
@@ -170,6 +176,9 @@ func (h *AuthHandler) Login(c *gin.Context) {
 
 	var user model.User
 	if err := h.db.Where("username = ?", req.Username).First(&user).Error; err != nil {
+		// Run a dummy bcrypt comparison so an unknown username takes the same
+		// time as a known one, defeating timing-based username enumeration.
+		auth.CheckPassword(dummyBcryptHash, req.Password)
 		h.limiters.Login.RecordFail(ip)
 		c.JSON(http.StatusUnauthorized, gin.H{"error": "Invalid credentials"})
 		return
