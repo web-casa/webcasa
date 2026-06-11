@@ -167,21 +167,28 @@ gaps that were closed.
   documented as a fast-fail speed bump, not the boundary. Trade-off: sandboxed
   commands run read-only as a nobody-class user — privileged/mutating ops must
   use dedicated audited tools, not the arbitrary-command path.
-- **App Store installs unsigned remote Compose.** Sources are SSRF-validated and
-  admin-added, but there is no commit pinning / signature / image-digest
-  verification; a compromised upstream repo ships a malicious compose on the
-  next sync. Recommend commit-pinning + signature/checksum verification + image
-  `@sha256:` digests.
-- **versioncheck manifest is unsigned.** Not auto-executed in Go; ensure the UI
-  never renders `install_scripts` as one-click/copy-run without provenance.
-- **JWT has no revocation.** Stateless 24h tokens survive password change / user
-  deletion until expiry (role downgrade *is* mitigated by per-request DB lookup).
-  Consider a `password_changed_at` / token-version claim.
-- **ALTCHA PoW solutions are replayable** within the 120s window (stateless, no
-  single-use cache). Low impact behind the login rate limiter.
-- **`web/node_modules/` is committed to git.** Large unaudited supply-chain
-  surface; recommend `git rm -r --cached web/node_modules` (Dockerfile already
-  uses `npm ci`).
+- ~~**App Store installs unsigned remote Compose.**~~ **Partly addressed (v0.20,
+  Release B).** Images are now pulled and rewritten to immutable
+  `name@sha256:<digest>` before `compose up` (install aborts rather than run an
+  unpinned image), pinned refs are persisted for drift detection, and installs
+  from an unsigned source require explicit acknowledgement (`AcknowledgeUnsigned`
+  → HTTP 412 listing the images that would run). **Still open:** a signed-manifest
+  / commit-pinning trust model (operator chose digest-pin + warning over a
+  signing system for now); the frontend must catch the 412 and resubmit with the
+  flag.
+- ~~**versioncheck manifest is unsigned.**~~ **Addressed (v0.20, Release B).**
+  `install_scripts` are stripped from the client-facing API via a DTO
+  (regression-locked by a test), so the UI can never render manifest-supplied
+  commands; optional ed25519 manifest signature verification activates when
+  `WEBCASA_VERSIONCHECK_PUBKEY` is configured (no-op with a warning otherwise).
+- ~~**JWT has no revocation.**~~ **Addressed (v0.20, Release B).** `User.TokenVersion`
+  + a `tv` claim checked per request; bumped on password/role change;
+  `POST /auth/logout-all` invalidates all of a user's sessions.
+- ~~**ALTCHA PoW solutions are replayable.**~~ **Addressed (v0.20, Release B).**
+  Solved payloads are recorded in a TTL'd in-memory store and rejected on replay
+  within the 120s window.
+- ~~**`web/node_modules/` is committed to git.**~~ **Addressed (v0.20, Release B).**
+  Untracked via `git rm -r --cached web/node_modules`; builds use `npm ci`.
 
 ---
 
@@ -206,6 +213,16 @@ These are intended consequences of the fixes, not regressions:
    certificates in the old volume need a one-time migration.
 5. **Installer** — now requires the release to publish a matching `.sha256`;
    installation aborts on a missing or mismatched checksum.
+6. **JWT sessions are revocable** — changing a user's password or role, or
+   calling `POST /auth/logout-all`, invalidates that user's outstanding tokens
+   immediately (they get 401). Adds one indexed DB lookup per request on
+   JWT-authenticated routes.
+7. **App Store installs require acknowledgement** — installing from an unsigned
+   source returns HTTP 412 until the request sets `acknowledge_unsigned`; the
+   frontend should surface the returned image list as a warning and resubmit.
+8. **Manifest signature (optional)** — set `WEBCASA_VERSIONCHECK_PUBKEY` and
+   publish a detached ed25519 signature to enforce update-manifest integrity;
+   unset leaves the previous behavior with a warning log.
 
 ---
 
